@@ -79,24 +79,24 @@ class AgentGoalWorker(
         try {
             return withContext(Dispatchers.IO) {
                 val goalId = cancellationGoalId
+                val goalDiagnostics = diagnostics.withContext(mapOf("goal_id" to goalId))
                 val workerStartedAt = System.currentTimeMillis()
-                diagnostics.info(
+                goalDiagnostics.info(
                     "agent_worker_started",
-                    mapOf("goal_id" to goalId, "run_attempt" to runAttemptCount),
+                    mapOf("run_attempt" to runAttemptCount),
                 )
                 val initialGoal = findGoal(goalId) ?: run {
-                    diagnostics.warning("agent_worker_goal_not_found", mapOf("goal_id" to goalId))
+                    goalDiagnostics.warning("agent_worker_goal_not_found")
                     reconcileMissingGoal(goalId)
                     return@withContext Result.failure()
                 }
                 if (initialGoal.status == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION ||
                     initialGoal.userRequest.isBlank() || initialGoal.conversationId.isBlank()
                 ) {
-                    diagnostics.error(
+                    goalDiagnostics.error(
                         "corrupt_or_incomplete_mission_blocked",
                         IllegalStateException("Mission provenance is incomplete; provider work was blocked."),
                         mapOf(
-                            "goal_id" to goalId,
                             "status" to initialGoal.status.name,
                             "has_request" to initialGoal.userRequest.isNotBlank(),
                             "has_conversation_id" to initialGoal.conversationId.isNotBlank(),
@@ -120,9 +120,9 @@ class AgentGoalWorker(
                             } else current
                         }.goals.firstOrNull { it.id == goalId } ?: return@withContext Result.failure()
                     } else {
-                        diagnostics.info(
+                        goalDiagnostics.info(
                             "agent_worker_waiting_for_network_retry",
-                            mapOf("goal_id" to goalId, "next_retry" to initialGoal.nextRetryAt)
+                            mapOf("next_retry" to initialGoal.nextRetryAt)
                         )
                         return@withContext Result.retry()
                     }
@@ -131,9 +131,9 @@ class AgentGoalWorker(
                 }
 
                 if (resumedGoal.status.isInactive()) {
-                    diagnostics.info(
+                    goalDiagnostics.info(
                         "agent_worker_skipped_inactive_goal",
-                        mapOf("goal_id" to goalId, "status" to resumedGoal.status.name),
+                        mapOf("status" to resumedGoal.status.name),
                     )
                     return@withContext Result.success()
                 }
@@ -184,10 +184,7 @@ class AgentGoalWorker(
                 }
 
                 if (allocationSelection.taskId == null && allocationSelection.retryAfterCooldown) {
-                    diagnostics.info(
-                        "agent_worker_all_runnable_tasks_in_cooldown",
-                        mapOf("goal_id" to goalId),
-                    )
+                    goalDiagnostics.info("agent_worker_all_runnable_tasks_in_cooldown")
                     return@withContext Result.retry()
                 }
 
@@ -231,10 +228,7 @@ class AgentGoalWorker(
                 }
 
                 if (!tryAcquireLease(goalId, allocationSelection.taskId)) {
-                    diagnostics.info(
-                        "agent_worker_lease_acquisition_failed",
-                        mapOf("goal_id" to goalId),
-                    )
+                    goalDiagnostics.info("agent_worker_lease_acquisition_failed")
                     researchMonitor.record(
                         category = "mission",
                         event = "worker_exit_lease_held",
@@ -251,7 +245,7 @@ class AgentGoalWorker(
                 val leasedGoal = try {
                     requireOwnedLeasedGoal(goalId, workerId)
                 } catch (e: IllegalStateException) {
-                    diagnostics.warning("agent_worker_owned_lease_validation_failed", mapOf("goal_id" to goalId, "error" to e.message))
+                    goalDiagnostics.warning("agent_worker_owned_lease_validation_failed", mapOf("error" to e.message))
                     researchMonitor.record(
                         category = "mission",
                         event = "worker_exit_lease_invalid",
@@ -265,10 +259,9 @@ class AgentGoalWorker(
                 if (!researchMonitor.isActive()) {
                     runCatching { researchMonitor.start() }
                         .onFailure { error ->
-                            diagnostics.error(
+                            goalDiagnostics.error(
                                 "research_monitor_auto_start_failed",
                                 error,
-                                mapOf("goal_id" to goalId),
                             )
                         }
                 }
@@ -335,24 +328,24 @@ class AgentGoalWorker(
 
                 val workerResult = when {
                     finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK -> {
-                        diagnostics.info("worker_pausing_for_network", mapOf("goal_id" to goalId))
+                        goalDiagnostics.info("worker_pausing_for_network")
                         Result.retry()
                     }
                     outcome == WorkerOutcome.CONTINUE -> {
-                        diagnostics.info("worker_enqueuing_continuation", mapOf("goal_id" to goalId))
+                        goalDiagnostics.info("worker_enqueuing_continuation")
                         enqueueContinuationIfActive(goalId)
                         Result.success()
                     }
                     outcome == WorkerOutcome.DONE -> {
-                        diagnostics.info("worker_mission_done", mapOf("goal_id" to goalId))
+                        goalDiagnostics.info("worker_mission_done")
                         Result.success()
                     }
                     outcome == WorkerOutcome.RETRY -> {
-                        diagnostics.info("worker_requesting_retry", mapOf("goal_id" to goalId))
+                        goalDiagnostics.info("worker_requesting_retry")
                         Result.retry()
                     }
                     outcome == WorkerOutcome.FAIL -> {
-                        diagnostics.warning("worker_terminal_failure", mapOf("goal_id" to goalId))
+                        goalDiagnostics.warning("worker_terminal_failure")
                         Result.failure()
                     }
                     else -> Result.failure()
@@ -386,10 +379,9 @@ class AgentGoalWorker(
                     return@withContext Result.retry()
                 }
 
-                diagnostics.info(
+                goalDiagnostics.info(
                     "agent_worker_finished",
                     mapOf(
-                        "goal_id" to goalId,
                         "outcome" to outcome.name,
                         "duration_ms" to (System.currentTimeMillis() - workerStartedAt),
                     ),

@@ -1,12 +1,15 @@
 package com.david.openassistant.data.diagnostics
 
 import android.content.Context
+import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
+import java.io.Closeable
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Small structured diagnostic ledger for OpenAssistant-owned events.
@@ -26,6 +29,28 @@ open class RuntimeDiagnostics internal constructor(
     )
 
     private val executor: ExecutorService = SHARED_EXECUTOR
+
+    /**
+     * Creates a scoped diagnostic ledger that automatically appends the provided
+     * fields to every log entry.
+     */
+    fun withContext(fields: Map<String, Any?>): RuntimeDiagnostics =
+        ScopedDiagnostics(this, fields)
+
+    /**
+     * Demarcates a major phase transition with a visual separator in Logcat.
+     */
+    fun section(title: String) {
+        val line = "=".repeat(10)
+        Log.i(LOGCAT_TAG, "💠 $line $title $line")
+    }
+
+    /**
+     * Starts a diagnostic timer for a specific event. Call [DiagnosticTimer.stop]
+     * to log the final duration.
+     */
+    fun startTimer(event: String, fields: Map<String, Any?> = emptyMap()): DiagnosticTimer =
+        DiagnosticTimer(this, event, fields)
 
     override fun info(event: String, fields: Map<String, Any?>) {
         record(level = "INFO", event = event, fields = fields, throwable = null)
@@ -75,20 +100,37 @@ open class RuntimeDiagnostics internal constructor(
                 safeFields.put("error_origin", origin)
             }
         }
+
+        val currentThread = Thread.currentThread()
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            val threadName = currentThread.name.take(24)
+            if (!safeFields.has("thread")) {
+                safeFields.put("thread", threadName)
+            }
+        }
         
         val emoji = when {
             level == "ERROR" -> "❌ "
             level == "WARN" -> "⚠️ "
+            safeEvent.contains("retry") -> "🔄 "
+            safeEvent.contains("stall") -> "🐢 "
+            safeEvent.contains("routing") -> "🗺️ "
+            safeEvent.contains("recovery") -> "🩹 "
+            safeEvent.contains("budget") || safeEvent.contains("allocation") -> "💰 "
             safeEvent.contains("started") || safeEvent.contains("attached") -> "🚀 "
             safeEvent.contains("finished") || safeEvent.contains("completed") || safeEvent.contains("success") -> "✅ "
             safeEvent.contains("network") || safeEvent.contains("request") || safeEvent.contains("response") -> "🌐 "
             safeEvent.contains("tool") || safeEvent.contains("recipe") -> "⚡ "
             safeEvent.contains("checkpoint") -> "💾 "
-            safeEvent.contains("allocation") -> "📊 "
             else -> "🔹 "
         }
 
         val logcatText = buildString {
+            if (safeFields.has("thread")) {
+                append('[')
+                append(safeFields.getString("thread"))
+                append("] ")
+            }
             append(emoji)
             append(safeEvent)
             if (safeFields.length() > 0) {
@@ -197,6 +239,46 @@ open class RuntimeDiagnostics internal constructor(
             current = current.cause
         }
         return null
+    }
+
+    private class ScopedDiagnostics(
+        private val parent: RuntimeDiagnostics,
+        private val scopedFields: Map<String, Any?>
+    ) : RuntimeDiagnostics(null, null) {
+        override fun info(event: String, fields: Map<String, Any?>) {
+            parent.info(event, scopedFields + fields)
+        }
+
+        override fun warning(event: String, fields: Map<String, Any?>) {
+            parent.warning(event, scopedFields + fields)
+        }
+
+        override fun error(event: String, throwable: Throwable, fields: Map<String, Any?>) {
+            parent.error(event, throwable, scopedFields + fields)
+        }
+    }
+
+    class DiagnosticTimer internal constructor(
+        private val diagnostics: RuntimeDiagnostics,
+        private val event: String,
+        private val initialFields: Map<String, Any?>
+    ) : Closeable {
+        private val startNanos = System.nanoTime()
+        private var stopped = false
+
+        fun stop(additionalFields: Map<String, Any?> = emptyMap()) {
+            if (stopped) return
+            stopped = true
+            val durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
+            diagnostics.info(
+                event,
+                initialFields + additionalFields + mapOf("duration_ms" to durationMs)
+            )
+        }
+
+        override fun close() {
+            stop()
+        }
     }
 
     companion object {

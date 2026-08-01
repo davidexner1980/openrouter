@@ -28,15 +28,23 @@ class AgentTaskExecutor internal constructor(
         workerId: String,
         models: List<OpenRouterModel> = emptyList(),
     ): WorkerOutcome {
+        val taskDiagnostics = diagnostics.withContext(
+            mapOf(
+                "goal_id" to goal.id,
+                "task_id" to task.id,
+                "worker_id" to workerId,
+                "capability" to task.capability.name,
+                "attempt" to (task.attemptCount + 1)
+            )
+        )
+
         if (revalidatePreservedResearchMilestone(goal, task)) {
+            taskDiagnostics.info("agent_milestone_revalidated_skipped_execution")
             return WorkerOutcome.CONTINUE
         }
         val activeLease = goal.executionLease
         if (activeLease == null || activeLease.workerId != workerId || activeLease.taskId != task.id) {
-            diagnostics.warning(
-                "agent_task_executor_ownership_validation_failed",
-                mapOf("goal_id" to goal.id, "task_id" to task.id, "worker_id" to workerId),
-            )
+            taskDiagnostics.warning("agent_task_executor_ownership_validation_failed")
             return WorkerOutcome.FAIL
         }
         val leaseAttemptId = activeLease.attemptId
@@ -45,37 +53,31 @@ class AgentTaskExecutor internal constructor(
         val budget = AgentResearchAllocator.budgetForTask(goal, task, allocationProfile)
         
         val executionStrategy = selectAgentExecutionStrategy(goal, task)
-        val startedAt = System.currentTimeMillis()
+        taskDiagnostics.section("Task ${task.order + 1}: ${task.title}")
 
         // Diagnostics for budget
-        diagnostics.info(
+        taskDiagnostics.info(
             "research_allocation_budget_applied",
             mapOf(
-                "goal_id" to goal.id,
-                "task_id" to task.id,
                 "search_queries_target" to budget.searchQueriesTarget,
                 "full_reads_target" to budget.fullReadsTarget,
                 "max_rabbit_hole" to budget.maxRabbitHoleIterations
             )
         )
 
-        diagnostics.info(
+        taskDiagnostics.info(
             "agent_milestone_started",
             mapOf(
-                "goal_id" to goal.id,
-                "task_id" to task.id,
-                "worker_id" to workerId,
                 "attempt_id" to leaseAttemptId,
                 "generation" to generation,
                 "task_order" to task.order,
-                "capability" to task.capability.name,
-                "attempt" to (task.attemptCount + 1),
                 "execution_profile" to executionStrategy.profile.name,
                 "allocation_profile" to allocationProfile.complexity.name,
                 "tool_call_required" to (executionStrategy.profile == AgentExecutionProfile.FOCUSED_TOOL),
             ),
         )
         val agentAttemptId = UUID.randomUUID().toString()
+        val startedAt = System.currentTimeMillis()
         val attempt = AgentAttempt(
             id = agentAttemptId,
             taskId = task.id,
@@ -138,7 +140,7 @@ class AgentTaskExecutor internal constructor(
                 executionGeneration = lease.generation,
                 taskId = task.id,
             )
-            return persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ownership, models)
+            return persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ownership, models, taskDiagnostics)
         }
         
         val parentOperationId = "op-task-${UUID.randomUUID()}"
@@ -153,6 +155,7 @@ class AgentTaskExecutor internal constructor(
             parentOperationId = parentOperationId,
         )
 
+        val timer = taskDiagnostics.startTimer("agent_milestone_execution_duration")
         return try {
             val result = client.executeTask(
                 apiKey = apiKey,
@@ -190,18 +193,21 @@ class AgentTaskExecutor internal constructor(
                 executionGeneration = lease.generation,
                 taskId = task.id,
             )
-            persistTaskResult(startedGoal, task, attempt, result, ownership)
+            timer.stop(mapOf("status" to "success"))
+            persistTaskResult(startedGoal, task, attempt, result, ownership, taskDiagnostics)
         } catch (error: CancellationException) {
-            diagnostics.info("agent_milestone_cancelled", mapOf("goal_id" to goal.id, "task_id" to task.id))
+            timer.stop(mapOf("status" to "cancelled"))
+            taskDiagnostics.info("agent_milestone_cancelled")
             throw error
         } catch (error: Throwable) {
+            timer.stop(mapOf("status" to "failed", "error_type" to error::class.java.simpleName))
             val ownership = ExecutionOwnership(
                 workerId = lease.workerId,
                 leaseAttemptId = lease.attemptId,
                 executionGeneration = lease.generation,
                 taskId = task.id,
             )
-            persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ownership, models)
+            persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ownership, models, taskDiagnostics)
         }
     }
 
@@ -468,6 +474,7 @@ class AgentTaskExecutor internal constructor(
         attempt: AgentAttempt,
         rawResult: AgentStepResult,
         ownership: ExecutionOwnership,
+        taskDiagnostics: RuntimeDiagnostics,
     ): WorkerOutcome {
         beforeCommitHook?.beforeCommit(startedGoal.id, task.id, ownership)
         val currentFingerprint = calculateTaskFingerprint(startedGoal, task)
@@ -501,13 +508,9 @@ class AgentTaskExecutor internal constructor(
             ?: return WorkerOutcome.FAIL
         val currentAttemptAfterCall = currentAfterCall.attempts.firstOrNull { it.id == attempt.id }
         if (!canCommitMilestoneResult(currentAfterCall, task.id, attempt.id, ownership)) {
-            diagnostics.warning(
+            taskDiagnostics.warning(
                 "agent_late_milestone_result_discarded",
                 mapOf(
-                    "goal_id" to startedGoal.id,
-                    "task_id" to task.id,
-                    "worker_id" to ownership.workerId,
-                    "attempt_id" to attempt.id,
                     "task_status" to currentTaskAfterCall.status.name,
                     "attempt_status" to currentAttemptAfterCall?.status?.name,
                 ),
@@ -547,11 +550,9 @@ class AgentTaskExecutor internal constructor(
             WorkerOutcome.RETRY
         }
         
-        diagnostics.info(
+        taskDiagnostics.info(
             "agent_milestone_finished",
             mapOf(
-                "goal_id" to startedGoal.id,
-                "task_id" to task.id,
                 "outcome" to outcome.name,
                 "quality_score" to result.completionScore,
                 "duration_ms" to (finishedAt - attempt.startedAt),
@@ -573,6 +574,7 @@ class AgentTaskExecutor internal constructor(
         currentFingerprint: String? = null,
         ownership: ExecutionOwnership,
         models: List<OpenRouterModel> = emptyList(),
+        taskDiagnostics: RuntimeDiagnostics,
     ): WorkerOutcome {
         beforeCommitHook?.beforeCommit(goalId, taskId, ownership)
         val message = error.toAgentFailureMessage("The agent milestone failed.").take(1_000)
@@ -597,22 +599,18 @@ class AgentTaskExecutor internal constructor(
         )
         
         val allocationRecovery = AgentResearchAllocator.recoveryStrategy(latest, currentTask, message)
-        diagnostics.info(
+        taskDiagnostics.info(
             "research_allocation_recovery_strategy_changed",
             mapOf(
-                "goal_id" to goalId,
-                "task_id" to taskId,
                 "strategy" to allocationRecovery.name,
                 "reason" to descriptor.failureClass
             )
         )
 
-        diagnostics.error(
+        taskDiagnostics.error(
             event = "agent_milestone_failed",
             throwable = error,
             fields = mapOf(
-                "goal_id" to goalId,
-                "task_id" to taskId,
                 "http_status" to statusCode,
                 "failure_class" to descriptor.failureClass,
                 "accounted_failure_tokens" to failureUsage?.totalTokens,
@@ -816,11 +814,9 @@ class AgentTaskExecutor internal constructor(
             )
         }
         if (!failureCommitted) {
-            diagnostics.warning(
+            taskDiagnostics.warning(
                 "agent_late_milestone_failure_discarded",
                 mapOf(
-                    "goal_id" to goalId,
-                    "task_id" to taskId,
                     "attempt_id" to agentAttemptId,
                 ),
             )
@@ -837,11 +833,9 @@ class AgentTaskExecutor internal constructor(
             return WorkerOutcome.DONE
         }
         if (automaticResearchWindowOpened) {
-            diagnostics.warning(
+            taskDiagnostics.warning(
                 "agent_research_recovery_window_advanced_after_provider_failure",
                 mapOf(
-                    "goal_id" to goalId,
-                    "task_id" to taskId,
                     "attempt_limit" to MAX_RESEARCH_MILESTONE_ATTEMPTS,
                     "provider_recovery" to decision.action.name,
                     "recovery_model" to decision.nextModelId,
@@ -849,11 +843,9 @@ class AgentTaskExecutor internal constructor(
             )
         }
         if (automaticCorrectionWindowOpened) {
-            diagnostics.warning(
+            taskDiagnostics.warning(
                 "agent_correction_recovery_window_advanced_after_provider_failure",
                 mapOf(
-                    "goal_id" to goalId,
-                    "task_id" to taskId,
                     "attempt_limit" to MAX_CORRECTION_MILESTONE_ATTEMPTS,
                     "provider_recovery" to decision.action.name,
                     "recovery_model" to decision.nextModelId,
@@ -862,11 +854,9 @@ class AgentTaskExecutor internal constructor(
         }
         if (automaticEvidenceBoundedWindowOpened) {
             val recoveredTask = persistedGoal.tasks.firstOrNull { it.id == taskId }
-            diagnostics.warning(
+            taskDiagnostics.warning(
                 "agent_evidence_bounded_recovery_window_advanced_after_provider_failure",
                 mapOf(
-                    "goal_id" to goalId,
-                    "task_id" to taskId,
                     "capability" to recoveredTask?.capability?.name,
                     "attempt_limit" to MAX_EVIDENCE_BOUNDED_MILESTONE_ATTEMPTS,
                     "provider_recovery" to decision.action.name,
@@ -875,11 +865,9 @@ class AgentTaskExecutor internal constructor(
             )
         }
         if (automaticSynthesisAnalysisFallbackOpened) {
-            diagnostics.warning(
+            taskDiagnostics.warning(
                 "agent_synthesis_analysis_rerouted_after_provider_failure",
                 mapOf(
-                    "goal_id" to goalId,
-                    "task_id" to taskId,
                     "tool_attempt_limit" to MAX_REQUIRED_TOOL_MILESTONE_ATTEMPTS,
                     "provider_recovery" to decision.action.name,
                     "recovery_model" to decision.nextModelId,
@@ -891,11 +879,9 @@ class AgentTaskExecutor internal constructor(
         }
         if (persistedGoal.status == AgentGoalStatus.FAILED) {
             val persistedTask = persistedGoal.tasks.firstOrNull { it.id == taskId }
-            diagnostics.warning(
+            taskDiagnostics.warning(
                 "agent_local_attempts_exhausted_after_provider_failure",
                 mapOf(
-                    "goal_id" to goalId,
-                    "task_id" to taskId,
                     "capability" to persistedTask?.capability?.name,
                     "attempt_limit" to persistedTask?.capability?.let(::localAttemptWindowLimit),
                     "provider_recovery" to decision.action.name,
