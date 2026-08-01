@@ -31,6 +31,23 @@ open class RuntimeDiagnostics internal constructor(
         record(level = "INFO", event = event, fields = fields, throwable = null)
     }
 
+    /**
+     * High-frequency developer logging that hits Logcat but is NOT persisted to disk.
+     */
+    fun debug(event: String, fields: Map<String, Any?> = emptyMap()) {
+        val safeEvent = event.trim().ifBlank { "debug_event" }.take(MAX_EVENT_LENGTH)
+        val safeFields = sanitize(fields)
+        val logcatText = buildString {
+            append("🔍 ")
+            append(safeEvent)
+            if (safeFields.length() > 0) {
+                append(' ')
+                append(safeFields.toString())
+            }
+        }
+        Log.d(LOGCAT_TAG, logcatText)
+    }
+
     open fun warning(event: String, fields: Map<String, Any?> = emptyMap()) {
         record(level = "WARN", event = event, fields = fields, throwable = null)
     }
@@ -58,24 +75,39 @@ open class RuntimeDiagnostics internal constructor(
                 safeFields.put("error_origin", origin)
             }
         }
+        
+        val emoji = when {
+            level == "ERROR" -> "❌ "
+            level == "WARN" -> "⚠️ "
+            safeEvent.contains("started") || safeEvent.contains("attached") -> "🚀 "
+            safeEvent.contains("finished") || safeEvent.contains("completed") || safeEvent.contains("success") -> "✅ "
+            safeEvent.contains("network") || safeEvent.contains("request") || safeEvent.contains("response") -> "🌐 "
+            safeEvent.contains("tool") || safeEvent.contains("recipe") -> "⚡ "
+            safeEvent.contains("checkpoint") -> "💾 "
+            safeEvent.contains("allocation") -> "📊 "
+            else -> "🔹 "
+        }
+
         val logcatText = buildString {
+            append(emoji)
             append(safeEvent)
             if (safeFields.length() > 0) {
                 append(' ')
                 append(safeFields.toString())
             }
-            throwable?.let {
+            if (throwable != null && level != "ERROR" && level != "WARN") {
                 append(" error=")
-                append(it::class.java.simpleName)
-                it.message?.takeIf(String::isNotBlank)?.let { message ->
+                append(throwable::class.java.simpleName)
+                throwable.message?.takeIf(String::isNotBlank)?.let { message ->
                     append(':')
                     append(redactDiagnosticText(message).take(MAX_ERROR_MESSAGE_LENGTH))
                 }
             }
         }
+        
         when (level) {
-            "ERROR" -> Log.e(LOGCAT_TAG, logcatText)
-            "WARN" -> Log.w(LOGCAT_TAG, logcatText)
+            "ERROR" -> Log.e(LOGCAT_TAG, logcatText, throwable)
+            "WARN" -> Log.w(LOGCAT_TAG, logcatText, throwable)
             else -> Log.i(LOGCAT_TAG, logcatText)
         }
 
@@ -117,7 +149,7 @@ open class RuntimeDiagnostics internal constructor(
     }
 
     private fun appendLine(line: String) = synchronized(FILE_LOCK) {
-        diagnosticsDirectory!!.mkdirs()
+        diagnosticsDirectory?.mkdirs()
         val active = activeLogFile()
         if (active.exists() && active.length() + line.toByteArray(StandardCharsets.UTF_8).size > MAX_FILE_BYTES) {
             val previous = File(diagnosticsDirectory, PREVIOUS_FILE_NAME)

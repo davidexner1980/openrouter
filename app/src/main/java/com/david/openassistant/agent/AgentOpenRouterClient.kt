@@ -1,6 +1,8 @@
-package com.david.openassistant.agent
-
-import com.david.openassistant.BuildConfig
+import com.david.openassistant.data.diagnostics.RuntimeDiagnostics
+import com.david.openassistant.data.diagnostics.redactDiagnosticText
+import android.util.Log
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 import com.david.openassistant.agent.AgentRoutingPolicy
 import com.david.openassistant.agent.AgentRoutingStage
 import com.david.openassistant.data.diagnostics.ResearchMonitor
@@ -5782,6 +5784,11 @@ class AgentOpenRouterClient internal constructor(
             .readTimeout(3, TimeUnit.MINUTES)
             .callTimeout(4, TimeUnit.MINUTES)
             .retryOnConnectionFailure(retryOnConnectionFailure = true)
+            .apply {
+                if (BuildConfig.DEBUG) {
+                    addInterceptor(OpenRouterLoggingInterceptor())
+                }
+            }
             .build()
 
         private val catalogLock = Mutex()
@@ -5805,5 +5812,60 @@ private class CatalogCache {
     fun set(newModels: List<OpenRouterModel>) {
         models = newModels
         timestamp = System.currentTimeMillis()
+    }
+}
+
+/**
+ * Redacting network logger for OpenRouter requests/responses.
+ */
+private class OpenRouterLoggingInterceptor : okhttp3.Interceptor {
+    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
+        val request = chain.request()
+        val url = request.url.toString()
+        val method = request.method
+        
+        val requestId = UUID.randomUUID().toString().take(8)
+        val tag = RuntimeDiagnostics.LOGCAT_TAG
+        
+        // Log Request
+        val requestLog = buildString {
+            append("🌐 [REQ-$requestId] $method $url")
+            request.headers.forEach { (name, value) ->
+                val redactedValue = if (name.equals("Authorization", ignoreCase = true)) "[REDACTED]" else value
+                append("\n  $name: $redactedValue")
+            }
+            request.body?.let { body ->
+                val buffer = okio.Buffer()
+                body.writeTo(buffer)
+                val bodyText = buffer.readUtf8()
+                append("\n  Body: ${redactDiagnosticText(bodyText).take(2000)}")
+            }
+        }
+        Log.d(tag, requestLog)
+        
+        val startNs = System.nanoTime()
+        val response: okhttp3.Response
+        try {
+            response = chain.proceed(request)
+        } catch (e: Exception) {
+            Log.e(tag, "🌐 [REQ-$requestId] FAILED", e)
+            throw e
+        }
+        
+        val tookMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs)
+        
+        // Log Response
+        val responseLog = buildString {
+            append("🌐 [RES-$requestId] ${response.code} ${response.message} (${tookMs}ms)")
+            response.body.let { body ->
+                val source = body.source()
+                source.request(Long.MAX_VALUE)
+                val bodyText = source.buffer.clone().readUtf8()
+                append("\n  Body: ${redactDiagnosticText(bodyText).take(2000)}")
+            }
+        }
+        Log.d(tag, responseLog)
+        
+        return response
     }
 }
