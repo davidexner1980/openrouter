@@ -317,7 +317,9 @@ data class ConversationSnapshot(
     val activeConversationId: String,
 ) {
     val activeConversation: StoredConversation
-        get() = conversations.firstOrNull { it.id == activeConversationId } ?: conversations.first()
+        get() = conversations.firstOrNull { it.id == activeConversationId } 
+            ?: conversations.firstOrNull() 
+            ?: StoredConversation.empty()
 
     fun attachmentFileNames(): Set<String> = conversations
         .asSequence()

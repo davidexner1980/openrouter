@@ -25,7 +25,15 @@ class ConversationInteractor(context: Context) {
 
     suspend fun loadSnapshot(): ConversationSnapshot = withContext(Dispatchers.IO) {
         importer.importIfNeeded()
-        repository.getConversationSnapshot().first()
+        val currentSnapshot = repository.getConversationSnapshot().first()
+        if (currentSnapshot.conversations.isEmpty()) {
+            val empty = com.david.openassistant.data.local.StoredConversation.empty()
+            repository.saveConversation(empty)
+            repository.setActiveConversation(empty.id)
+            repository.getConversationSnapshot().first()
+        } else {
+            currentSnapshot
+        }
     }
 
     fun saveSnapshot(snapshot: ConversationSnapshot) {
