@@ -41,6 +41,7 @@ class AgentGoalWorker(
             diagnostics.warning("agent_worker_missing_goal_id")
             return Result.failure()
         }
+        diagnostics.debug("WorkManager wake-up for goal $goalId")
         return AgentGoalExecutionGate.withGoalLock(goalId) {
             executeGoalWorker(goalId)
         }
@@ -333,14 +334,27 @@ class AgentGoalWorker(
                 }
 
                 val workerResult = when {
-                    finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK -> Result.retry()
+                    finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK -> {
+                        diagnostics.info("worker_pausing_for_network", mapOf("goal_id" to goalId))
+                        Result.retry()
+                    }
                     outcome == WorkerOutcome.CONTINUE -> {
+                        diagnostics.info("worker_enqueuing_continuation", mapOf("goal_id" to goalId))
                         enqueueContinuationIfActive(goalId)
                         Result.success()
                     }
-                    outcome == WorkerOutcome.DONE -> Result.success()
-                    outcome == WorkerOutcome.RETRY -> Result.retry()
-                    outcome == WorkerOutcome.FAIL -> Result.failure()
+                    outcome == WorkerOutcome.DONE -> {
+                        diagnostics.info("worker_mission_done", mapOf("goal_id" to goalId))
+                        Result.success()
+                    }
+                    outcome == WorkerOutcome.RETRY -> {
+                        diagnostics.info("worker_requesting_retry", mapOf("goal_id" to goalId))
+                        Result.retry()
+                    }
+                    outcome == WorkerOutcome.FAIL -> {
+                        diagnostics.warning("worker_terminal_failure", mapOf("goal_id" to goalId))
+                        Result.failure()
+                    }
                     else -> Result.failure()
                 }
 

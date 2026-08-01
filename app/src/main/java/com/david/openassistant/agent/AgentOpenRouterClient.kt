@@ -1,8 +1,9 @@
+package com.david.openassistant.agent
+
+import com.david.openassistant.BuildConfig
 import com.david.openassistant.data.diagnostics.RuntimeDiagnostics
 import com.david.openassistant.data.diagnostics.redactDiagnosticText
 import android.util.Log
-import java.util.UUID
-import java.util.concurrent.TimeUnit
 import com.david.openassistant.agent.AgentRoutingPolicy
 import com.david.openassistant.agent.AgentRoutingStage
 import com.david.openassistant.data.diagnostics.ResearchMonitor
