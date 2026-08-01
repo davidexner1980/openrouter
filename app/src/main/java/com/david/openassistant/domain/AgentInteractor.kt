@@ -167,6 +167,10 @@ class AgentInteractor internal constructor(
         agentScheduler!!.cancel(goalId, generation)
     }
 
+    fun isWorkRunning(goalId: String, generation: Int = 0): Boolean {
+        return agentScheduler?.isWorkRunning(goalId, generation) ?: false
+    }
+
     suspend fun cancelAndWait(goalId: String, generation: Int = 0) = withContext(Dispatchers.IO) {
         agentScheduler!!.cancelAndWait(goalId, generation)
     }

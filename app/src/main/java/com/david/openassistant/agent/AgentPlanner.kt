@@ -80,17 +80,18 @@ class AgentPlanner(
                     dependsOn = draft.dependsOn,
                     status = AgentTaskStatus.QUEUED,
                     weight = draft.weight,
-                    acceptanceCriteria = draft.acceptanceCriteria,
+                    acceptanceCriteria = ConstraintValidator.filterGrounded(draft.acceptanceCriteria, goal.userRequest),
                 )
             }
+            val filteredGoalCriteria = ConstraintValidator.filterGrounded(plan.acceptanceCriteria, goal.userRequest)
             require(tasks.isNotEmpty()) { "The planner returned no executable milestones." }
             val planEvidence = AgentEvidence(
                 kind = AgentEvidenceKind.PLAN,
                 title = "Validated durable plan",
-                summary = "${tasks.size} measurable milestones and ${plan.acceptanceCriteria.size} final checks were created.",
+                summary = "${tasks.size} measurable milestones and ${filteredGoalCriteria.size} final checks were created.",
                 content = buildString {
                     appendLine("Goal acceptance criteria:")
-                    plan.acceptanceCriteria.forEach { criterion ->
+                    filteredGoalCriteria.forEach { criterion ->
                         appendLine("- ${criterion.id}: ${criterion.description} (weight ${criterion.weight})")
                     }
                     appendLine()
@@ -126,7 +127,7 @@ class AgentPlanner(
                     finalOutputDescription = plan.finalOutputDescription,
                     status = AgentGoalStatus.QUEUED,
                     tasks = tasks,
-                    acceptanceCriteria = plan.acceptanceCriteria,
+                    acceptanceCriteria = filteredGoalCriteria,
                     evidence = appendEvidence(current.evidence, planEvidence),
                     idempotencyRecords = baseUpdated.idempotencyRecords + accountingRecord,
                     attempts = current.attempts.map { existing ->

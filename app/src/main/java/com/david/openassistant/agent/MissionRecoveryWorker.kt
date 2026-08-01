@@ -39,6 +39,13 @@ class MissionRecoveryWorker(
                     "status" to goal.status.name,
                     "lease_stale" to isStale
                 ))
+                store.updateGoal(goal.id) { current ->
+                    AgentLifecycleReducer.resume(
+                        current,
+                        reason = if (goal.status == AgentGoalStatus.WAITING_FOR_NETWORK) ResumeReason.NETWORK_RESTORED else ResumeReason.STALE_LEASE_RECOVERY,
+                        message = if (goal.status == AgentGoalStatus.WAITING_FOR_NETWORK) "Automatically resumed mission after network wait." else "Recovered a stale or stranded mission lease."
+                    )
+                }
                 scheduler.enqueue(goal.id, replace = false)
                 recoveredCount++
             }
@@ -50,6 +57,7 @@ class MissionRecoveryWorker(
     private fun AgentGoalStatus.isTerminal(): Boolean = this in setOf(
         AgentGoalStatus.COMPLETED,
         AgentGoalStatus.CANCELLED,
+        AgentGoalStatus.CANCELLING,
         AgentGoalStatus.REJECTED,
         AgentGoalStatus.FAILED // Legacy
     )

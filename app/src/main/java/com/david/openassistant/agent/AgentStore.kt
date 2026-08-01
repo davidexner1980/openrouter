@@ -42,6 +42,13 @@ sealed class TransitionOutcomeResult {
     data class StorageFailure(val cause: Throwable) : TransitionOutcomeResult()
 }
 
+sealed class RefreshLeaseResult {
+    object Refreshed : RefreshLeaseResult()
+    object GoalMissing : RefreshLeaseResult()
+    object LeaseLost : RefreshLeaseResult()
+    data class StorageFailure(val cause: Throwable) : RefreshLeaseResult()
+}
+
 class AgentStore private constructor(
     context: Context?,
     baseDir: File?,
@@ -103,6 +110,31 @@ class AgentStore private constructor(
     fun updateGoal(goalId: String, transform: (AgentGoal) -> AgentGoal): AgentSnapshot = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
         updateGoalInternalLocked(goalId, transform)
+    }
+
+    fun refreshExecutionLease(
+        goalId: String,
+        workerId: String,
+        attemptId: String,
+        generation: Int,
+        taskId: String?,
+    ): RefreshLeaseResult = synchronized(STORE_LOCK) {
+        migrateLegacyIfNeededLocked()
+        val current = loadSnapshotFromFilesLocked()
+        val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized RefreshLeaseResult.GoalMissing
+        val lease = goal.executionLease ?: return@synchronized RefreshLeaseResult.LeaseLost
+
+        if (lease.workerId != workerId || lease.attemptId != attemptId || lease.generation != generation || lease.taskId != (taskId ?: "none")) {
+            return@synchronized RefreshLeaseResult.LeaseLost
+        }
+
+        val now = System.currentTimeMillis()
+        val updatedGoal = goal.copy(
+            executionLease = lease.copy(heartbeatAt = now),
+            updatedAt = now
+        )
+        runCatching { writeGoalLocked(updatedGoal) }.onFailure { return@synchronized RefreshLeaseResult.StorageFailure(it) }
+        RefreshLeaseResult.Refreshed
     }
 
     internal interface GoalStateWriter {
@@ -673,6 +705,7 @@ class AgentStore private constructor(
         .put("freshness_requirement", goal.freshnessRequirement ?: JSONObject.NULL)
         .put("exclusions", JSONArray(goal.exclusions))
         .put("source_message_ids", JSONArray(goal.sourceMessageIds))
+        .put("grounded_constraints", JSONArray().apply { goal.groundedConstraints.forEach { put(it.toJson()) } })
         .put("status", goal.status.name)
         .put("planner_model_id", goal.plannerModelId)
         .put("execution_model_id", goal.executionModelId)
@@ -734,6 +767,7 @@ class AgentStore private constructor(
         .put("operation_fingerprints", JSONArray(goal.operationFingerprints))
         .put("classified_failures", JSONArray(goal.classifiedFailures))
         .put("lease_generation", goal.leaseGeneration)
+        .put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
 
     private fun decodeGoal(json: JSONObject): AgentGoal {
         val legacyCostUsd = json.optDouble("total_cost_usd", 0.0)
@@ -839,6 +873,7 @@ class AgentStore private constructor(
             freshnessRequirement = json.optNullableString("freshness_requirement"),
             exclusions = json.optJSONArray("exclusions").toStringList(),
             sourceMessageIds = json.optJSONArray("source_message_ids").toStringList(),
+            groundedConstraints = json.optJSONArray("grounded_constraints").decodeList(GroundedConstraint::fromJson),
             status = restoredStatus,
             plannerModelId = json.optString("planner_model_id"),
             executionModelId = json.optString("execution_model_id"),
@@ -913,6 +948,7 @@ class AgentStore private constructor(
             operationFingerprints = json.optJSONArray("operation_fingerprints").toStringList(),
             classifiedFailures = json.optJSONArray("classified_failures").toStringList(),
             leaseGeneration = json.optInt("lease_generation", 0),
+            lastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() },
         )
     }
 
@@ -963,6 +999,7 @@ class AgentStore private constructor(
         .put("retry_eligibility", task.retryEligibility)
         .put("retry_authorized_fingerprint", task.retryAuthorizedFingerprint ?: JSONObject.NULL)
         .put("rejected_queries", JSONArray().apply { task.rejectedQueries.forEach { put(encodeRejectedQuery(it)) } })
+        .put("active_research_strategy_json", task.activeResearchStrategyJson ?: JSONObject.NULL)
 
     private fun decodeTask(json: JSONObject): AgentTask {
         val status = json.optEnum("status", AgentTaskStatus.PLANNED)
@@ -1020,6 +1057,7 @@ class AgentStore private constructor(
             retryEligibility = json.optBoolean("retry_eligibility", true),
             retryAuthorizedFingerprint = json.optNullableString("retry_authorized_fingerprint"),
             rejectedQueries = json.optJSONArray("rejected_queries").decodeList(::decodeRejectedQuery),
+            activeResearchStrategyJson = json.optNullableString("active_research_strategy_json"),
         )
     }
 

@@ -20,6 +20,7 @@ data class AgentGoal(
     val freshnessRequirement: String? = null,
     val exclusions: List<String> = emptyList(),
     val sourceMessageIds: List<String> = emptyList(),
+    val groundedConstraints: List<GroundedConstraint> = emptyList(),
     val status: AgentGoalStatus,
     val plannerModelId: String,
     val executionModelId: String,
@@ -82,6 +83,7 @@ data class AgentGoal(
     val operationFingerprints: List<String> = emptyList(),
     val classifiedFailures: List<String> = emptyList(),
     val leaseGeneration: Int = 0,
+    val lastResumeReason: ResumeReason? = null,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)

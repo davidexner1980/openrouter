@@ -1900,22 +1900,55 @@ class AgentOpenRouterClient internal constructor(
         var rabbitHoleIterations = 0
         val queryCount = budget.searchQueriesTarget +
             if (task.attemptCount > 0 || !task.lastError.isNullOrBlank()) 1 else 0
-        val (strategy, initialStrategySummary) = createAdaptiveResearchStrategy(
-            apiKey = apiKey,
-            modelId = AgentRoutingPolicy.guardModel(goal, if (task.attemptCount >= 2 && isFreeOnlyModel(modelId)) ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID else modelId),
-            goal = goal,
-            task = task,
-            priorEvidence = priorEvidence,
-            queryCount = queryCount,
-            freeOnly = goal.freeOnly,
-            generation = generation,
-            requestContext = requestContext.forChildOperation(
-                MissionOperation.ADAPTIVE_RESEARCH_STRATEGY,
-                AgentTaskRole.ECONOMICAL_RESEARCH,
-                taskId = task.id,
-            ),
-        )
-        var strategySummary = initialStrategySummary
+            
+        val (strategy, strategySummary) = if (!task.activeResearchStrategyJson.isNullOrBlank()) {
+            val parsed = runCatching { parseAdaptiveResearchStrategy(task.activeResearchStrategyJson, 2, enforceSemanticDiversity = false) }.getOrNull()
+            if (parsed != null) {
+                parsed to AgentApiSummary()
+            } else {
+                val (s, res) = createAdaptiveResearchStrategy(
+                    apiKey = apiKey,
+                    modelId = AgentRoutingPolicy.guardModel(goal, if (task.attemptCount >= 2 && isFreeOnlyModel(modelId)) ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID else modelId),
+                    goal = goal,
+                    task = task,
+                    priorEvidence = priorEvidence,
+                    queryCount = queryCount,
+                    freeOnly = goal.freeOnly,
+                    generation = generation,
+                    requestContext = requestContext.forChildOperation(
+                        MissionOperation.ADAPTIVE_RESEARCH_STRATEGY,
+                        AgentTaskRole.ECONOMICAL_RESEARCH,
+                        taskId = task.id,
+                    ),
+                )
+                store?.updateGoal(goal.id) { current ->
+                    current.copy(tasks = current.tasks.map { if (it.id == task.id) it.copy(activeResearchStrategyJson = res.content) else it })
+                }
+                s to res.summary
+            }
+        } else {
+            val (s, res) = createAdaptiveResearchStrategy(
+                apiKey = apiKey,
+                modelId = AgentRoutingPolicy.guardModel(goal, if (task.attemptCount >= 2 && isFreeOnlyModel(modelId)) ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID else modelId),
+                goal = goal,
+                task = task,
+                priorEvidence = priorEvidence,
+                queryCount = queryCount,
+                freeOnly = goal.freeOnly,
+                generation = generation,
+                requestContext = requestContext.forChildOperation(
+                    MissionOperation.ADAPTIVE_RESEARCH_STRATEGY,
+                    AgentTaskRole.ECONOMICAL_RESEARCH,
+                    taskId = task.id,
+                ),
+            )
+            store?.updateGoal(goal.id) { current ->
+                current.copy(tasks = current.tasks.map { if (it.id == task.id) it.copy(activeResearchStrategyJson = res.content) else it })
+            }
+            s to res.summary
+        }
+        
+        var currentStrategySummary = strategySummary
         val queries = strategy.queries.take(queryCount).toMutableList()
         val researchRole = researchPassRole(task)
         val validationEntities = linkedSetOf<String>().apply {
@@ -2357,7 +2390,7 @@ class AgentOpenRouterClient internal constructor(
                 break
             }
 
-            strategySummary = strategySummary.merge(followUpSummary)
+            currentStrategySummary = currentStrategySummary.merge(followUpSummary)
             val followUpValidation = SearchQueryValidator.validate(
                 query = applyAutomaticDisambiguation(followUp.query, goal),
                 request = goal.userRequest,
@@ -2638,7 +2671,7 @@ class AgentOpenRouterClient internal constructor(
             context = context,
             sources = sources.values.take(MAX_SOURCE_CITATIONS).toList(),
             executions = executions,
-            summary = strategySummary.merge(
+            summary = currentStrategySummary.merge(
                 AgentApiSummary(
                     webSearchRequests = successfulSearches.takeIf { it > 0 },
                     webFetchRequests = webFetchRequests.takeIf { it > 0 },
@@ -2701,7 +2734,7 @@ class AgentOpenRouterClient internal constructor(
         freeOnly: Boolean = false,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
-    ): Pair<AdaptiveResearchStrategy, AgentApiSummary> {
+    ): Pair<AdaptiveResearchStrategy, RawAgentResponse> {
         val role = researchPassRole(task)
         val durableContext = priorEvidence
             .takeLast(MAX_ADAPTIVE_STRATEGY_EVIDENCE_ITEMS)
@@ -2772,7 +2805,7 @@ class AgentOpenRouterClient internal constructor(
             firstStrategy != null &&
             adaptiveResearchStrategyAnchorsRequest(firstStrategy, goal.userRequest)
         ) {
-            return firstStrategy to firstResponse.summary
+            return firstStrategy to firstResponse
         }
 
         val repaired = executeResearchStrategyRefinement(
@@ -2808,16 +2841,16 @@ class AgentOpenRouterClient internal constructor(
             task = task,
             role = role,
             minimumQueries = queryCount,
-        ) to combinedSummary
+        ) to repaired.copy(summary = combinedSummary)
         if (!adaptiveResearchStrategyAnchorsRequest(strategy, goal.userRequest)) {
             return buildRequestSpecificStrategyFallback(
                 goal = goal,
                 task = task,
                 role = role,
                 minimumQueries = queryCount,
-            ) to combinedSummary
+            ) to repaired.copy(summary = combinedSummary)
         }
-        return strategy to combinedSummary
+        return strategy to repaired.copy(summary = combinedSummary)
     }
 
     private suspend fun refineFailedSearchQuery(

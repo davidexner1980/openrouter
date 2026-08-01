@@ -161,6 +161,15 @@ class AgentScheduler(context: Context) {
         workManager.cancelAllWorkByTag(goalTag(goalId))
     }
 
+    fun isWorkRunning(goalId: String, generation: Int = 0): Boolean {
+        return try {
+            val infos = workManager.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get()
+            infos.any { it.state == androidx.work.WorkInfo.State.RUNNING }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun schedulePeriodicRecovery() {
         val request = PeriodicWorkRequestBuilder<MissionRecoveryWorker>(30, TimeUnit.MINUTES)
             .addTag("mission_recovery_watchdog")

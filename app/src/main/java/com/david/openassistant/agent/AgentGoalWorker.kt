@@ -11,6 +11,11 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class AgentGoalWorker(
@@ -88,323 +93,360 @@ class AgentGoalWorker(
 
         try {
             return withContext(Dispatchers.IO) {
-                val goalId = cancellationGoalId
-                val goalDiagnostics = diagnostics.withContext(mapOf("goal_id" to goalId))
-                val workerStartedAt = System.currentTimeMillis()
-                goalDiagnostics.info(
-                    "agent_worker_started",
-                    mapOf("run_attempt" to runAttemptCount),
-                )
-                val initialGoal = findGoal(goalId) ?: run {
-                    goalDiagnostics.warning("agent_worker_goal_not_found")
-                    reconcileMissingGoal(goalId)
-                    return@withContext Result.failure()
-                }
-                if (initialGoal.status == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION ||
-                    initialGoal.userRequest.isBlank() || initialGoal.conversationId.isBlank()
-                ) {
-                    goalDiagnostics.error(
-                        "corrupt_or_incomplete_mission_blocked",
-                        IllegalStateException("Mission provenance is incomplete; provider work was blocked."),
-                        mapOf(
-                            "status" to initialGoal.status.name,
-                            "has_request" to initialGoal.userRequest.isNotBlank(),
-                            "has_conversation_id" to initialGoal.conversationId.isNotBlank(),
-                        ),
-                    )
-                    return@withContext Result.failure()
-                }
-
-                // Canonical controlled stale-exchange reconciliation under goal lease lock
-                ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
-
-                val now = System.currentTimeMillis()
-                val resumedGoal = if (initialGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
-                    if (initialGoal.nextRetryAt == null || now >= initialGoal.nextRetryAt) {
-                        store.updateGoal(goalId) { current ->
-                            if (current.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
-                                current.copy(
-                                    status = current.resumeStatusAfterNetwork ?: AgentGoalStatus.QUEUED,
-                                    events = appendEvent(current.events, "Automatically resumed mission after network wait.")
-                                )
-                            } else current
-                        }.goals.firstOrNull { it.id == goalId } ?: return@withContext Result.failure()
-                    } else {
-                        goalDiagnostics.info(
-                            "agent_worker_waiting_for_network_retry",
-                            mapOf("next_retry" to initialGoal.nextRetryAt)
-                        )
-                        return@withContext Result.retry()
-                    }
-                } else {
-                    initialGoal
-                }
-
-                if (resumedGoal.status.isInactive()) {
+                coroutineScope {
+                    val goalId = cancellationGoalId
+                    val goalDiagnostics = diagnostics.withContext(mapOf("goal_id" to goalId))
+                    val workerStartedAt = System.currentTimeMillis()
                     goalDiagnostics.info(
-                        "agent_worker_skipped_inactive_goal",
-                        mapOf("status" to resumedGoal.status.name),
+                        "agent_worker_started",
+                        mapOf("run_attempt" to runAttemptCount),
                     )
-                    return@withContext Result.success()
-                }
-
-                val allocationProfile = AgentResearchAllocator.profileForGoal(resumedGoal, autonomyPolicy)
-                val gaps = AgentResearchAllocator.evaluateGaps(resumedGoal, allocationProfile)
-                val allocationSelection = AgentResearchAllocator.chooseNextTask(resumedGoal, allocationProfile, now)
-
-                researchMonitor.record(
-                    category = "allocation",
-                    event = "research_allocation_profile_created",
-                    correlationId = goalId,
-                    fields = mapOf(
-                        "goal_id" to goalId,
-                        "complexity" to allocationProfile.complexity.name,
-                        "risk" to allocationProfile.risk.name,
-                        "passes" to allocationProfile.targetResearchPasses,
-                        "sources" to allocationProfile.targetDistinctSources
-                    )
-                )
-
-                if (gaps.remainingSourceGap > 0 || gaps.remainingDomainGap > 0 || gaps.remainingPrimarySourceGap || gaps.remainingContradictionGap) {
-                    researchMonitor.record(
-                        category = "allocation",
-                        event = "research_allocation_gap_detected",
-                        correlationId = goalId,
-                        fields = mapOf(
-                            "goal_id" to goalId,
-                            "source_gap" to gaps.remainingSourceGap,
-                            "domain_gap" to gaps.remainingDomainGap,
-                            "primary_gap" to gaps.remainingPrimarySourceGap,
-                            "contradiction_gap" to gaps.remainingContradictionGap
+                    val initialGoal = findGoal(goalId) ?: run {
+                        goalDiagnostics.warning("agent_worker_goal_not_found")
+                        reconcileMissingGoal(goalId)
+                        return@coroutineScope Result.failure()
+                    }
+                    if (initialGoal.status == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION ||
+                        initialGoal.userRequest.isBlank() || initialGoal.conversationId.isBlank()
+                    ) {
+                        goalDiagnostics.error(
+                            "corrupt_or_incomplete_mission_blocked",
+                            IllegalStateException("Mission provenance is incomplete; provider work was blocked."),
+                            mapOf(
+                                "status" to initialGoal.status.name,
+                                "has_request" to initialGoal.userRequest.isNotBlank(),
+                                "has_conversation_id" to initialGoal.conversationId.isNotBlank(),
+                            ),
                         )
-                    )
-                }
+                        return@coroutineScope Result.failure()
+                    }
 
-                if (allocationSelection.taskId != null) {
-                    researchMonitor.record(
-                        category = "allocation",
-                        event = "research_allocation_next_task_selected",
-                        correlationId = goalId,
-                        fields = mapOf(
-                            "goal_id" to goalId,
-                            "task_id" to allocationSelection.taskId,
-                            "reason" to allocationSelection.reason
-                        )
-                    )
-                }
+                    // Canonical controlled stale-exchange reconciliation under goal lease lock
+                    ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
 
-                if (allocationSelection.taskId == null && allocationSelection.retryAfterCooldown) {
-                    goalDiagnostics.info("agent_worker_all_runnable_tasks_in_cooldown")
-                    return@withContext Result.retry()
-                }
-
-                if (allocationSelection.taskId == null) {
-                    // If no runnable task exists, and goal is NOT already waiting for network or planning, 
-                    // check if all dependency-satisfied tasks are waiting for network or exhausted.
-                    if (resumedGoal.status != AgentGoalStatus.WAITING_FOR_NETWORK && resumedGoal.status != AgentGoalStatus.PLANNING) {
-                        val completedIds = resumedGoal.tasks.filter { it.status == AgentTaskStatus.COMPLETED }.map { it.id }.toSet()
-                        val satisfiedTasks = resumedGoal.tasks.filter { it.status != AgentTaskStatus.COMPLETED && it.status != AgentTaskStatus.CANCELLED && it.dependsOn.all(completedIds::contains) }
-                        
-                        val allBlockedOrExhausted = satisfiedTasks.all { it.failureClass == "network_resolution" || it.branchExhaustionReason != null || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
-                        
-                        if (allBlockedOrExhausted && satisfiedTasks.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    val resumedGoal = if (initialGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                        if (initialGoal.nextRetryAt == null || now >= initialGoal.nextRetryAt) {
                             store.updateGoal(goalId) { current ->
-                                if (current.tasks.any { it.branchExhaustionReason != null || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }) {
-                                    current.copy(status = AgentGoalStatus.INSUFFICIENT_CURRENT_DATA)
-                                } else {
-                                    current.copy(status = AgentGoalStatus.WAITING_FOR_NETWORK)
-                                }
-                            }
-                            return@withContext Result.success()
-                        } else if (satisfiedTasks.isEmpty() && resumedGoal.tasks.any { it.status == AgentTaskStatus.FAILED }) {
-                            // If we have failed tasks that are blocked by dependencies or other reasons, repair them.
-                            repairBlockedWorkflow(resumedGoal)
-                        } else if (satisfiedTasks.isEmpty() && !resumedGoal.isReadyForVerification) {
-                             // Stranded: no runnable task, no satisfied tasks, and not ready for verification.
-                             store.updateGoal(goalId) { current ->
-                                 current.copy(
-                                     status = AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-                                     events = appendEvent(current.events, "Mission stranded: no runnable milestones remaining and research is exhausted.")
-                                 )
-                             }
-                             return@withContext Result.success()
+                                if (current.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                                    current.copy(
+                                        status = current.resumeStatusAfterNetwork ?: AgentGoalStatus.QUEUED,
+                                        networkRetryCount = current.networkRetryCount + 1,
+                                        events = appendEvent(current.events, "Automatically resumed mission after network wait.")
+                                    )
+                                } else current
+                            }.goals.firstOrNull { it.id == goalId } ?: return@coroutineScope Result.failure()
+                        } else {
+                            goalDiagnostics.info(
+                                "agent_worker_waiting_for_network_retry",
+                                mapOf("next_retry" to initialGoal.nextRetryAt)
+                            )
+                            return@coroutineScope Result.retry()
                         }
+                    } else {
+                        initialGoal
                     }
-                }
 
-                if (resumedGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
-                    // Waiting worker should not hold the lease
-                    return@withContext Result.success()
-                }
+                    if (resumedGoal.status.isInactive()) {
+                        goalDiagnostics.info(
+                            "agent_worker_skipped_inactive_goal",
+                            mapOf("status" to resumedGoal.status.name),
+                        )
+                        return@coroutineScope Result.success()
+                    }
 
-                if (!tryAcquireLease(goalId, allocationSelection.taskId)) {
-                    goalDiagnostics.info("agent_worker_lease_acquisition_failed")
+                    val allocationProfile = AgentResearchAllocator.profileForGoal(resumedGoal, autonomyPolicy)
+                    val gaps = AgentResearchAllocator.evaluateGaps(resumedGoal, allocationProfile)
+                    val allocationSelection = AgentResearchAllocator.chooseNextTask(resumedGoal, allocationProfile, now)
+
                     researchMonitor.record(
-                        category = "mission",
-                        event = "worker_exit_lease_held",
+                        category = "allocation",
+                        event = "research_allocation_profile_created",
                         correlationId = goalId,
                         fields = mapOf(
                             "goal_id" to goalId,
-                            "worker_id" to workerId,
-                            "active_lease_worker" to (findGoal(goalId)?.executionLease?.workerId ?: "unknown")
+                            "complexity" to allocationProfile.complexity.name,
+                            "risk" to allocationProfile.risk.name,
+                            "passes" to allocationProfile.targetResearchPasses,
+                            "sources" to allocationProfile.targetDistinctSources
                         )
                     )
-                    return@withContext Result.success()
-                }
 
-                val leasedGoal = try {
-                    requireOwnedLeasedGoal(goalId, workerId)
-                } catch (e: IllegalStateException) {
-                    goalDiagnostics.warning("agent_worker_owned_lease_validation_failed", mapOf("error" to e.message))
-                    researchMonitor.record(
-                        category = "mission",
-                        event = "worker_exit_lease_invalid",
-                        level = "ERROR",
-                        correlationId = goalId,
-                        fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "error" to e.message)
-                    )
-                    return@withContext Result.failure()
-                }
-
-                if (!researchMonitor.isActive()) {
-                    runCatching { researchMonitor.start() }
-                        .onFailure { error ->
-                            goalDiagnostics.error(
-                                "research_monitor_auto_start_failed",
-                                error,
+                    if (gaps.remainingSourceGap > 0 || gaps.remainingDomainGap > 0 || gaps.remainingPrimarySourceGap || gaps.remainingContradictionGap) {
+                        researchMonitor.record(
+                            category = "allocation",
+                            event = "research_allocation_gap_detected",
+                            correlationId = goalId,
+                            fields = mapOf(
+                                "goal_id" to goalId,
+                                "source_gap" to gaps.remainingSourceGap,
+                                "domain_gap" to gaps.remainingDomainGap,
+                                "primary_gap" to gaps.remainingPrimarySourceGap,
+                                "contradiction_gap" to gaps.remainingContradictionGap
                             )
-                        }
-                }
-                client.currentSessionId = researchMonitor.status().sessionId
-                val leasedNextTask = AgentResearchAllocator.chooseNextTask(leasedGoal, allocationProfile, now).taskId?.let { id -> leasedGoal.tasks.firstOrNull { it.id == id } }
-                researchMonitor.record(
-                    category = "mission",
-                    event = "worker_attached",
-                    correlationId = goalId,
-                    targetSessionId = client.currentSessionId,
-                    fields = mapOf(
-                        "goal_id" to goalId,
-                        "worker_id" to workerId,
-                        "run_attempt" to runAttemptCount,
-                        "goal_status" to leasedGoal.status.name,
-                        "user_request" to leasedGoal.userRequest,
-                        "goal_title" to leasedGoal.title,
-                        "current_task_id" to leasedNextTask?.id,
-                        "allocation_profile" to allocationProfile.complexity.name,
-                        "allocation_reason" to allocationSelection.reason,
-                        "task_states" to leasedGoal.tasks.joinToString(",") {
-                            "${it.id}:${it.status.name}:${it.attemptCount}"
-                        },
-                        "attempt_count" to leasedGoal.attempts.size,
-                        "evidence_count" to leasedGoal.evidence.size,
-                        "claim_count" to leasedGoal.claims.size,
-                        "checkpoint_count" to leasedGoal.checkpoints.size,
-                        "total_tokens" to leasedGoal.totalTokens,
-                        "total_cost_usd" to leasedGoal.totalCostUsd,
-                        "last_error" to leasedGoal.error,
-                    ),
-                )
-
-                val apiKey = keyStore.load() ?: run {
-                    waitForCredential(goalId, "Waiting for a valid OpenRouter credential. All mission state is preserved.")
-                    return@withContext Result.success()
-                }
-
-                val models = runCatching { client.fetchModels(apiKey) }.getOrDefault(emptyList())
-
-                val outcome = if (leasedGoal.status == AgentGoalStatus.PLANNING) {
-                    notifier.updateNotification(goalId, leasedGoal.title, "Planning")
-                    planner.plan(apiKey, leasedGoal, models)
-                } else {
-                    reconcileInterruptedWork(goalId)
-                    val goal = try {
-                        requireOwnedLeasedGoal(goalId, workerId)
-                    } catch (_: IllegalStateException) {
-                        return@withContext Result.failure()
+                        )
                     }
-                    if (goal.status.isInactive()) return@withContext Result.success()
-                    val taskToExecute = AgentResearchAllocator.chooseNextTask(goal, allocationProfile, now).taskId?.let { id -> goal.tasks.firstOrNull { it.id == id } }
-                    when {
-                        taskToExecute != null -> {
-                            notifier.updateNotification(goalId, goal.title, taskToExecute.title)
-                            taskExecutor.executeOneTask(apiKey, goal, taskToExecute, workerId, models)
-                        }
-                        goal.isReadyForVerification -> {
-                            notifier.updateNotification(goalId, goal.title, "Verifying")
-                            verifier.verifyAndFinish(apiKey, goal, models)
-                        }
-                        else -> repairBlockedWorkflow(goal)
-                    }
-                }
 
-                val finalGoalSnapshot = findGoal(goalId)
+                    if (allocationSelection.taskId != null) {
+                        researchMonitor.record(
+                            category = "allocation",
+                            event = "research_allocation_next_task_selected",
+                            correlationId = goalId,
+                            fields = mapOf(
+                                "goal_id" to goalId,
+                                "task_id" to allocationSelection.taskId,
+                                "reason" to allocationSelection.reason
+                            )
+                        )
+                    }
 
-                if (outcome == WorkerOutcome.DONE || outcome == WorkerOutcome.CONTINUE) {
-                    ProviderRequestLedger.waitForSettlement()
-                }
+                    if (allocationSelection.taskId == null && allocationSelection.retryAfterCooldown) {
+                        goalDiagnostics.info("agent_worker_all_runnable_tasks_in_cooldown")
+                        return@coroutineScope Result.retry()
+                    }
 
-                val workerResult = when {
-                    finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK -> {
-                        goalDiagnostics.info("worker_pausing_for_network")
-                        Result.retry()
-                    }
-                    outcome == WorkerOutcome.CONTINUE -> {
-                        goalDiagnostics.info("worker_enqueuing_continuation")
-                        enqueueContinuationIfActive(goalId)
-                        Result.success()
-                    }
-                    outcome == WorkerOutcome.DONE -> {
-                        goalDiagnostics.info("worker_mission_done")
-                        Result.success()
-                    }
-                    outcome == WorkerOutcome.RETRY -> {
-                        goalDiagnostics.info("worker_requesting_retry")
-                        Result.retry()
-                    }
-                    outcome == WorkerOutcome.FAIL -> {
-                        goalDiagnostics.warning("worker_terminal_failure")
-                        Result.failure()
-                    }
-                    else -> Result.failure()
-                }
-
-                researchMonitor.record(
-                    category = "mission",
-                    event = "worker_finished",
-                    correlationId = goalId,
-                    targetSessionId = client.currentSessionId,
-                    fields = mapOf(
-                        "goal_id" to goalId,
-                        "worker_id" to workerId,
-                        "outcome" to outcome.name,
-                        "worker_result" to workerResult.toString(),
-                        "final_status" to (finalGoalSnapshot?.status?.name ?: "deleted"),
-                        "next_owner" to when {
-                            outcome == WorkerOutcome.CONTINUE -> "continuation_worker"
-                            workerResult == Result.retry() -> {
-                                if (finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK) "network_condition"
-                                else "work_manager_retry"
+                    if (allocationSelection.taskId == null) {
+                        // If no runnable task exists, and goal is NOT already waiting for network or planning, 
+                        // check if all dependency-satisfied tasks are waiting for network or exhausted.
+                        if (resumedGoal.status != AgentGoalStatus.WAITING_FOR_NETWORK && resumedGoal.status != AgentGoalStatus.PLANNING) {
+                            val completedIds = resumedGoal.tasks.filter { it.status == AgentTaskStatus.COMPLETED }.map { it.id }.toSet()
+                            val satisfiedTasks = resumedGoal.tasks.filter { it.status != AgentTaskStatus.COMPLETED && it.status != AgentTaskStatus.CANCELLED && it.dependsOn.all(completedIds::contains) }
+                            
+                            val allBlockedOrExhausted = satisfiedTasks.all { it.failureClass == "network_resolution" || it.branchExhaustionReason != null || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
+                            
+                            if (allBlockedOrExhausted && satisfiedTasks.isNotEmpty()) {
+                                store.updateGoal(goalId) { current ->
+                                    if (current.tasks.any { it.branchExhaustionReason != null || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }) {
+                                        current.copy(status = AgentGoalStatus.INSUFFICIENT_CURRENT_DATA)
+                                    } else {
+                                        current.copy(status = AgentGoalStatus.WAITING_FOR_NETWORK)
+                                    }
+                                }
+                                return@coroutineScope Result.success()
+                            } else if (satisfiedTasks.isEmpty() && resumedGoal.tasks.any { it.status == AgentTaskStatus.FAILED }) {
+                                // If we have failed tasks that are blocked by dependencies or other reasons, repair them.
+                                repairBlockedWorkflow(resumedGoal)
+                            } else if (satisfiedTasks.isEmpty() && !resumedGoal.isReadyForVerification) {
+                                 // Stranded: no runnable task, no satisfied tasks, and not ready for verification.
+                                 store.updateGoal(goalId) { current ->
+                                     current.copy(
+                                         status = AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
+                                         events = appendEvent(current.events, "Mission stranded: no runnable milestones remaining and research is exhausted.")
+                                     )
+                                 }
+                                 return@coroutineScope Result.success()
                             }
-                            finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "credential_listener"
-                            finalGoalSnapshot?.status?.isInactive() == true -> "terminal_state"
-                            else -> "unknown"
                         }
-                    )
-                )
+                    }
 
-                if (finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
-                    return@withContext Result.retry()
+                    if (resumedGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                        // Waiting worker should not hold the lease
+                        return@coroutineScope Result.success()
+                    }
+
+                    if (!tryAcquireLease(goalId, allocationSelection.taskId)) {
+                        goalDiagnostics.info("agent_worker_lease_acquisition_failed")
+                        researchMonitor.record(
+                            category = "mission",
+                            event = "worker_exit_lease_held",
+                            correlationId = goalId,
+                            fields = mapOf(
+                                "goal_id" to goalId,
+                                "worker_id" to workerId,
+                                "active_lease_worker" to (findGoal(goalId)?.executionLease?.workerId ?: "unknown")
+                            )
+                        )
+                        return@coroutineScope Result.success()
+                    }
+
+                    val leasedGoal = try {
+                        requireOwnedLeasedGoal(goalId, workerId)
+                    } catch (e: IllegalStateException) {
+                        goalDiagnostics.warning("agent_worker_owned_lease_validation_failed", mapOf("error" to e.message))
+                        researchMonitor.record(
+                            category = "mission",
+                            event = "worker_exit_lease_invalid",
+                            level = "ERROR",
+                            correlationId = goalId,
+                            fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "error" to e.message)
+                        )
+                        return@coroutineScope Result.failure()
+                    }
+
+                    val lease = leasedGoal.executionLease!!
+                    val workerStartTime = System.currentTimeMillis()
+                    val heartbeatJob = launch {
+                        while (isActive) {
+                            delay(HEARTBEAT_INTERVAL_MS)
+                            
+                            // Safety: dataSync FGS has a 6-hour limit on Android 15+. 
+                            // Checkpoint and yield before reaching the platform boundary.
+                            if (System.currentTimeMillis() - workerStartTime > 5.5 * 3600_000L) {
+                                goalDiagnostics.warning("fgs_duration_limit_approaching")
+                                cancelActiveCalls("fgs_duration_limit")
+                                break
+                            }
+
+                            val result = store.refreshExecutionLease(
+                                goalId = goalId,
+                                workerId = workerId,
+                                attemptId = lease.attemptId,
+                                generation = lease.generation,
+                                taskId = lease.taskId
+                            )
+                            if (result != RefreshLeaseResult.Refreshed) {
+                                goalDiagnostics.warning("heartbeat_ownership_lost", mapOf("result" to result.toString()))
+                                cancelActiveCalls("heartbeat_ownership_lost")
+                                break
+                            }
+                        }
+                    }
+
+                    try {
+                        if (!researchMonitor.isActive()) {
+                            runCatching { researchMonitor.start() }
+                                .onFailure { error ->
+                                    goalDiagnostics.error(
+                                        "research_monitor_auto_start_failed",
+                                        error,
+                                    )
+                                }
+                        }
+                        client.currentSessionId = researchMonitor.status().sessionId
+                        val leasedNextTask = AgentResearchAllocator.chooseNextTask(leasedGoal, allocationProfile, now).taskId?.let { id -> leasedGoal.tasks.firstOrNull { it.id == id } }
+                        researchMonitor.record(
+                            category = "mission",
+                            event = "worker_attached",
+                            correlationId = goalId,
+                            targetSessionId = client.currentSessionId,
+                            fields = mapOf(
+                                "goal_id" to goalId,
+                                "worker_id" to workerId,
+                                "run_attempt" to runAttemptCount,
+                                "goal_status" to leasedGoal.status.name,
+                                "user_request" to leasedGoal.userRequest,
+                                "goal_title" to leasedGoal.title,
+                                "current_task_id" to leasedNextTask?.id,
+                                "allocation_profile" to allocationProfile.complexity.name,
+                                "allocation_reason" to allocationSelection.reason,
+                                "task_states" to leasedGoal.tasks.joinToString(",") {
+                                    "${it.id}:${it.status.name}:${it.attemptCount}"
+                                },
+                                "attempt_count" to leasedGoal.attempts.size,
+                                "evidence_count" to leasedGoal.evidence.size,
+                                "claim_count" to leasedGoal.claims.size,
+                                "checkpoint_count" to leasedGoal.checkpoints.size,
+                                "total_tokens" to leasedGoal.totalTokens,
+                                "total_cost_usd" to leasedGoal.totalCostUsd,
+                                "last_error" to leasedGoal.error,
+                            ),
+                        )
+
+                        val apiKey = keyStore.load() ?: run {
+                            waitForCredential(goalId, "Waiting for a valid OpenRouter credential. All mission state is preserved.")
+                            return@coroutineScope Result.success()
+                        }
+
+                        val models = runCatching { client.fetchModels(apiKey) }.getOrDefault(emptyList())
+
+                        val outcome = if (leasedGoal.status == AgentGoalStatus.PLANNING) {
+                            notifier.updateNotification(goalId, leasedGoal.title, "Planning")
+                            planner.plan(apiKey, leasedGoal, models)
+                        } else {
+                            reconcileInterruptedWork(goalId)
+                            val goal = try {
+                                requireOwnedLeasedGoal(goalId, workerId)
+                            } catch (_: IllegalStateException) {
+                                return@coroutineScope Result.failure()
+                            }
+                            if (goal.status.isInactive()) return@coroutineScope Result.success()
+                            val taskToExecute = AgentResearchAllocator.chooseNextTask(goal, allocationProfile, now).taskId?.let { id -> goal.tasks.firstOrNull { it.id == id } }
+                            when {
+                                taskToExecute != null -> {
+                                    notifier.updateNotification(goalId, goal.title, taskToExecute.title)
+                                    taskExecutor.executeOneTask(apiKey, goal, taskToExecute, workerId, models)
+                                }
+                                goal.isReadyForVerification -> {
+                                    notifier.updateNotification(goalId, goal.title, "Verifying")
+                                    verifier.verifyAndFinish(apiKey, goal, models)
+                                }
+                                else -> repairBlockedWorkflow(goal)
+                            }
+                        }
+
+                        val finalGoalSnapshot = findGoal(goalId)
+
+                        if (outcome == WorkerOutcome.DONE || outcome == WorkerOutcome.CONTINUE) {
+                            ProviderRequestLedger.waitForSettlement()
+                        }
+
+                        val workerResult = when {
+                            finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK -> {
+                                goalDiagnostics.info("worker_pausing_for_network")
+                                Result.retry()
+                            }
+                            outcome == WorkerOutcome.CONTINUE -> {
+                                goalDiagnostics.info("worker_enqueuing_continuation")
+                                enqueueContinuationIfActive(goalId)
+                                Result.success()
+                            }
+                            outcome == WorkerOutcome.DONE -> {
+                                goalDiagnostics.info("worker_mission_done")
+                                Result.success()
+                            }
+                            outcome == WorkerOutcome.RETRY -> {
+                                goalDiagnostics.info("worker_requesting_retry")
+                                Result.retry()
+                            }
+                            outcome == WorkerOutcome.FAIL -> {
+                                goalDiagnostics.warning("worker_terminal_failure")
+                                Result.failure()
+                            }
+                            else -> Result.failure()
+                        }
+
+                        researchMonitor.record(
+                            category = "mission",
+                            event = "worker_finished",
+                            correlationId = goalId,
+                            targetSessionId = client.currentSessionId,
+                            fields = mapOf(
+                                "goal_id" to goalId,
+                                "worker_id" to workerId,
+                                "outcome" to outcome.name,
+                                "worker_result" to workerResult.toString(),
+                                "final_status" to (finalGoalSnapshot?.status?.name ?: "deleted"),
+                                "next_owner" to when {
+                                    outcome == WorkerOutcome.CONTINUE -> "continuation_worker"
+                                    workerResult == Result.retry() -> {
+                                        if (finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK) "network_condition"
+                                        else "work_manager_retry"
+                                    }
+                                    finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "credential_listener"
+                                    finalGoalSnapshot?.status?.isInactive() == true -> "terminal_state"
+                                    else -> "unknown"
+                                }
+                            )
+                        )
+
+                        if (finalGoalSnapshot?.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                            return@coroutineScope Result.retry()
+                        }
+
+                        goalDiagnostics.info(
+                            "agent_worker_finished",
+                            mapOf(
+                                "outcome" to outcome.name,
+                                "duration_ms" to (System.currentTimeMillis() - workerStartedAt),
+                            ),
+                        )
+                        finalizeMonitorForTerminalGoal(goalId)
+                        workerResult
+                    } finally {
+                        heartbeatJob.cancel()
+                        heartbeatJob.join()
+                    }
                 }
-
-                goalDiagnostics.info(
-                    "agent_worker_finished",
-                    mapOf(
-                        "outcome" to outcome.name,
-                        "duration_ms" to (System.currentTimeMillis() - workerStartedAt),
-                    ),
-                )
-                finalizeMonitorForTerminalGoal(goalId)
-                workerResult
             }
         } catch (cancellation: CancellationException) {
             cancelActiveCalls("worker_coroutine_cancelled")
@@ -732,5 +774,6 @@ class AgentGoalWorker(
 
     companion object {
         const val KEY_GOAL_ID = "goal_id"
+        private const val HEARTBEAT_INTERVAL_MS = 30_000L
     }
 }

@@ -140,6 +140,7 @@ data class AgentTask(
     val retryEligibility: Boolean = true,
     val retryAuthorizedFingerprint: String? = null,
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
+    val activeResearchStrategyJson: String? = null,
 ) {
     val effectiveProgressScore: Double
         get() = when {

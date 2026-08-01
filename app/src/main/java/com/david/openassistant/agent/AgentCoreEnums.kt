@@ -41,6 +41,7 @@ fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
     AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
     AgentGoalStatus.PAUSED,
     AgentGoalStatus.CANCELLED,
+    AgentGoalStatus.CANCELLING,
     AgentGoalStatus.COMPLETED,
     AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
     AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
@@ -329,4 +330,13 @@ enum class RoutingProfile {
     FREE_MODELS_ROUTER,
     AUTO_ROUTER_BETA,
     MANUAL
+}
+
+enum class ResumeReason {
+    USER_RESUME,
+    NETWORK_RESTORED,
+    CREDENTIAL_RESTORED,
+    PROCESS_RECOVERY,
+    STALE_LEASE_RECOVERY,
+    SCHEDULER_REPAIR,
 }

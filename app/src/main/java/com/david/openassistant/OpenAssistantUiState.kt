@@ -60,6 +60,7 @@ data class OpenAssistantUiState(
     val pendingLegacyPermissionOperationId: String? = null,
     val isPreparingRuntimePacket: Boolean = false,
     val runtimePacketReady: RuntimePacketExporter.ExportResult? = null,
+    val activeWorkRunningStates: Map<String, Boolean> = emptyMap(),
 ) {
     val selectedModel: OpenRouterModel?
         get() = models.firstOrNull { it.id == selectedModelId }

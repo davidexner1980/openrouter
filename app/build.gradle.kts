@@ -16,6 +16,15 @@ android {
         versionCode = 53
         versionName = "1.8.33"
 
+        val gitSha = try {
+            val process = Runtime.getRuntime().exec("git rev-parse HEAD", null, projectDir)
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            if (process.waitFor() == 0) output else "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

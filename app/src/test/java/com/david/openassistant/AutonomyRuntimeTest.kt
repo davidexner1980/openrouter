@@ -782,7 +782,10 @@ class AutonomyRuntimeTest {
             )
         }
 
-        val decision = ResearchQualityGate.evaluateGoal(goal(tasks, evidence))
+        val g = goal(tasks, evidence).copy(
+            userRequest = "Research and compare reliable Android autonomous execution patterns in great detail."
+        )
+        val decision = ResearchQualityGate.evaluateGoal(g)
         val codes = researchQualityFindingCodes(decision.reasons)
 
         assertFalse(decision.passed)

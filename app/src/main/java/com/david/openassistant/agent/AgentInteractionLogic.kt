@@ -103,12 +103,17 @@ data class AgentIntegrityDecision(
 )
 
 object MissionUiLogic {
-    fun getAvailableActions(goal: AgentGoal): Set<MissionUiAction> {
+    fun getAvailableActions(
+        goal: AgentGoal, 
+        isWorkManagerRunning: Boolean = false,
+        hasUnsettledExchange: Boolean = false
+    ): Set<MissionUiAction> {
         val now = System.currentTimeMillis()
         val hasActiveLease = goal.executionLease?.let { !AgentLeasePolicy.isStale(it, now) } ?: false
         
-        // A worker is truly active only if a fresh lease exists and status suggests active processing
-        val isWorkerTrulyActive = hasActiveLease && (
+        // A worker is truly active only if a fresh lease exists OR WorkManager reports it as running,
+        // OR an exchange is active (unsettled), and status suggests active processing
+        val isWorkerTrulyActive = (hasActiveLease || isWorkManagerRunning || hasUnsettledExchange) && (
             goal.status == AgentGoalStatus.PLANNING ||
                 goal.status == AgentGoalStatus.QUEUED ||
                 goal.status == AgentGoalStatus.RUNNING ||

@@ -80,6 +80,7 @@ class RuntimePacketExporter(private val context: Context) {
                 put("version_name", status.versionName ?: "unknown")
                 put("version_code", status.versionCode ?: -1)
                 put("apk_sha256", status.apkSha256 ?: "unknown")
+                put("git_sha", com.david.openassistant.BuildConfig.GIT_SHA)
             })
             put("session_identity", JSONObject().apply {
                 put("session_id", status.sessionId ?: JSONObject.NULL)
@@ -105,7 +106,7 @@ class RuntimePacketExporter(private val context: Context) {
         addToZip(zos, "version-consistency.json", versionConsistency.toString(2), filesToHash)
 
         // 4. Accounting (Provider & Tool)
-        val providerAccounting = calculateProviderAccounting(goals)
+        val providerAccounting = calculateProviderAccounting(goals, monitorData)
         addToZip(zos, "provider-accounting.json", providerAccounting.toString(2), filesToHash)
         
         val toolAccounting = calculateToolAccounting(monitorData.toolEvents)
@@ -178,7 +179,7 @@ class RuntimePacketExporter(private val context: Context) {
         put("unfinished_operations", goal.requestAttempts.count { it.exchangeOutcome == ExchangeOutcome.ACTIVE })
     }
 
-    private fun calculateProviderAccounting(goals: List<AgentGoal>): JSONObject {
+    private fun calculateProviderAccounting(goals: List<AgentGoal>, monitorData: MonitorData): JSONObject {
         var totalRequests = 0
         var totalOutcomes = 0
         var totalTokens = 0
@@ -191,12 +192,15 @@ class RuntimePacketExporter(private val context: Context) {
             totalCost += goal.totalCostUsd
         }
         
+        val eventRequests = monitorData.totalLines // Heuristic for event reconciliation
+        
         return JSONObject().apply {
             put("total_requests", totalRequests)
             put("total_outcomes", totalOutcomes)
             put("total_tokens", totalTokens)
             put("total_cost_usd", totalCost)
             put("unfinished_operations", totalRequests - totalOutcomes)
+            put("reconciled_event_count", eventRequests)
         }
     }
 

@@ -110,7 +110,8 @@ fun AgentWorkScreen(
             } else {
                 selectedGoal?.let { goal ->
                     item {
-                        AgentGoalDetailCard(goal, onPauseGoal, onResumeGoal, onCancelGoal, onDeleteGoal, onRefineGoal, onExportReport)
+                        val isWorkRunning = state.activeWorkRunningStates[goal.id] ?: false
+                        AgentGoalDetailCard(goal, isWorkRunning, onPauseGoal, onResumeGoal, onCancelGoal, onDeleteGoal, onRefineGoal, onExportReport)
                     }
                 }
 
@@ -256,6 +257,7 @@ fun StatusBadge(status: AgentGoalStatus) {
 @Composable
 private fun AgentGoalDetailCard(
     goal: AgentGoal,
+    isWorkRunning: Boolean,
     onPauseGoal: (String) -> Unit,
     onResumeGoal: (String) -> Unit,
     onCancelGoal: (String) -> Unit,
@@ -442,7 +444,8 @@ private fun AgentGoalDetailCard(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val actions = MissionUiLogic.getAvailableActions(goal)
+                val hasUnsettledExchange = goal.requestAttempts.any { it.exchangeOutcome == com.david.openassistant.agent.ExchangeOutcome.ACTIVE }
+                val actions = MissionUiLogic.getAvailableActions(goal, isWorkRunning, hasUnsettledExchange)
                 
                 if (actions.contains(MissionUiAction.PAUSE)) {
                     Button(onClick = { onPauseGoal(goal.id) }) {

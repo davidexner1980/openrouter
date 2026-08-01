@@ -45,6 +45,7 @@ object AgentResearchAllocator {
             if (goal.userRequest.length > 500) add(1)
             if (isComparison) add(1)
             if (isMedical || isLegal || isFinancial) add(1)
+            if (isComparison && (isMedical || isFinancial)) add(1)
             if (isFinancial && request.hasAnyTerm("financials", "valuation", "revenue", "earnings", "profitability", "debt", "potential", "forecast", "outlook")) add(1)
             if (goal.confirmedConstraints.size > 3) add(1)
             if (goal.unresolvedQuestions.size > 2) add(1)

@@ -23,6 +23,7 @@ import com.david.openassistant.agent.AgentLeasePolicy
 import com.david.openassistant.agent.AgentLifecycleReducer
 import com.david.openassistant.agent.AgentSnapshot
 import com.david.openassistant.agent.AgentStore
+import com.david.openassistant.agent.ResumeReason
 import com.david.openassistant.agent.RefreshApplyResult
 import com.david.openassistant.agent.RefreshStateApplier
 import com.david.openassistant.data.local.AttachmentStore
@@ -167,12 +168,22 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
 
     private suspend fun emitUiState() {
         val toolCounts = autonomousToolRuntime.loadToolCounts()
+        val activeGoals = agentSnapshot.goals.filter { !it.status.isInactive() }
+        val runningStates = if (activeGoals.isEmpty()) {
+            emptyMap()
+        } else {
+            activeGoals.associate { goal ->
+                goal.id to agentInteractor.isWorkRunning(goal.id, goal.executionLease?.generation ?: 0)
+            }
+        }
+
         _uiState.update {
             it.copy(
                 agentGoals = agentSnapshot.goals,
                 selectedAgentGoalId = agentSnapshot.selectedGoalId,
                 activeToolRecipeCount = toolCounts.activeRecipeCount,
                 workspaceFileCount = toolCounts.workspaceFileCount,
+                activeWorkRunningStates = runningStates,
             )
         }
         
@@ -353,7 +364,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                                     agentInteractor.updateGoal(goal.id) { current ->
                                         AgentLifecycleReducer.resume(
                                             current,
-                                            reason = "The app reopened and automatically recovered a mission with no active worker lease.",
+                                            reason = ResumeReason.PROCESS_RECOVERY,
+                                            message = "The app reopened and automatically recovered a mission with no active worker lease.",
                                         )
                                     }
                                     agentInteractor.enqueue(goal.id, replace = true, generation = generation)
@@ -1064,31 +1076,43 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun resumeAgentGoal(goalId: String) {
-        val goal = agentSnapshot.goals.firstOrNull { it.id == goalId } ?: return
-        val now = System.currentTimeMillis()
-        val hasActiveLease = goal.executionLease?.let { !com.david.openassistant.agent.AgentLeasePolicy.isStale(it, now) } ?: false
-        val isStranded = !hasActiveLease && (
-            goal.status == AgentGoalStatus.PLANNING ||
-                goal.status == AgentGoalStatus.QUEUED ||
-                goal.status == AgentGoalStatus.RUNNING ||
-                goal.status == AgentGoalStatus.VERIFYING
-            )
-        
-        val canResume = goal.status in setOf(
-            AgentGoalStatus.PAUSED,
-            AgentGoalStatus.FAILED,
-            AgentGoalStatus.WAITING_FOR_CREDENTIAL,
-            AgentGoalStatus.WAITING_FOR_NETWORK,
-            AgentGoalStatus.BLOCKED,
-            AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
-        ) || isStranded
-
-        if (!canResume) return
-        
         viewModelScope.launch {
-            agentInteractor.updateGoal(goalId) { current -> AgentLifecycleReducer.resume(current) }
+            // Re-query current state to ensure we don't act on stale snapshot
+            val snapshot = withContext(Dispatchers.IO) { agentInteractor.loadSnapshot() }
+            val goal = snapshot.goals.firstOrNull { it.id == goalId } ?: return@launch
+            val now = System.currentTimeMillis()
+            
+            val isWorkRunning = withContext(Dispatchers.IO) { 
+                agentInteractor.isWorkRunning(goalId, goal.executionLease?.generation ?: 0) 
+            }
+            val hasActiveLease = goal.executionLease?.let { !AgentLeasePolicy.isStale(it, now) } ?: false
+            
+            val isStranded = !hasActiveLease && !isWorkRunning && (
+                goal.status == AgentGoalStatus.PLANNING ||
+                    goal.status == AgentGoalStatus.QUEUED ||
+                    goal.status == AgentGoalStatus.RUNNING ||
+                    goal.status == AgentGoalStatus.VERIFYING
+                )
+            
+            val canResume = goal.status in setOf(
+                AgentGoalStatus.PAUSED,
+                AgentGoalStatus.FAILED,
+                AgentGoalStatus.WAITING_FOR_CREDENTIAL,
+                AgentGoalStatus.WAITING_FOR_NETWORK,
+                AgentGoalStatus.BLOCKED,
+                AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
+            ) || isStranded
+
+            if (!canResume) {
+                diagnostics.info("agent_goal_resume_skipped", mapOf("goal_id" to goalId, "reason" to "consensus_active"))
+                return@launch
+            }
+            
+            agentInteractor.updateGoal(goalId) { current -> 
+                AgentLifecycleReducer.resume(current, reason = ResumeReason.USER_RESUME) 
+            }
             agentInteractor.enqueue(goalId, replace = true)
-            diagnostics.info("agent_goal_resumed", mapOf("goal_id" to goalId, "stranded" to isStranded))
+            diagnostics.info("agent_goal_resumed", mapOf("goal_id" to goalId, "is_stranded" to isStranded))
             refreshAgentSnapshot()
         }
     }
@@ -2623,7 +2647,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         agentInteractor.updateGoal(goal.id) { current ->
                             AgentLifecycleReducer.resume(
                                 current,
-                                reason = "A valid OpenRouter credential is available. The mission resumed automatically from durable state.",
+                                reason = ResumeReason.CREDENTIAL_RESTORED,
+                                message = "A valid OpenRouter credential is available. The mission resumed automatically from durable state.",
                             )
                         }
                     }

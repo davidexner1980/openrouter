@@ -100,7 +100,8 @@ object AgentLifecycleReducer {
 
     fun resume(
         goal: AgentGoal,
-        reason: String = "Goal resumed by the user.",
+        reason: ResumeReason = ResumeReason.USER_RESUME,
+        message: String = "Goal resumed by the user.",
     ): AgentGoal {
         if (goal.status !in setOf(
                 AgentGoalStatus.PAUSED,
@@ -119,6 +120,7 @@ object AgentLifecycleReducer {
         val restartsCorrectionWindow = goal.status in setOf(AgentGoalStatus.PAUSED, AgentGoalStatus.FAILED, AgentGoalStatus.BLOCKED)
         return goal.copy(
             status = resumedStatus,
+            lastResumeReason = reason,
             tasks = goal.tasks.map { task ->
                 when (task.status) {
                     AgentTaskStatus.FAILED -> task.copy(
@@ -152,7 +154,7 @@ object AgentLifecycleReducer {
             verificationCorrectionStreak = if (restartsCorrectionWindow) 0 else goal.verificationCorrectionStreak,
             terminalResultDelivered = if (goal.status == AgentGoalStatus.FAILED) false else goal.terminalResultDelivered,
             error = null,
-            events = appendEvent(goal.events, reason),
+            events = appendEvent(goal.events, message),
         )
     }
 
