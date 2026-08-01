@@ -18,6 +18,6 @@ enum class ModelProfile(
     );
 
     companion object {
-        fun fromName(name: String): ModelProfile = entries.firstOrNull { it.name == name } ?: AUTO
+        fun fromStoredName(name: String?): ModelProfile = entries.firstOrNull { it.name == name } ?: AUTO
     }
 }

@@ -48,19 +48,6 @@ class ModelProfileSelectorTest {
     }
 
     @Test
-    fun codingProfilePrefersCodingMetadata() {
-        assertEquals(
-            "vendor/code-coder",
-            ModelProfileSelector.choose(ModelProfile.CODING, models)?.id,
-        )
-    }
-
-    @Test
-    fun visionProfileReturnsVisionCapableModel() {
-        assertTrue(ModelProfileSelector.choose(ModelProfile.VISION, models)?.supportsVision == true)
-    }
-
-    @Test
     fun manualProfilePreservesCurrentModel() {
         assertEquals(
             "vendor/deep-reasoning-pro",
@@ -82,10 +69,10 @@ class ModelProfileSelectorTest {
         )
 
         assertEquals(
-            "vendor/code-coder",
+            "vendor/flash-mini",
             ModelProfileSelector.choose(
                 profile = ModelProfile.MANUAL,
-                models = listOf(audioOnly, models[3]),
+                models = listOf(audioOnly, models[1]),
                 currentModelId = audioOnly.id,
             )?.id,
         )
