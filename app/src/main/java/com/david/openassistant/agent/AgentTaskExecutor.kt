@@ -522,7 +522,7 @@ class AgentTaskExecutor internal constructor(
             quality.correctionClaimGatePassed &&
             quality.toolUseGatePassed
         ) {
-            synthesisGapDecision(task, result, quality.researchQuality.reasons)
+            synthesisGapDecision(task, result, quality.researchQuality?.reasons ?: emptyList())
         } else {
             SynthesisGapDecision(emptyList(), requiresDeterministicAnalysis = false, qualifiesForBoundedPublication = false)
         }

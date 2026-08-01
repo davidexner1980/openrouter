@@ -21,7 +21,6 @@ import com.david.openassistant.agent.AgentGoal
 import com.david.openassistant.agent.AgentGoalStatus
 import com.david.openassistant.agent.AgentLeasePolicy
 import com.david.openassistant.agent.AgentLifecycleReducer
-import com.david.openassistant.agent.AgentRefreshCoordinator
 import com.david.openassistant.agent.AgentSnapshot
 import com.david.openassistant.agent.AgentStore
 import com.david.openassistant.agent.RefreshApplyResult
@@ -143,16 +142,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     private var interruptedDraftPendingReplay: ResearchDraft? = null
     private var startupRecoveryReason: String? = null
     private var deliveringAgentResults = false
-
-    private val refreshCoordinator by lazy {
-        AgentRefreshCoordinator(
-            refreshSource = agentInteractor,
-            toolCountSource = autonomousToolRuntime,
-            diagnostics = diagnostics,
-            stateApplier = this,
-            deliverPendingResults = { snapshot -> deliverPendingAgentResults(snapshot) }
-        )
-    }
+    private var lastProcessedRevision: Long = -1L
 
     override suspend fun apply(
         snapshot: AgentSnapshot,
@@ -161,20 +151,25 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     ): RefreshApplyResult {
         return runCatching {
             agentSnapshot = snapshot
-            _uiState.update {
-                it.copy(
-                    agentGoals = snapshot.goals,
-                    selectedAgentGoalId = snapshot.selectedGoalId,
-                    activeToolRecipeCount = recipeCount,
-                    workspaceFileCount = workspaceCount,
-                )
-            }
+            emitUiState()
             RefreshApplyResult.Success
         }.getOrElse { error ->
             RefreshApplyResult.Failure(
                 com.david.openassistant.agent.RefreshFailure.CallbackApplicationFailure(
                     error.message ?: error.javaClass.simpleName
                 )
+            )
+        }
+    }
+
+    private suspend fun emitUiState() {
+        val toolCounts = autonomousToolRuntime.loadToolCounts()
+        _uiState.update {
+            it.copy(
+                agentGoals = agentSnapshot.goals,
+                selectedAgentGoalId = agentSnapshot.selectedGoalId,
+                activeToolRecipeCount = toolCounts.activeRecipeCount,
+                workspaceFileCount = toolCounts.workspaceFileCount,
             )
         }
     }
@@ -2322,7 +2317,47 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         if (_uiState.value.isRestoringLocalState) {
             return
         }
-        refreshCoordinator.refresh(viewModelScope)
+        viewModelScope.launch {
+            // 1. Capture the true previous state BEFORE doing anything else
+            val previousSnapshot = agentSnapshot
+
+            // 2. Load the fresh state from the interactor/store
+            val stable = agentInteractor.loadStableSnapshot()
+            val loadedSnapshot = stable.snapshot
+            val revision = stable.revision
+
+            // 3. Loop Prevention: If we've already processed this exact revision
+            // (or a newer one), abort to prevent the infinite listener loop.
+            if (revision <= lastProcessedRevision) {
+                return@launch
+            }
+
+            // 4. Deliver pending results (e.g., WorkManager terminal states)
+            // This is the step that might trigger a durable write back to the store!
+            val wroteNewState = deliverPendingAgentResults(loadedSnapshot)
+
+            // 5. If delivery caused a write, we must reload to get the latest revision.
+            // Otherwise, keep the one we just loaded.
+            val finalStable = if (wroteNewState) {
+                agentInteractor.loadStableSnapshot()
+            } else {
+                stable
+            }
+            val finalSnapshot = finalStable.snapshot
+            val finalRevision = finalStable.revision
+
+            // 6. Safely assign the new state
+            agentSnapshot = finalSnapshot
+
+            // 7. Update local processed revision to prevent the listener from looping
+            lastProcessedRevision = finalRevision
+
+            // 8. Only emit UI if it ACTUALLY changed compared to step 1
+            // This stops Jetpack Compose from endlessly recomposing.
+            if (finalSnapshot != previousSnapshot) {
+                emitUiState()
+            }
+        }
     }
 
     private suspend fun deliverPendingAgentResults(snapshot: AgentSnapshot): Boolean {

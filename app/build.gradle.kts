@@ -2,7 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     alias(libs.plugins.google.gms.google.services)
-    alias(libs.plugins.google.firebase.crashlytics)
+    // alias(libs.plugins.google.firebase.crashlytics)
 }
 
 android {
@@ -55,7 +55,7 @@ android {
 }
 
 dependencies {
-    implementation(libs.firebase.crashlytics)
+    // implementation(libs.firebase.crashlytics)
     implementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(platform(libs.androidx.compose.bom))
 

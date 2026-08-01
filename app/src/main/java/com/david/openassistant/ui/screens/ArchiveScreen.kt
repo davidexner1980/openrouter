@@ -42,7 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.david.openassistant.ConversationSummary
+import com.david.openassistant.ui.ConversationSummary
 import com.david.openassistant.OpenAssistantUiState
 import java.text.DateFormat
 import java.util.Date
