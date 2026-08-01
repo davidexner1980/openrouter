@@ -138,6 +138,7 @@ data class AgentTask(
     val outcomeClassification: String? = null,
     val errorClassification: String? = null,
     val retryEligibility: Boolean = true,
+    val retryAuthorizedFingerprint: String? = null,
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
 ) {
     val effectiveProgressScore: Double
@@ -154,6 +155,7 @@ data class AgentAttempt(
     val startedAt: Long,
     val finishedAt: Long? = null,
     val modelId: String,
+    val councilRole: CouncilRole? = null,
     val role: AgentTaskRole? = null,
     val selectionReason: String? = null,
     val previousRoute: String? = null,

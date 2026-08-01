@@ -961,6 +961,7 @@ class AgentStore private constructor(
         .put("outcome_classification", task.outcomeClassification ?: JSONObject.NULL)
         .put("error_classification", task.errorClassification ?: JSONObject.NULL)
         .put("retry_eligibility", task.retryEligibility)
+        .put("retry_authorized_fingerprint", task.retryAuthorizedFingerprint ?: JSONObject.NULL)
         .put("rejected_queries", JSONArray().apply { task.rejectedQueries.forEach { put(encodeRejectedQuery(it)) } })
 
     private fun decodeTask(json: JSONObject): AgentTask {
@@ -1017,6 +1018,7 @@ class AgentStore private constructor(
             outcomeClassification = json.optNullableString("outcome_classification"),
             errorClassification = json.optNullableString("error_classification"),
             retryEligibility = json.optBoolean("retry_eligibility", true),
+            retryAuthorizedFingerprint = json.optNullableString("retry_authorized_fingerprint"),
             rejectedQueries = json.optJSONArray("rejected_queries").decodeList(::decodeRejectedQuery),
         )
     }
@@ -1236,6 +1238,7 @@ class AgentStore private constructor(
         .put("started_at", attempt.startedAt)
         .put("finished_at", attempt.finishedAt ?: JSONObject.NULL)
         .put("model_id", attempt.modelId)
+        .put("council_role", attempt.councilRole?.name ?: JSONObject.NULL)
         .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
         .put("response_id", attempt.responseId ?: JSONObject.NULL)
         .put("provider", attempt.provider ?: JSONObject.NULL)
@@ -1258,6 +1261,7 @@ class AgentStore private constructor(
         startedAt = json.optLong("started_at"),
         finishedAt = json.optLongOrNull("finished_at"),
         modelId = json.optString("model_id"),
+        councilRole = json.optNullableString("council_role")?.let { runCatching { CouncilRole.valueOf(it) }.getOrNull() },
         resolvedModel = json.optNullableString("resolved_model"),
         responseId = json.optNullableString("response_id"),
         provider = json.optNullableString("provider"),

@@ -224,15 +224,23 @@ class RuntimePacketExporter(private val context: Context) {
     private fun calculateNetworkSummary(goals: List<AgentGoal>): JSONObject {
         var totalWaitCount = 0
         var goalsCurrentlyWaiting = 0
+        var totalFingerprintAuthorizations = 0
+        
         goals.forEach { goal ->
             totalWaitCount += goal.networkRetryCount
             if (goal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
                 goalsCurrentlyWaiting++
             }
+            goal.tasks.forEach { task ->
+                if (task.retryAuthorizedFingerprint != null) {
+                    totalFingerprintAuthorizations++
+                }
+            }
         }
         return JSONObject().apply {
             put("total_network_retries", totalWaitCount)
             put("goals_waiting_for_network", goalsCurrentlyWaiting)
+            put("fingerprint_authorizations_active", totalFingerprintAuthorizations)
         }
     }
 

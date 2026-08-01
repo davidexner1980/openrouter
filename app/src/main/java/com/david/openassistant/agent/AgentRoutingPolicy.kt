@@ -11,21 +11,42 @@ internal object AgentRoutingPolicy {
     private const val FREE_ROUTER_MODEL_ID = "openrouter/free"
 
     /**
+     * Determines the effective routing profile for a goal.
+     */
+    fun profileForGoal(goal: AgentGoal): RoutingProfile {
+        return when {
+            goal.freeOnly -> RoutingProfile.FREE_MODELS_ROUTER
+            goal.requestedModelProfileName == "AUTO" -> RoutingProfile.AUTO_ROUTER_BETA
+            goal.requestedModelProfileName == "MANUAL" -> RoutingProfile.MANUAL
+            // Default to AUTO if ambiguous
+            else -> RoutingProfile.AUTO_ROUTER_BETA
+        }
+    }
+
+    /**
      * Rejects or repairs a selected model ID based on the goal's routing policy.
-     * Returns a valid free model if a non-free model is requested for a free-only goal.
      */
     fun guardModel(goal: AgentGoal, selectedModelId: String): String {
-        if (goal.freeOnly) {
-            val normalized = selectedModelId.lowercase(java.util.Locale.US)
-            val isFreeRouter = normalized == FREE_ROUTER_MODEL_ID
-            val isFreeModel = normalized.endsWith(":free")
-            
-            if (!isFreeRouter && !isFreeModel) {
-                // REPAIR: Force to free router if unauthorized model is requested
-                return FREE_ROUTER_MODEL_ID
+        val profile = profileForGoal(goal)
+        val normalized = selectedModelId.lowercase(java.util.Locale.US)
+        
+        return when (profile) {
+            RoutingProfile.FREE_MODELS_ROUTER -> {
+                if (normalized == FREE_ROUTER_MODEL_ID || normalized.endsWith(":free")) {
+                    selectedModelId
+                } else {
+                    FREE_ROUTER_MODEL_ID
+                }
+            }
+            RoutingProfile.AUTO_ROUTER_BETA -> {
+                // Auto router is always allowed in AUTO mode
+                selectedModelId
+            }
+            RoutingProfile.MANUAL -> {
+                // In manual mode, we strictly follow the user's selection
+                selectedModelId
             }
         }
-        return selectedModelId
     }
 
     /**

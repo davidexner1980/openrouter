@@ -264,6 +264,7 @@ private fun AgentGoalDetailCard(
     onExportReport: (String) -> Unit,
 ) {
     var expandedOverview by rememberSaveable { mutableStateOf(true) }
+    var expandedCouncil by rememberSaveable { mutableStateOf(false) }
     var expandedMilestones by rememberSaveable { mutableStateOf(false) }
     var expandedEvidence by rememberSaveable { mutableStateOf(false) }
     var expandedClaims by rememberSaveable { mutableStateOf(false) }
@@ -328,6 +329,19 @@ private fun AgentGoalDetailCard(
                     
                     goal.result?.takeIf { it.isNotBlank() }?.let {
                         InfoSection("Verified Result", it, isMarkdown = true)
+                    }
+                }
+            }
+
+            if (goal.attempts.any { it.councilRole != null }) {
+                CollapsibleSection("Research Council", expandedCouncil, { expandedCouncil = it }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        goal.attempts
+                            .filter { it.councilRole != null }
+                            .distinctBy { it.councilRole }
+                            .forEach { attempt ->
+                                CouncilItem(attempt)
+                            }
                     }
                 }
             }
@@ -581,6 +595,49 @@ private fun CollapsibleSection(
             }
         }
         HorizontalDivider(modifier = Modifier.alpha(0.5f))
+    }
+}
+
+@Composable
+private fun CouncilItem(attempt: AgentAttempt) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.1f),
+        shape = RoundedCornerShape(8.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                when (attempt.councilRole) {
+                    CouncilRole.EXPLORER -> Icons.Default.Explore
+                    CouncilRole.SKEPTIC -> Icons.Default.Security
+                    CouncilRole.VERIFIER -> Icons.Default.CheckCircle
+                    CouncilRole.SYNTHESIZER -> Icons.Default.AutoAwesome
+                    else -> Icons.Default.Person
+                },
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.secondary
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    attempt.councilRole?.name?.lowercase()?.replaceFirstChar(Char::uppercase) ?: "Agent",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    attempt.resolvedModel ?: attempt.modelId,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (attempt.status == AgentAttemptStatus.RUNNING) {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+            } else if (attempt.status == AgentAttemptStatus.SUCCEEDED) {
+                Icon(Icons.Default.Check, null, modifier = Modifier.size(14.dp), tint = MissionSuccess)
+            }
+        }
     }
 }
 

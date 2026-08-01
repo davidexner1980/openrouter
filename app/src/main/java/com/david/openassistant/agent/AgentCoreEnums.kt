@@ -157,6 +157,19 @@ enum class ExchangeOutcome {
     /** Reserved outcome, not implemented in Slice 1. Slice 1 does not emit it. */
     CANCELLATION_TIMEOUT,
     INTERRUPTED_OUTCOME_UNKNOWN,
+
+    // V34 Additions
+    USABLE_STRUCTURED_RESULT,
+    UNUSABLE_EMPTY_RESPONSE,
+    UNUSABLE_WHITESPACE_RESPONSE,
+    MALFORMED_STRUCTURED_RESPONSE,
+    REFUSAL,
+    RATE_LIMITED,
+    AUTHENTICATION_FAILED,
+    PROVIDER_UNAVAILABLE,
+    RECOVERABLE_NETWORK_FAILURE,
+    PERMANENT_FAILURE,
+    UNCERTAIN_REMOTE_OUTCOME,
 }
 
 enum class ProviderAccountingOutcome {
@@ -275,4 +288,24 @@ enum class ExecutionStallDiagnosis {
     REPETITIVE_SEARCH_STALL,
     SHALLOW_RESEARCH_STALL,
     VERIFICATION_CIRCULARITY,
+}
+
+enum class CouncilRole {
+    COORDINATOR,
+    EXPLORER,
+    SOURCE_ANALYST,
+    SKEPTIC,
+    GAP_ANALYST,
+    CORRECTOR,
+    VERIFIER,
+    SYNTHESIZER,
+    TOOL_SPECIALIST,
+    PLANNER, // For compatibility
+    INTERNAL_REQUEST_BUILDER // Body Builder role
+}
+
+enum class RoutingProfile {
+    FREE_MODELS_ROUTER,
+    AUTO_ROUTER_BETA,
+    MANUAL
 }

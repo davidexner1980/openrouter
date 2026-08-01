@@ -78,12 +78,17 @@ class AgentTaskExecutor internal constructor(
         )
         val agentAttemptId = UUID.randomUUID().toString()
         val startedAt = System.currentTimeMillis()
+        
+        // V34: Pre-calculate council role for the attempt record
+        val councilRole = AgentCouncilPolicy.roleForCapability(task.capability)
+        
         val attempt = AgentAttempt(
             id = agentAttemptId,
             taskId = task.id,
             status = AgentAttemptStatus.RUNNING,
             startedAt = startedAt,
             modelId = goal.executionModelId,
+            councilRole = councilRole,
         )
         val startSnapshot = store.updateGoal(goal.id) { current ->
             if (current.status !in setOf(AgentGoalStatus.QUEUED, AgentGoalStatus.RUNNING)) {
@@ -132,7 +137,9 @@ class AgentTaskExecutor internal constructor(
         val lease = startedGoal.executionLease ?: return WorkerOutcome.FAIL
         val currentFingerprint = calculateTaskFingerprint(startedGoal, task)
         
-        if (task.lastRequestFingerprint == currentFingerprint && task.attemptCount >= 1) {
+        val isAuthorizedRetry = task.retryAuthorizedFingerprint == currentFingerprint
+        
+        if (task.lastRequestFingerprint == currentFingerprint && task.attemptCount >= 1 && !isAuthorizedRetry) {
             val error = IllegalStateException("Identical context fingerprint detected; skipping repetitive provider request.")
             val ownership = ExecutionOwnership(
                 workerId = lease.workerId,
@@ -141,6 +148,15 @@ class AgentTaskExecutor internal constructor(
                 taskId = task.id,
             )
             return persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ownership, models, taskDiagnostics)
+        }
+        
+        if (isAuthorizedRetry) {
+            taskDiagnostics.info("authorized_fingerprint_retry_consumed", mapOf("fingerprint" to currentFingerprint))
+            store.updateGoal(goal.id) { current ->
+                current.copy(tasks = current.tasks.map { t ->
+                    if (t.id == task.id) t.copy(retryAuthorizedFingerprint = null) else t
+                })
+            }
         }
         
         val parentOperationId = "op-task-${UUID.randomUUID()}"
@@ -155,11 +171,15 @@ class AgentTaskExecutor internal constructor(
             parentOperationId = parentOperationId,
         )
 
+        // V34: Council Role-based model selection
+        val profile = AgentRoutingPolicy.profileForGoal(startedGoal)
+        val councilModelId = AgentCouncilPolicy.selectModel(councilRole, profile, startedGoal.executionModelId)
+
         val timer = taskDiagnostics.startTimer("agent_milestone_execution_duration")
         return try {
             val result = client.executeTask(
                 apiKey = apiKey,
-                modelId = AgentRoutingPolicy.guardModel(startedGoal, startedGoal.executionModelId),
+                modelId = councilModelId,
                 goal = startedGoal,
                 task = task,
                 requestContext = missionContext,
@@ -740,6 +760,7 @@ class AgentTaskExecutor internal constructor(
                             cooldownUntil = if (decision.action == ProviderRecoveryAction.ROUTE_EXHAUSTED) failureFinishedAt + 300_000L else (cooldownDuration?.let { failureFinishedAt + it } ?: existing.cooldownUntil),
                             failureClass = if (waitingForNetwork) "network_resolution" else existing.failureClass,
                             waitReason = if (waitingForNetwork) decision.explanation else existing.waitReason,
+                            retryAuthorizedFingerprint = if (waitingForNetwork) currentFingerprint else existing.retryAuthorizedFingerprint,
                         )
                         when {
                             automaticResearchRecovery -> {

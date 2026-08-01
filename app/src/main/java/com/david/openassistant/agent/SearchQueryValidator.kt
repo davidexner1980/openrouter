@@ -37,7 +37,8 @@ internal object SearchQueryValidator {
         "explanation of", "information about", "details on", "research into",
         "develop your own", "theory tell me", "distinct observational evidence",
         "produce emergent", "comprehensive evidence-grounded", "a database of",
-        "scientific theory hypothesis testing", "theory of constraints"
+        "scientific theory hypothesis testing", "theory of constraints",
+        "material findings preserve", "provide comprehensive evidence", "satisfy acceptance criteria"
     )
 
     private val META_INSTRUCTION_MARKERS = listOf(
@@ -53,7 +54,9 @@ internal object SearchQueryValidator {
         "role contract:",
         "epistemic role",
         "modern ilf needs have document",
-        "document primary-source verified"
+        "document primary-source verified",
+        "acceptance criteria",
+        "milestone instructions"
     )
 
     fun validate(

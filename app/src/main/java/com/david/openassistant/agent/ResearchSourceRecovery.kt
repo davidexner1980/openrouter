@@ -13,6 +13,9 @@ enum class SourceReadRejectionReason {
     NO_EVIDENCE_CANDIDATE,
     WRONG_SOURCE_ROLE,
     ACCESS_CHALLENGE,
+    SCRIPT_ONLY_PAGE,
+    EMPTY_HTTP_200,
+    UNSUPPORTED_REDIRECT,
 }
 
 data class SourceReadValidationResult(

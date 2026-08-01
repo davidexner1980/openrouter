@@ -4665,6 +4665,21 @@ class AgentOpenRouterClient internal constructor(
         }
 
         val nonNullContent = content ?: ""
+        
+        // V34: Semantic classification of successful transport responses
+        val semanticOutcome = when {
+            nonNullContent.isBlank() && (toolCalls == null || toolCalls.length() == 0) -> ExchangeOutcome.UNUSABLE_EMPTY_RESPONSE
+            nonNullContent.isNotBlank() && nonNullContent.trim().isEmpty() -> ExchangeOutcome.UNUSABLE_WHITESPACE_RESPONSE
+            else -> ExchangeOutcome.USABLE_STRUCTURED_RESULT
+        }
+        
+        if (semanticOutcome != ExchangeOutcome.USABLE_STRUCTURED_RESULT) {
+            throw OpenRouterException(
+                statusCode = 200,
+                userMessage = "The model returned a semantically unusable successful response ($semanticOutcome).",
+            ).withAgentUsage(responseSummary.copy(httpStatusCode = 200))
+        }
+
         val sources = (
             parseSourceCitations(message.optJSONArray("annotations")) +
                 recoverHttpsSourceCitations(nonNullContent)
