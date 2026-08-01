@@ -35,6 +35,7 @@ class AgentGoalWorker(
     private val planner = AgentPlanner(client, store)
     private val taskExecutor = AgentTaskExecutor(client, store, diagnostics, autonomyPolicy)
     private val verifier = AgentVerifier(client, store, diagnostics, autonomyPolicy)
+    private val notifier = MissionForegroundNotifier(appContext)
 
     override suspend fun doWork(): Result {
         val goalId = inputData.getString(KEY_GOAL_ID) ?: run {
@@ -42,6 +43,15 @@ class AgentGoalWorker(
             return Result.failure()
         }
         diagnostics.debug("WorkManager wake-up for goal $goalId")
+        
+        // Ensure initial notification state if we're not yet in the lock
+        val initialGoal = findGoal(goalId)
+        if (initialGoal != null && !initialGoal.status.isInactive()) {
+            runCatching {
+                setForeground(notifier.createForegroundInfo(goalId, initialGoal.title, initialGoal.status.name))
+            }
+        }
+
         return AgentGoalExecutionGate.withGoalLock(goalId) {
             executeGoalWorker(goalId)
         }
@@ -303,6 +313,7 @@ class AgentGoalWorker(
                 val models = runCatching { client.fetchModels(apiKey) }.getOrDefault(emptyList())
 
                 val outcome = if (leasedGoal.status == AgentGoalStatus.PLANNING) {
+                    notifier.updateNotification(goalId, leasedGoal.title, "Planning")
                     planner.plan(apiKey, leasedGoal, models)
                 } else {
                     reconcileInterruptedWork(goalId)
@@ -314,8 +325,14 @@ class AgentGoalWorker(
                     if (goal.status.isInactive()) return@withContext Result.success()
                     val taskToExecute = AgentResearchAllocator.chooseNextTask(goal, allocationProfile, now).taskId?.let { id -> goal.tasks.firstOrNull { it.id == id } }
                     when {
-                        taskToExecute != null -> taskExecutor.executeOneTask(apiKey, goal, taskToExecute, workerId, models)
-                        goal.isReadyForVerification -> verifier.verifyAndFinish(apiKey, goal, models)
+                        taskToExecute != null -> {
+                            notifier.updateNotification(goalId, goal.title, taskToExecute.title)
+                            taskExecutor.executeOneTask(apiKey, goal, taskToExecute, workerId, models)
+                        }
+                        goal.isReadyForVerification -> {
+                            notifier.updateNotification(goalId, goal.title, "Verifying")
+                            verifier.verifyAndFinish(apiKey, goal, models)
+                        }
                         else -> repairBlockedWorkflow(goal)
                     }
                 }
@@ -712,27 +729,6 @@ class AgentGoalWorker(
             }
         }
     }
-
-    private fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
-        AgentGoalStatus.WAITING_FOR_CREDENTIAL,
-        AgentGoalStatus.WAITING_FOR_NETWORK,
-        AgentGoalStatus.WAITING_FOR_USER,
-        AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
-        AgentGoalStatus.PAUSED,
-        AgentGoalStatus.CANCELLED,
-        AgentGoalStatus.COMPLETED,
-        AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-        AgentGoalStatus.FAILED,
-        AgentGoalStatus.REJECTED,
-        AgentGoalStatus.BLOCKED,
-        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
-        AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-        AgentGoalStatus.FINALIZING,
-        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
-    )
 
     companion object {
         const val KEY_GOAL_ID = "goal_id"

@@ -34,6 +34,27 @@ enum class AgentGoalStatus {
     CORRUPT_OR_INCOMPLETE_MISSION,
 }
 
+fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
+    AgentGoalStatus.WAITING_FOR_CREDENTIAL,
+    AgentGoalStatus.WAITING_FOR_NETWORK,
+    AgentGoalStatus.WAITING_FOR_USER,
+    AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
+    AgentGoalStatus.PAUSED,
+    AgentGoalStatus.CANCELLED,
+    AgentGoalStatus.COMPLETED,
+    AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
+    AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
+    AgentGoalStatus.FAILED,
+    AgentGoalStatus.REJECTED,
+    AgentGoalStatus.BLOCKED,
+    AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+    AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
+    AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
+    AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+    AgentGoalStatus.FINALIZING,
+    AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
+)
+
 enum class AgentTaskStatus {
     PLANNED,
     QUEUED,

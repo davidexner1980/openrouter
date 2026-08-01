@@ -1,6 +1,7 @@
 package com.david.openassistant
 
 import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,6 +27,12 @@ class MainActivity : ComponentActivity() {
         assistantViewModel.onLegacyDownloadsPermissionResult(granted)
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        assistantViewModel.onNotificationPermissionResult(granted)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -37,6 +44,11 @@ class MainActivity : ComponentActivity() {
                     when (event) {
                         is ExportEvent.RequestLegacyDownloadsPermission -> {
                             legacyDownloadsPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        }
+                        is ExportEvent.RequestNotificationPermission -> {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            }
                         }
                     }
                 }

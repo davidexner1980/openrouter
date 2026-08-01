@@ -67,6 +67,7 @@ import com.david.openassistant.agent.DebugMissionStartHook
 import com.david.openassistant.agent.isFinalTerminalStatus
 import com.david.openassistant.domain.BriefingInteractor
 import com.david.openassistant.agent.RuntimePacketExporter
+import com.david.openassistant.agent.isInactive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -112,6 +113,7 @@ private data class RestoredLocalState(
 
 sealed class ExportEvent {
     data class RequestLegacyDownloadsPermission(val operationId: String) : ExportEvent()
+    object RequestNotificationPermission : ExportEvent()
 }
 
 class OpenAssistantViewModel(application: Application) : AndroidViewModel(application), RefreshStateApplier {
@@ -143,6 +145,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     private var startupRecoveryReason: String? = null
     private var deliveringAgentResults = false
     private var lastProcessedRevision: Long = -1L
+    private var hasRequestedNotificationPermission = false
 
     override suspend fun apply(
         snapshot: AgentSnapshot,
@@ -171,6 +174,12 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 activeToolRecipeCount = toolCounts.activeRecipeCount,
                 workspaceFileCount = toolCounts.workspaceFileCount,
             )
+        }
+        
+        // Request notification permission once when an active mission appears
+        if (!hasRequestedNotificationPermission && agentSnapshot.goals.any { !it.status.isInactive() }) {
+            hasRequestedNotificationPermission = true
+            _exportEvents.emit(ExportEvent.RequestNotificationPermission)
         }
     }
     private val researchMonitorStatusRefreshPending = AtomicBoolean(false)
@@ -900,6 +909,10 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             
             performPublicExport(metadata)
         }
+    }
+
+    fun onNotificationPermissionResult(granted: Boolean) {
+        diagnostics.info("notification_permission_result", mapOf("granted" to granted))
     }
 
     fun onLegacyDownloadsPermissionResult(granted: Boolean) {
