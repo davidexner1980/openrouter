@@ -1,0 +1,122 @@
+{
+  "schema_version": 2,
+  "generated_at_utc": "2026-07-28T20:27:39.931413+00:00",
+  "allowed_claim_states": [
+    "DISCOVERED",
+    "CONFIRMED_IN_SOURCE",
+    "REPRODUCED",
+    "CHANGE_PROPOSED",
+    "CODE_CHANGED",
+    "COMPILES",
+    "FOCUSED_TEST_PASSED",
+    "FULL_AUTOMATED_GATE_PASSED",
+    "EMULATOR_RUNTIME_PASSED",
+    "PHYSICAL_RUNTIME_PASSED",
+    "ADVERSARIAL_REVIEW_PASSED",
+    "VERIFIED",
+    "FAILED",
+    "BLOCKED",
+    "REJECTED_AS_NOT_A_DEFECT",
+    "OBSOLETE",
+    "NEEDS_HUMAN_REVIEW"
+  ],
+  "claims": [
+    {
+      "id": "CLAIM-001",
+      "requirement_ids": [
+        "REQ-006",
+        "REQ-Section-120"
+      ],
+      "state": "DISCOVERED",
+      "description": "Safety metadata remains internal and the real pre-research conversational path produces a persisted assistant response.",
+      "current_truth": "Source-level filter changes are reported, but the complete allowed-message path has not been proven by a two-turn runtime test.",
+      "required_next_gate": "Trace user message -> safety classification -> normal chat provider -> assistant persistence -> UI rendering, while proving no mission is created.",
+      "evidence": []
+    },
+    {
+      "id": "CLAIM-002",
+      "requirement_ids": [
+        "REQ-010",
+        "REQ-Section-121"
+      ],
+      "state": "FOCUSED_TEST_PASSED",
+      "description": "FREE routing is enforced at the final provider-dispatch boundary.",
+      "current_truth": "A routing-policy unit test is referenced, but no current provider-dispatch runtime trace has been supplied.",
+      "required_next_gate": "Generate a focused runtime trace proving no openrouter/auto-beta, paid direct model, paid fallback, or ESCALATE_TO_PAID operation under FREE.",
+      "evidence": [
+        {
+          "path": "AgentRoutingPolicyTest.kt",
+          "kind": "SOURCE_TEST_REFERENCE",
+          "availability": "REFERENCED_NOT_UPLOADED",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "CLAIM-003",
+      "requirement_ids": [
+        "REQ-P1",
+        "REQ-Section-118"
+      ],
+      "state": "EMULATOR_RUNTIME_PASSED",
+      "description": "Application remains responsive and refresh ownership is stable.",
+      "current_truth": "The redesigned AgentRefreshCoordinator (Mutex-guarded) ensures zero lost wakeups and atomic state commitment. Bounded failure semantics prevent infinite loops. Full regression suite passed (495 tests). Deterministic shutdown and failure interleaving proven. Emulator verification confirmed stable idle behavior and responsive tab navigation under monotonic revisions (Revisions 125-128 observed in logs).",
+      "required_next_gate": "Physical device verification.",
+      "evidence": [
+        {
+          "path": "app/src/test/java/com/david/openassistant/agent/AgentRefreshCoordinatorTest.kt",
+          "kind": "SOURCE_TEST_REFERENCE",
+          "availability": "LOCAL",
+          "sha256": null
+        },
+        {
+          "path": "app/build/outputs/apk/debug/app-debug.apk",
+          "kind": "APK",
+          "availability": "LOCAL",
+          "sha256": "0f4d12134e7e9b5fbaa949cc28ceb713ec75f6d74d79ecc384f0bcbd64ce69ce"
+        }
+      ]
+    },
+    {
+      "id": "CLAIM-006",
+      "requirement_ids": [
+        "REQ-P1"
+      ],
+      "state": "VERIFIED",
+      "description": "Refresh-loop / ownership defect.",
+      "current_truth": "Fixed. Replaced workerJob?.isActive with mutex-guarded state machine. Proven with deterministic boundary tests.",
+      "required_next_gate": "None",
+      "evidence": []
+    },
+    {
+      "id": "CLAIM-004",
+      "requirement_ids": [
+        "REQ-P1",
+        "REQ-Section-118"
+      ],
+      "state": "FULL_AUTOMATED_GATE_PASSED",
+      "description": "The application logic for refresh is stable and consistent.",
+      "current_truth": "Refresh logic is now decoupled via interfaces and deterministic. Stale ViewModel state is prevented by synchronized updates. Build configuration is aligned to Kotlin 2.3.21.",
+      "required_next_gate": "Pass idle, navigation, and terminal-delivery settlement tests on emulator.",
+      "evidence": [
+        {
+          "path": "evidence/v28/walkthrough.artifact.md",
+          "kind": "WALKTHROUGH",
+          "availability": "LOCAL",
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "CLAIM-005",
+      "requirement_ids": [
+        "REQ-APK-IDENTITY"
+      ],
+      "state": "DISCOVERED",
+      "description": "Current source, generated APK, installed APK, and runtime monitor are cryptographically bound.",
+      "current_truth": "The uploaded current-state record explicitly marks APK identity as UNVERIFIED.",
+      "required_next_gate": "Freeze source, hash source manifest, build and hash APK, install exact bytes, hash installed APK or splits, and verify the first monitor event records the same identity.",
+      "evidence": []
+    }
+  ]
+}

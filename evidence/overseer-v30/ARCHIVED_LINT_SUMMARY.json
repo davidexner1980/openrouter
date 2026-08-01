@@ -1,0 +1,9 @@
+{
+  "source": "lint XML contained in uploaded ZIP; inspected, not rerun by overseer",
+  "errors": 0,
+  "warnings": 2,
+  "warning_ids": [
+    "NewerVersionAvailable",
+    "NewerVersionAvailable"
+  ]
+}

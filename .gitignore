@@ -1,0 +1,16 @@
+/.gradle/
+/.gradle-user-home/
+/.idea/
+/.kotlin/
+/.artifacts/
+/build/
+/app/build/
+/local.properties
+*.jks
+*.keystore
+/OPENASSISTANT_RESEARCH_MONITOR_REPORT.md
+/research-reports/
+/android-focused-log.txt
+/*_TEST_RESULTS*.txt
+/SOURCE_COMPILE_RESULTS*.txt
+*.hprof

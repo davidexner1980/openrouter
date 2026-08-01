@@ -1,0 +1,12 @@
+{
+  "source": "build/handoff/OpenAssistant-source-v1.8.33-33.zip from uploaded project",
+  "zip_size": 774148,
+  "zip_sha256": "2afe3b23265d50ad4437dc5b0ae32b98341dd99ee019c07a27b4527f03ff9cc7",
+  "entries": 385,
+  "maximum_internal_path": 99,
+  "gradle_wrapper_jar_present": false,
+  "manifest_entries": 256,
+  "manifest_paths_missing_by_forward_slash_resolution": 253,
+  "included_files_not_in_manifest": 295,
+  "second_run_hash_evidence_present": false
+}

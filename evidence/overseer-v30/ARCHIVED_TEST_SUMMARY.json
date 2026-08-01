@@ -1,0 +1,13 @@
+{
+  "source": "JUnit XML contained in uploaded ZIP; inspected, not rerun by overseer",
+  "tests": 489,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "suites": 84,
+  "agent_refresh_coordinator_tests": 10,
+  "previously_missing_tests_now_discovered": [
+    "lost wakeup repair - request during worker shutdown is processed",
+    "action eligibility uses refreshed state"
+  ]
+}
