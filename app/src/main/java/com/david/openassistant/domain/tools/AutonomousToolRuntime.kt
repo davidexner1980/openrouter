@@ -222,7 +222,7 @@ open class AutonomousToolRuntime internal constructor(
             updatedAt = System.currentTimeMillis(),
             version = (existingRecipe?.version ?: 0) + 1,
         )
-        recipeStore!!.upsert(activated)
+        recipeStore.upsert(activated)
         return ToolExecutionResult(
             outputJson = JSONObject()
                 .put("status", "active")
@@ -267,7 +267,7 @@ open class AutonomousToolRuntime internal constructor(
         val toolName = requiredString(args, "tool_name")
         val existing = recipeStore!!.load().firstOrNull { it.openRouterToolName == toolName }
             ?: throw ToolValidationException("No recipe tool named '$toolName' exists.")
-        recipeStore!!.disable(toolName)
+        recipeStore.disable(toolName)
         return ToolExecutionResult(
             outputJson = JSONObject()
                 .put("status", "disabled")

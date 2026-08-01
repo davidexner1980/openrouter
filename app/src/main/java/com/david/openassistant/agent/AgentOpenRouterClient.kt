@@ -1227,6 +1227,7 @@ class AgentOpenRouterClient internal constructor(
                 modelId = modelId,
                 task = task,
                 original = response,
+                freeOnly = goal.freeOnly,
                 generation = generation,
                 requestContext = requestContext.forChildOperation(
                     MissionOperation.STEP_STRUCTURE_REPAIR,
@@ -1314,6 +1315,7 @@ class AgentOpenRouterClient internal constructor(
         modelId: String,
         task: AgentTask,
         original: RawAgentResponse,
+        freeOnly: Boolean = false,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
     ): RawAgentResponse {
@@ -1346,7 +1348,7 @@ class AgentOpenRouterClient internal constructor(
 
         return executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(modelId, STRUCTURE_REPAIR_SYSTEM_PROMPT, prompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "step_structure_repair", freeOnly = original.summary.webSearchRequests == null).apply { // Simplified check for free-only repair
+            strictPayload = basePayload(modelId, STRUCTURE_REPAIR_SYSTEM_PROMPT, prompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "step_structure_repair", freeOnly = freeOnly).apply {
                 put("temperature", 0.0)
                 put("response_format", jsonSchemaResponseFormat("agent_step_repair_v1", stepSchema()))
             },
@@ -1357,7 +1359,7 @@ class AgentOpenRouterClient internal constructor(
                 reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "step_structure_repair_json_mode",
-                freeOnly = original.summary.webSearchRequests == null
+                freeOnly = freeOnly
             ).apply {
                 put("temperature", 0.0)
                 put("response_format", JSONObject().put("type", "json_object"))
@@ -1369,7 +1371,7 @@ class AgentOpenRouterClient internal constructor(
                 reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "step_structure_repair_plain",
-                freeOnly = original.summary.webSearchRequests == null
+                freeOnly = freeOnly
             ).apply {
                 put("temperature", 0.0)
             },
@@ -1902,6 +1904,7 @@ class AgentOpenRouterClient internal constructor(
             task = task,
             priorEvidence = priorEvidence,
             queryCount = queryCount,
+            freeOnly = goal.freeOnly,
             generation = generation,
             requestContext = requestContext.forChildOperation(
                 MissionOperation.ADAPTIVE_RESEARCH_STRATEGY,
@@ -2692,6 +2695,7 @@ class AgentOpenRouterClient internal constructor(
         task: AgentTask,
         priorEvidence: List<AgentEvidence>,
         queryCount: Int,
+        freeOnly: Boolean = false,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
     ): Pair<AdaptiveResearchStrategy, AgentApiSummary> {
@@ -2743,7 +2747,8 @@ class AgentOpenRouterClient internal constructor(
             userPrompt = prompt,
             reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
             role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "research_strategy"
+            selectionReason = "research_strategy",
+            freeOnly = freeOnly
         ).apply {
             put("temperature", 0.12)
             responseFormat?.let { put("response_format", it) }
@@ -2844,7 +2849,8 @@ class AgentOpenRouterClient internal constructor(
             userPrompt = prompt,
             reasoningEffort = if (goal.freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
             role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "search_query_refinement"
+            selectionReason = "search_query_refinement",
+            freeOnly = goal.freeOnly
         ).apply {
             put("temperature", 0.22)
             responseFormat?.let { put("response_format", it) }
@@ -2971,7 +2977,8 @@ class AgentOpenRouterClient internal constructor(
             userPrompt = prompt,
             reasoningEffort = "high",
             role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "forensic_reconstruction"
+            selectionReason = "forensic_reconstruction",
+            freeOnly = goal.freeOnly
         ).apply {
             put("temperature", 0.3)
             responseFormat?.let { put("response_format", it) }
@@ -3057,7 +3064,8 @@ class AgentOpenRouterClient internal constructor(
             systemPrompt = EVIDENCE_DRIVEN_FOLLOW_UP_SYSTEM_PROMPT,
             userPrompt = prompt,
             role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "evidence_driven_follow_up"
+            selectionReason = "evidence_driven_follow_up",
+            freeOnly = goal.freeOnly
         ).apply {
             put("temperature", 0.12)
             responseFormat?.let { put("response_format", it) }
@@ -3126,7 +3134,8 @@ class AgentOpenRouterClient internal constructor(
             userPrompt = prompt,
             reasoningEffort = if (freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
             role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "research_strategy_refinement"
+            selectionReason = "research_strategy_refinement",
+            freeOnly = freeOnly
         ).apply {
             put("temperature", 0.05)
             responseFormat?.let { put("response_format", it) }

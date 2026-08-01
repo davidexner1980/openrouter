@@ -181,14 +181,14 @@ class AgentInteractor internal constructor(
             ProviderRequestLedger.waitForSettlement(timeoutMs = 5000L)
             
             // Once settled, transition to FINALIZING if it was CANCELLING
-            agentStore!!.updateGoal(goalId) { current ->
+            agentStore.updateGoal(goalId) { current ->
                 if (current.status == AgentGoalStatus.CANCELLING) {
                     current.copy(status = AgentGoalStatus.FINALIZING)
                 } else {
                     current
                 }
             }
-            agentScheduler!!.cancelAndWait(goalId, generation)
+            agentScheduler.cancelAndWait(goalId, generation)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
         }
@@ -267,7 +267,7 @@ class AgentInteractor internal constructor(
 
         if (existingGoal != null) {
             ResearchMissionStartTelemetry.startResolved(monitor, startingDraft.id, existingGoal.id, if (recoveryReason != null) "recovered" else "reused")
-            val selectedSnapshot = agentStore!!.selectGoal(existingGoal.id)
+            val selectedSnapshot = agentStore.selectGoal(existingGoal.id)
 
             if (hasCredential && existingGoal.status in setOf(
                     AgentGoalStatus.PLANNING,
@@ -444,7 +444,7 @@ class AgentInteractor internal constructor(
         )
 
         val upsertResult = try {
-            agentStore!!.upsertGoal(goal, select = true)
+            agentStore.upsertGoal(goal, select = true)
             Result.success(Unit)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -455,7 +455,7 @@ class AgentInteractor internal constructor(
             return@withContext MissionStartResult.GoalPersistenceFailed(err)
         }
 
-        val snapshotAfterUpsert = agentStore!!.loadSnapshot()
+        val snapshotAfterUpsert = agentStore.loadSnapshot()
         val createdGoal = snapshotAfterUpsert.goals.firstOrNull { it.id == goal.id }
             ?: return@withContext MissionStartResult.GoalPersistenceFailed(
                 IllegalStateException("Goal $linkedGoalId not found after persistence"),

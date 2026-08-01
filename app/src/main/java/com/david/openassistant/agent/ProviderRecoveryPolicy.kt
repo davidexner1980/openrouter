@@ -54,6 +54,29 @@ object ProviderRecoveryPolicy {
         isFreeOnly: Boolean = false,
         isIntelligenceEscalation: Boolean = false,
     ): ProviderRecoveryDecision {
+        if (descriptor.safeDiagnosticSummary.contains("FREE_ROUTING_VIOLATION", ignoreCase = true)) {
+            return ProviderRecoveryDecision(
+                action = ProviderRecoveryAction.SWITCH_TO_FREE,
+                nextModelId = FREE_ROUTER_MODEL_ID,
+                explanation = "A routing violation was detected for this FREE mission. Switching to the verified Free Models Router.",
+            )
+        }
+
+        if (descriptor.safeDiagnosticSummary.contains("Identical context fingerprint detected", ignoreCase = true)) {
+            if (isFreeOnly || routingStage == AgentRoutingStage.EXHAUSTED) {
+                return ProviderRecoveryDecision(
+                    action = ProviderRecoveryAction.ROUTE_EXHAUSTED,
+                    nextModelId = currentModelId,
+                    explanation = "The mission is stuck in a repetitive state without measurable progress, and no further recovery route is available.",
+                )
+            }
+            return ProviderRecoveryDecision(
+                action = ProviderRecoveryAction.ESCALATE_TO_PAID,
+                nextModelId = AUTO_BETA_ROUTER_MODEL_ID,
+                explanation = "The mission is stuck in a repetitive state. Escalating to the Auto Router Beta to break through.",
+            )
+        }
+
         return decide(
             statusCode = descriptor.statusCode,
             currentModelId = currentModelId,

@@ -156,7 +156,7 @@ class AgentTaskExecutor internal constructor(
         return try {
             val result = client.executeTask(
                 apiKey = apiKey,
-                modelId = AgentRoutingPolicy.guardModel(startedGoal!!, startedGoal.executionModelId),
+                modelId = AgentRoutingPolicy.guardModel(startedGoal, startedGoal.executionModelId),
                 goal = startedGoal,
                 task = task,
                 requestContext = missionContext,
@@ -729,7 +729,7 @@ class AgentTaskExecutor internal constructor(
                             status = if (decision.action == ProviderRecoveryAction.ROUTE_EXHAUSTED) AgentTaskStatus.FAILED else AgentTaskStatus.FAILED, // Both are FAILED, but goal status differs
                             attemptCount = if (statusCode == 429 && switchingModels) (existing.attemptCount - 1).coerceAtLeast(0) else existing.attemptCount,
                             lastError = stopMessage ?: message,
-                            lastRequestFingerprint = currentFingerprint,
+                            lastRequestFingerprint = if (switchingModels) null else currentFingerprint,
                             lastEscalatedFingerprint = if (decision.action == ProviderRecoveryAction.ESCALATE_TO_PAID) currentFingerprint else existing.lastEscalatedFingerprint,
                             finishedAt = failureFinishedAt,
                             automaticWindowReopenCount = if (automaticResearchRecovery || automaticCorrectionRecovery || automaticEvidenceBoundedRecovery || automaticSynthesisAnalysisFallback)
@@ -1181,7 +1181,7 @@ class AgentTaskExecutor internal constructor(
                         maxOf(existing.progressScore, result.completionScore).coerceIn(0.0, 1.0)
                     },
                     automaticWindowReopenCount = if (effectiveQualityAccepted) 0 else existing.automaticWindowReopenCount,
-                    lastRequestFingerprint = currentFingerprint,
+                    lastRequestFingerprint = if (decision?.action in setOf(ProviderRecoveryAction.SWITCH_TO_FREE, ProviderRecoveryAction.ESCALATE_TO_PAID)) null else currentFingerprint,
                     lastEscalatedFingerprint = if (decision?.action == ProviderRecoveryAction.ESCALATE_TO_PAID) currentFingerprint else existing.lastEscalatedFingerprint,
                     progressFingerprint = currentFingerprint,
                     queryFingerprints = (existing.queryFingerprints + result.queryFingerprints).distinct(),

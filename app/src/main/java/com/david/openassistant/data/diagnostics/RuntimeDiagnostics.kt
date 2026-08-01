@@ -120,7 +120,7 @@ open class RuntimeDiagnostics internal constructor(
         diagnosticsDirectory!!.mkdirs()
         val active = activeLogFile()
         if (active.exists() && active.length() + line.toByteArray(StandardCharsets.UTF_8).size > MAX_FILE_BYTES) {
-            val previous = File(diagnosticsDirectory!!, PREVIOUS_FILE_NAME)
+            val previous = File(diagnosticsDirectory, PREVIOUS_FILE_NAME)
             if (previous.exists()) previous.delete()
             active.renameTo(previous)
         }
