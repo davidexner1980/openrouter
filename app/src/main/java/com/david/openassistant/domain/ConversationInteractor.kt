@@ -2,33 +2,37 @@ package com.david.openassistant.domain
 
 import android.content.Context
 import android.net.Uri
+import com.david.openassistant.data.database.OpenAssistantDatabase
 import com.david.openassistant.data.local.AttachmentStore
 import com.david.openassistant.data.local.ConversationSnapshot
-import com.david.openassistant.data.local.ConversationStore
-import com.david.openassistant.data.local.DEFAULT_CONVERSATION_TITLE
-import com.david.openassistant.data.local.StoredConversation
 import com.david.openassistant.data.openrouter.ChatAttachment
-import com.david.openassistant.data.openrouter.ChatMessage
-import com.david.openassistant.domain.model.ModelProfile
+import com.david.openassistant.data.repository.LegacyConversationImporter
+import com.david.openassistant.data.repository.RoomConversationRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class ConversationInteractor(context: Context) {
-    private val conversationStore = ConversationStore(context)
+    private val database = OpenAssistantDatabase.getDatabase(context)
+    private val repository = RoomConversationRepository(database)
+    private val importer = LegacyConversationImporter(context, repository)
     private val attachmentStore = AttachmentStore(context)
     private val persistenceExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "OpenAssistantConversationStore").apply { isDaemon = true }
     }
 
     suspend fun loadSnapshot(): ConversationSnapshot = withContext(Dispatchers.IO) {
-        conversationStore.loadSnapshot()
+        importer.importIfNeeded()
+        repository.getConversationSnapshot().first()
     }
 
     fun saveSnapshot(snapshot: ConversationSnapshot) {
         persistenceExecutor.execute {
-            runCatching { conversationStore.saveSnapshot(snapshot) }
+            kotlinx.coroutines.runBlocking {
+                repository.saveSnapshot(snapshot)
+            }
         }
     }
 

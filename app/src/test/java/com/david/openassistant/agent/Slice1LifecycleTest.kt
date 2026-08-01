@@ -39,7 +39,7 @@ class Slice1LifecycleTest {
     private lateinit var diagnostics: RuntimeDiagnostics
 
     private var terminalHook: AgentOpenRouterClient.TerminalTransitionHook? = null
-    private var commitHook: AgentTaskExecutor.BeforeTaskResultCommitHook? = null
+    private var commitHook: BeforeTaskResultCommitHook? = null
     private var postActiveHook: AgentOpenRouterClient.PostActivePreDispatchHook? = null
 
     @Before
@@ -92,8 +92,10 @@ class Slice1LifecycleTest {
             store = store,
             diagnostics = diagnostics,
             autonomyPolicy = AutonomyPolicy.DEFAULT,
-            beforeCommitHook = { goalId, taskId, ownership ->
-                commitHook?.beforeCommit(goalId, taskId, ownership)
+            beforeCommitHook = object : BeforeTaskResultCommitHook {
+                override fun beforeCommit(goalId: String, taskId: String, ownership: ExecutionOwnership) {
+                    commitHook?.beforeCommit(goalId, taskId, ownership)
+                }
             }
         )
     }
@@ -1377,9 +1379,11 @@ class Slice1LifecycleTest {
             )).toString()
         server.enqueue(MockResponse.Builder().code(200).body(successResult).build())
 
-        commitHook = AgentTaskExecutor.BeforeTaskResultCommitHook { gid, _, _ ->
-            store.updateGoal(gid) { current ->
-                current.copy(executionLease = current.executionLease?.copy(workerId = "worker-B", generation = 2))
+        commitHook = object : BeforeTaskResultCommitHook {
+            override fun beforeCommit(goalId: String, taskId: String, ownership: ExecutionOwnership) {
+                store.updateGoal(goalId) { current ->
+                    current.copy(executionLease = current.executionLease?.copy(workerId = "worker-B", generation = 2))
+                }
             }
         }
 
@@ -1406,9 +1410,11 @@ class Slice1LifecycleTest {
         val task = goal.tasks.first()
         server.enqueue(MockResponse.Builder().code(500).body("Internal Error").build())
 
-        commitHook = AgentTaskExecutor.BeforeTaskResultCommitHook { gid, _, _ ->
-            store.updateGoal(gid) { current ->
-                current.copy(executionLease = current.executionLease?.copy(workerId = "worker-B", generation = 2))
+        commitHook = object : BeforeTaskResultCommitHook {
+            override fun beforeCommit(goalId: String, taskId: String, ownership: ExecutionOwnership) {
+                store.updateGoal(goalId) { current ->
+                    current.copy(executionLease = current.executionLease?.copy(workerId = "worker-B", generation = 2))
+                }
             }
         }
 
