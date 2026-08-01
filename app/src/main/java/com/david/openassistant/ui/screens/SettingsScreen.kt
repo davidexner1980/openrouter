@@ -47,6 +47,7 @@ fun SettingsScreen(
     onRuntimePacketConsumed: () -> Unit,
     onSearxngBaseUrlChange: (String) -> Unit,
     onSaveResearchWebSettings: () -> Unit,
+    onToggleDetailedContentCapture: (Boolean) -> Unit = {},
 ) {
     var confirmDeleteKey by rememberSaveable { mutableStateOf(false) }
     var confirmClearChat by rememberSaveable { mutableStateOf(false) }
@@ -220,6 +221,7 @@ fun SettingsScreen(
             onOpenExportedReport = onOpenExportedReport,
             onShareExportedReport = onShareExportedReport,
             onCreateOverseerRuntimePacket = onCreateOverseerRuntimePacket,
+            onToggleDetailedContentCapture = onToggleDetailedContentCapture,
         )
 
         DiagnosticsCard(state.diagnostics, state.diagnosticLogPath)
@@ -298,11 +300,13 @@ private fun ResearchMonitorPanel(
     onOpenExportedReport: (android.content.Context) -> Unit,
     onShareExportedReport: (android.content.Context) -> Unit,
     onCreateOverseerRuntimePacket: () -> Unit,
+    onToggleDetailedContentCapture: (Boolean) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     SettingsCard(title = "Forensic Recorder") {
         val monitor = state.researchMonitorStatus
         SettingLine("Status", if (monitor.active) "RECORDING" else "Inactive")
+        SettingLine("Session ID", monitor.sessionId ?: "none")
         SettingLine("Events Captured", monitor.eventCount.toString())
         
         Spacer(Modifier.height(12.dp))
@@ -311,6 +315,53 @@ private fun ResearchMonitorPanel(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(16.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Detailed Content Capture", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "Excerpts mission content (redacted) to Logcat and debug packets. Expires after 60 minutes.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (monitor.detailedContentCaptureEnabled) {
+                    val remaining = ((monitor.detailedContentCaptureExpiry ?: 0L) - System.currentTimeMillis()) / 1000 / 60
+                    Text(
+                        "Active: $remaining min remaining",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Switch(
+                checked = monitor.detailedContentCaptureEnabled,
+                onCheckedChange = onToggleDetailedContentCapture
+            )
+        }
+
+        if (monitor.detailedContentCaptureEnabled) {
+            Spacer(Modifier.height(8.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.1f),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Text(
+                    "WARNING: Logcat and exported packets will contain sensitive research excerpts.",
+                    modifier = Modifier.padding(8.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
 
         state.lastExportResult?.let { result ->
             Spacer(Modifier.height(16.dp))
@@ -366,6 +417,16 @@ private fun ResearchMonitorPanel(
             Spacer(Modifier.width(8.dp))
             Text(if (state.isPreparingRuntimePacket) "Assembling Packet..." else "Create Debug Packet")
         }
+
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(16.dp))
+        
+        Text("System Identity", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        SettingLine("Application ID", state.researchMonitorStatus.applicationId ?: "com.david.openassistant")
+        SettingLine("Build Version", "${state.researchMonitorStatus.versionName} (${state.researchMonitorStatus.versionCode})")
+        SettingLine("Logcat Tag", com.david.openassistant.data.diagnostics.RuntimeDiagnostics.LOGCAT_TAG)
+        SettingLine("Process SID", com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID)
     }
 }
 

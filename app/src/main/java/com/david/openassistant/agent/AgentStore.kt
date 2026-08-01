@@ -65,6 +65,7 @@ class AgentStore private constructor(
     }
 
     private val goalCache = ConcurrentHashMap<String, CachedGoal>()
+    private val diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = context?.let { com.david.openassistant.data.diagnostics.RuntimeDiagnostics(it) }
     
     private data class CachedGoal(
         val goal: AgentGoal,
@@ -326,6 +327,16 @@ class AgentStore private constructor(
         val transformed = transform(original)
         if (original.status != transformed.status) {
             AgentStateMachine.requireTransition(original.status, transformed.status)
+            diagnostics?.info(
+                event = "mission_state_transition",
+                component = "mission",
+                fields = mapOf(
+                    "goal_id" to goalId,
+                    "state_before" to original.status.name,
+                    "state_after" to transformed.status.name,
+                    "reason_code" to "store_update"
+                )
+            )
         }
         val updatedGoal = transformed.copy(updatedAt = System.currentTimeMillis())
         writeGoalLocked(updatedGoal)

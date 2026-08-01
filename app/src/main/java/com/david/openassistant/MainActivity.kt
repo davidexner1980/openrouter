@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity() {
                     onRetryPublicExport = assistantViewModel::retryPublicExport,
                     onOpenExportedReport = assistantViewModel::openExportedReport,
                     onShareExportedReport = assistantViewModel::shareExportedReport,
+                    onToggleDetailedContentCapture = assistantViewModel::toggleDetailedContentCapture,
                 )
             }
         }

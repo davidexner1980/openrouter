@@ -60,9 +60,11 @@ class AgentVerifier(
         val verificationGoal = verificationSnapshot.goals.firstOrNull { it.id == goal.id }
         if (verificationGoal?.status != AgentGoalStatus.VERIFYING) return WorkerOutcome.DONE
         val verificationStartedAt = System.currentTimeMillis()
+        
         diagnostics.info(
-            "agent_verification_started",
-            mapOf(
+            event = "verification_started",
+            component = "mission",
+            fields = mapOf(
                 "goal_id" to goal.id,
                 "verification_round" to verificationGoal.verificationRound,
                 "claim_count" to verificationGoal.claims.size,
@@ -132,8 +134,9 @@ class AgentVerifier(
             val convergenceStalled = currentAfterVerification.verificationCorrectionStreak > 0 &&
                 hasVerificationConvergenceStalled(previousConvergenceSnapshot, convergenceSnapshot)
             diagnostics.info(
-                "agent_verification_evaluated",
-                mapOf(
+                event = "verification_evaluated",
+                component = "mission",
+                fields = mapOf(
                     "goal_id" to goal.id,
                     "duration_ms" to (System.currentTimeMillis() - verificationStartedAt),
                     "quality_score" to verification.qualityScore,

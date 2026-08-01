@@ -65,9 +65,13 @@ class AgentTaskExecutor internal constructor(
             )
         )
 
-        taskDiagnostics.info(
-            "agent_milestone_started",
-            mapOf(
+        diagnostics.info(
+            event = "agent_milestone_started",
+            component = "mission",
+            fields = mapOf(
+                "goal_id" to goal.id,
+                "task_id" to task.id,
+                "worker_id" to workerId,
                 "attempt_id" to leaseAttemptId,
                 "generation" to generation,
                 "task_order" to task.order,
@@ -570,9 +574,12 @@ class AgentTaskExecutor internal constructor(
             WorkerOutcome.RETRY
         }
         
-        taskDiagnostics.info(
-            "agent_milestone_finished",
-            mapOf(
+        diagnostics.info(
+            event = "agent_milestone_finished",
+            component = "mission",
+            fields = mapOf(
+                "goal_id" to startedGoal.id,
+                "task_id" to task.id,
                 "outcome" to outcome.name,
                 "quality_score" to result.completionScore,
                 "duration_ms" to (finishedAt - attempt.startedAt),

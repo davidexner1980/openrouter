@@ -30,6 +30,7 @@ data class AgentApiSummary(
     val webFetchRequests: Int? = null,
     val discoveredLeads: Int? = null,
     val rabbitHoleIterations: Int? = null,
+    val durationMs: Long? = null,
 )
 
 data class AgentToolExecution(

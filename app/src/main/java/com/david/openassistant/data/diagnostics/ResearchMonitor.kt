@@ -38,6 +38,8 @@ data class ResearchMonitorStatus(
     val firstInstallTime: Long? = null,
     val targetClassification: String? = null,
     val apiLevel: Int? = null,
+    val detailedContentCaptureEnabled: Boolean = false,
+    val detailedContentCaptureExpiry: Long? = null,
 )
 
 private data class ReportCapture(
@@ -112,7 +114,46 @@ open class ResearchMonitor internal constructor(
             firstInstallTime = preferences.getLong(KEY_FIRST_INSTALL_TIME, 0L).takeIf { it > 0L },
             targetClassification = preferences.getString(KEY_TARGET_CLASSIFICATION, null),
             apiLevel = preferences.getInt(KEY_API_LEVEL, -1).takeIf { it != -1 },
+            detailedContentCaptureEnabled = isDetailedContentCaptureActiveLocked(),
+            detailedContentCaptureExpiry = preferences.getLong(KEY_DETAILED_CAPTURE_EXPIRY, 0L).takeIf { it > 0L },
         )
+    }
+
+    private fun isDetailedContentCaptureActiveLocked(): Boolean {
+        val expiry = preferences.getLong(KEY_DETAILED_CAPTURE_EXPIRY, 0L)
+        return preferences.getBoolean(KEY_DETAILED_CAPTURE_ENABLED, false) &&
+            expiry > System.currentTimeMillis()
+    }
+
+    fun enableDetailedContentCapture(minutes: Int = 60): ResearchMonitorStatus = synchronized(FILE_LOCK) {
+        val expiry = System.currentTimeMillis() + (minutes * 60 * 1000L)
+        preferences.edit(commit = true) {
+            putBoolean(KEY_DETAILED_CAPTURE_ENABLED, true)
+            putLong(KEY_DETAILED_CAPTURE_EXPIRY, expiry)
+        }
+        recordLocked(
+            category = "monitor",
+            event = "detailed_content_capture_enabled",
+            level = "INFO",
+            correlationId = preferences.getString(KEY_SESSION_ID, null),
+            fields = mapOf("expiry_ms" to expiry, "duration_minutes" to minutes)
+        )
+        status()
+    }
+
+    fun disableDetailedContentCapture(): ResearchMonitorStatus = synchronized(FILE_LOCK) {
+        preferences.edit(commit = true) {
+            putBoolean(KEY_DETAILED_CAPTURE_ENABLED, false)
+            putLong(KEY_DETAILED_CAPTURE_EXPIRY, 0L)
+        }
+        recordLocked(
+            category = "monitor",
+            event = "detailed_content_capture_disabled",
+            level = "INFO",
+            correlationId = preferences.getString(KEY_SESSION_ID, null),
+            fields = emptyMap()
+        )
+        status()
     }
 
     fun start(): ResearchMonitorStatus = synchronized(FILE_LOCK) {
@@ -415,6 +456,23 @@ open class ResearchMonitor internal constructor(
     ) = synchronized(FILE_LOCK) {
         val activeSessionId = preferences.getString(KEY_SESSION_ID, null)
         
+        // Check for Detailed Content Capture expiry
+        val detailedEnabled = preferences.getBoolean(KEY_DETAILED_CAPTURE_ENABLED, false)
+        val expiry = preferences.getLong(KEY_DETAILED_CAPTURE_EXPIRY, 0L)
+        if (detailedEnabled && expiry > 0 && System.currentTimeMillis() > expiry) {
+            preferences.edit(commit = true) {
+                putBoolean(KEY_DETAILED_CAPTURE_ENABLED, false)
+                putLong(KEY_DETAILED_CAPTURE_EXPIRY, 0L)
+            }
+            recordLocked(
+                category = "monitor",
+                event = "detailed_content_capture_expired",
+                level = "INFO",
+                correlationId = activeSessionId,
+                fields = emptyMap()
+            )
+        }
+
         // Strict version provenance check
         val incomingVersionName = fields["version_name"] as? String
         val incomingVersionCode = fields["version_code"] as? Int
@@ -702,6 +760,8 @@ open class ResearchMonitor internal constructor(
         const val KEY_FIRST_INSTALL_TIME = "first_install_time"
         const val KEY_TARGET_CLASSIFICATION = "target_classification"
         const val KEY_API_LEVEL = "api_level"
+        const val KEY_DETAILED_CAPTURE_ENABLED = "detailed_capture_enabled"
+        const val KEY_DETAILED_CAPTURE_EXPIRY = "detailed_capture_expiry"
         const val KEY_LEGACY_PUBLIC_CLEANUP_ATTEMPTED = "legacy_public_cleanup_attempted_v1"
         const val MAX_FIELDS_PER_EVENT = 48
         const val MAX_FIELD_KEY_CHARS = 80

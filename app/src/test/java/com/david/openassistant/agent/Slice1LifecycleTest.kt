@@ -79,6 +79,7 @@ class Slice1LifecycleTest {
         client = AgentOpenRouterClient(
             client = okHttpClient,
             store = store,
+            diagnostics = diagnostics,
             terminalHook = { goalId, exchangeId, parentOpId, outcome ->
                 terminalHook?.onTerminalTransition(goalId, exchangeId, parentOpId, outcome)
             },
@@ -877,7 +878,7 @@ class Slice1LifecycleTest {
         server.enqueue(MockResponse.Builder().code(200).body(planResponseBody).build())
 
         val workerId = "worker-test-1"
-        val planner = AgentPlanner(client, store)
+        val planner = AgentPlanner(client, store, diagnostics)
 
         val now = System.currentTimeMillis()
         val leaseAttemptId = "attempt-" + UUID.randomUUID()
@@ -922,7 +923,7 @@ class Slice1LifecycleTest {
         val goalNoLease = createTestGoal(status = AgentGoalStatus.PLANNING).copy(executionLease = null)
         store.upsertGoal(goalNoLease)
 
-        val planner = AgentPlanner(client, store)
+        val planner = AgentPlanner(client, store, diagnostics)
         val outcome = planner.plan(
             apiKey = "sk-or-test-key",
             goal = goalNoLease,

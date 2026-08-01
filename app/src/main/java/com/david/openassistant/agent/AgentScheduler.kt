@@ -29,6 +29,7 @@ sealed interface SchedulingResult {
 
 class AgentScheduler(context: Context) {
     private val workManager = WorkManager.getInstance(context.applicationContext)
+    private val diagnostics = com.david.openassistant.data.diagnostics.RuntimeDiagnostics(context.applicationContext)
 
     fun enqueue(goalId: String, replace: Boolean = false, generation: Int = 0) {
         val request = createRequest(goalId)
@@ -49,6 +50,11 @@ class AgentScheduler(context: Context) {
         generation: Int = 0,
         activeLease: AgentExecutionLease? = null
     ): SchedulingResult {
+        diagnostics.info(
+            event = "mission_schedule_requested",
+            component = "scheduler",
+            fields = mapOf("goal_id" to goalId, "generation" to generation, "replace" to replace)
+        )
         // 1. Pre-enqueue lease check
         val now = System.currentTimeMillis()
         if (activeLease != null && !AgentLeasePolicy.isStale(activeLease, now)) {
@@ -101,7 +107,7 @@ class AgentScheduler(context: Context) {
                 info.state == WorkInfo.State.BLOCKED
         }
 
-        return when {
+        val finalResult = when {
             exactMatch != null && (exactMatch.state == WorkInfo.State.ENQUEUED || exactMatch.state == WorkInfo.State.RUNNING || exactMatch.state == WorkInfo.State.BLOCKED) -> {
                 SchedulingResult.NewlyEnqueued(exactMatch.id, exactMatch.state)
             }
@@ -127,6 +133,17 @@ class AgentScheduler(context: Context) {
             }
             else -> SchedulingResult.WorkInfoMissing(request.id)
         }
+
+        diagnostics.info(
+            event = "mission_schedule_result",
+            component = "scheduler",
+            fields = mapOf(
+                "goal_id" to goalId,
+                "result" to finalResult.javaClass.simpleName,
+                "work_id" to request.id.toString()
+            )
+        )
+        return finalResult
     }
 
     fun enqueueContinuation(goalId: String, generation: Int = 0) {

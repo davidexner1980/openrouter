@@ -65,7 +65,7 @@ class RuntimePacketExporter(private val context: Context) {
 
         // 1. Manifest
         val manifest = JSONObject().apply {
-            put("schema_version", 3)
+            put("schema_version", 4)
             put("bundle_id", bundleId)
             put("created_at_utc", timestamp)
             put("app_status", appStatus)
@@ -81,10 +81,12 @@ class RuntimePacketExporter(private val context: Context) {
                 put("version_code", status.versionCode ?: -1)
                 put("apk_sha256", status.apkSha256 ?: "unknown")
                 put("git_sha", com.david.openassistant.BuildConfig.GIT_SHA)
+                put("api_level", android.os.Build.VERSION.SDK_INT)
             })
             put("session_identity", JSONObject().apply {
                 put("session_id", status.sessionId ?: JSONObject.NULL)
                 put("started_at", status.startedAt ?: JSONObject.NULL)
+                put("process_session_id", com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID)
             })
         }
 
@@ -138,8 +140,10 @@ class RuntimePacketExporter(private val context: Context) {
         addToZip(zos, "raw-runtime-identity.json", rawIdentity.toString(2), filesToHash)
 
         // 8. Redaction Report
+        val redactionStats = com.david.openassistant.data.diagnostics.RuntimeDiagnostics.redactionStats()
         val redactionReport = JSONObject().apply {
-            put("approx_secrets_redacted", monitorData.secretsRedacted)
+            put("approx_secrets_redacted", redactionStats["secrets_redacted"])
+            put("forbidden_fields_dropped", redactionStats["forbidden_fields_dropped"])
             put("hidden_reasoning_removed", monitorData.reasoningRedacted)
         }
         addToZip(zos, "redaction-report.json", redactionReport.toString(2), filesToHash)

@@ -33,11 +33,12 @@ class AgentGoalWorker(
         toolRuntime = toolRuntime,
         autonomyPolicy = autonomyPolicy,
         researchMonitor = researchMonitor,
+        diagnostics = diagnostics,
         store = store,
     )
     private val scheduler = AgentScheduler(appContext)
 
-    private val planner = AgentPlanner(client, store)
+    private val planner = AgentPlanner(client, store, diagnostics)
     private val taskExecutor = AgentTaskExecutor(client, store, diagnostics, autonomyPolicy)
     private val verifier = AgentVerifier(client, store, diagnostics, autonomyPolicy)
     private val notifier = MissionForegroundNotifier(appContext)
@@ -97,10 +98,17 @@ class AgentGoalWorker(
                     val goalId = cancellationGoalId
                     val goalDiagnostics = diagnostics.withContext(mapOf("goal_id" to goalId))
                     val workerStartedAt = System.currentTimeMillis()
-                    goalDiagnostics.info(
-                        "agent_worker_started",
-                        mapOf("run_attempt" to runAttemptCount),
+                    
+                    diagnostics.info(
+                        event = "worker_started",
+                        component = "worker",
+                        fields = mapOf(
+                            "goal_id" to goalId,
+                            "worker_id" to workerId,
+                            "run_attempt" to runAttemptCount
+                        )
                     )
+
                     val initialGoal = findGoal(goalId) ?: run {
                         goalDiagnostics.warning("agent_worker_goal_not_found")
                         reconcileMissingGoal(goalId)
@@ -295,9 +303,30 @@ class AgentGoalWorker(
                                 taskId = lease.taskId
                             )
                             if (result != RefreshLeaseResult.Refreshed) {
-                                goalDiagnostics.warning("heartbeat_ownership_lost", mapOf("result" to result.toString()))
+                                diagnostics.warning(
+                                    event = "lease_heartbeat_failed",
+                                    component = "lease",
+                                    fields = mapOf(
+                                        "goal_id" to goalId,
+                                        "worker_id" to workerId,
+                                        "result" to result.toString()
+                                    )
+                                )
                                 cancelActiveCalls("heartbeat_ownership_lost")
                                 break
+                            }
+                            
+                            // Sample healthy heartbeat every 5 iterations (~2.5 minutes)
+                            if (heartbeatCount++ % 5 == 0) {
+                                diagnostics.info(
+                                    event = "lease_heartbeat_sampled",
+                                    component = "lease",
+                                    fields = mapOf(
+                                        "goal_id" to goalId,
+                                        "worker_id" to workerId,
+                                        "lease_gen" to lease.generation
+                                    )
+                                )
                             }
                         }
                     }
@@ -404,6 +433,18 @@ class AgentGoalWorker(
                             }
                             else -> Result.failure()
                         }
+
+                        diagnostics.info(
+                            event = "worker_result_returned",
+                            component = "worker",
+                            fields = mapOf(
+                                "goal_id" to goalId,
+                                "worker_id" to workerId,
+                                "outcome" to outcome.name,
+                                "result" to workerResult.toString(),
+                                "duration_ms" to (System.currentTimeMillis() - workerStartedAt)
+                            )
+                        )
 
                         researchMonitor.record(
                             category = "mission",
@@ -725,6 +766,7 @@ class AgentGoalWorker(
 
     private fun tryAcquireLease(goalId: String, taskId: String? = null): Boolean {
         var acquired = false
+        var generation = 0
         store.updateGoal(goalId) { current ->
             val now = System.currentTimeMillis()
             val existing = current.executionLease
@@ -732,7 +774,7 @@ class AgentGoalWorker(
             
             if (existing == null || isStale || existing.workerId == workerId) {
                 val attemptId = UUID.randomUUID().toString()
-                val generation = (current.leaseGeneration).coerceAtLeast(existing?.generation ?: 0) + 1
+                generation = (current.leaseGeneration).coerceAtLeast(existing?.generation ?: 0) + 1
                 
                 acquired = true
                 current.copy(
@@ -756,12 +798,21 @@ class AgentGoalWorker(
                 current
             }
         }
+        if (acquired) {
+            diagnostics.info(
+                event = "lease_acquired",
+                component = "lease",
+                fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "lease_gen" to generation)
+            )
+        }
         return acquired
     }
 
     private fun releaseLease(goalId: String) {
+        var released = false
         store.updateGoal(goalId) { current ->
             if (current.executionLease?.workerId == workerId) {
+                released = true
                 current.copy(
                     executionLease = null,
                     events = appendEvent(current.events, "Released execution lease for worker $workerId.")
@@ -770,10 +821,18 @@ class AgentGoalWorker(
                 current
             }
         }
+        if (released) {
+            diagnostics.info(
+                event = "lease_released",
+                component = "lease",
+                fields = mapOf("goal_id" to goalId, "worker_id" to workerId)
+            )
+        }
     }
 
     companion object {
         const val KEY_GOAL_ID = "goal_id"
         private const val HEARTBEAT_INTERVAL_MS = 30_000L
+        private var heartbeatCount = 0
     }
 }

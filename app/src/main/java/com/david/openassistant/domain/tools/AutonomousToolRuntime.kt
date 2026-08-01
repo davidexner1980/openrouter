@@ -103,7 +103,8 @@ open class AutonomousToolRuntime internal constructor(
             ),
         )
         return try {
-            executeInternal(call, apiKey, modelId, goal).also { result ->
+            executeInternal(call, apiKey, modelId, goal).let { result ->
+                val durationMs = System.currentTimeMillis() - startedAt
                 if (ProviderRequestLedger.terminalize(correlationId, RequestState.COMPLETED)) {
                     researchMonitor.record(
                         category = "tool",
@@ -112,7 +113,7 @@ open class AutonomousToolRuntime internal constructor(
                         fields = mapOf(
                             "tool_call_id" to call.id,
                             "tool_name" to call.name,
-                            "duration_ms" to (System.currentTimeMillis() - startedAt),
+                            "duration_ms" to durationMs,
                             "display_summary" to result.displaySummary,
                             "output_json" to result.outputJson,
                             "prompt_tokens" to result.promptTokens,
@@ -123,6 +124,7 @@ open class AutonomousToolRuntime internal constructor(
                         ),
                     )
                 }
+                result.copy(durationMs = durationMs)
             }
         } catch (error: Throwable) {
             val terminalState = if (error is kotlinx.coroutines.CancellationException) {

@@ -388,6 +388,7 @@ class AgentOpenRouterClient internal constructor(
     private val autonomyPolicy: AutonomyPolicy = AutonomyPolicy.DEFAULT,
     private val client: OkHttpClient = sharedClient,
     private val researchMonitor: ResearchMonitor? = null,
+    private val diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = null,
     private val store: AgentStore? = null,
     private val terminalHook: TerminalTransitionHook? = null,
     private val postActiveHook: PostActivePreDispatchHook? = null,
@@ -2055,6 +2056,21 @@ class AgentOpenRouterClient internal constructor(
                         put("page", currentPage)
                     }.toString(),
                 )
+                
+                diagnostics?.info(
+                    event = "search_started",
+                    component = "research",
+                    fields = mapOf(
+                        "goal_id" to goal.id,
+                        "task_id" to task.id,
+                        "search_id" to call.id
+                    )
+                )
+                
+                if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                    emitContentEvent(call.id, "generated_query", currentQuery, mapOf("goal_id" to goal.id, "task_id" to task.id))
+                }
+
                 var searchResult = runCatching { runtime.execute(call, apiKey, modelId, goal) }
                 var searchRefinementAttempts = 0
                 val maxSearchRefinements = 3
@@ -2186,6 +2202,26 @@ class AgentOpenRouterClient internal constructor(
                 searchResult.onSuccess { result ->
                     successfulSearches += maxOf(1, result.webSearchRequests)
                     val newSources = parseToolSourceCitations(result.outputJson)
+                    
+                    diagnostics?.info(
+                        event = "search_completed",
+                        component = "research",
+                        fields = mapOf(
+                            "goal_id" to goal.id,
+                            "task_id" to task.id,
+                            "search_id" to call.id,
+                            "source_count" to newSources.size,
+                            "web_search_requests" to result.webSearchRequests,
+                            "duration_ms" to result.durationMs
+                        )
+                    )
+                    
+                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                        newSources.forEach { s ->
+                            emitContentEvent(call.id, "search_result_snippet", s.excerpt.orEmpty(), mapOf("url" to s.url))
+                        }
+                    }
+
                     var addedAnyNew = false
                     if (newSources.isNotEmpty()) {
                         pageYieldedResults = true
@@ -2259,6 +2295,18 @@ class AgentOpenRouterClient internal constructor(
                 name = "public_web_fetch",
                 argumentsJson = JSONObject().put("url", source.url).toString(),
             )
+            
+            diagnostics?.info(
+                event = "source_fetch_started",
+                component = "research",
+                fields = mapOf(
+                    "goal_id" to goal.id,
+                    "task_id" to task.id,
+                    "source_id" to call.id,
+                    "url" to source.url
+                )
+            )
+
             try {
                 webFetchRequests += 1
                 val result = runtime.execute(call, apiKey, modelId, goal)
@@ -2274,26 +2322,56 @@ class AgentOpenRouterClient internal constructor(
                     requiredRole = researchPassRole(task).name,
                     targetEntities = validationEntities.toList(),
                 )
+                
+                diagnostics?.info(
+                    event = "source_fetch_completed",
+                    component = "research",
+                    fields = mapOf(
+                        "goal_id" to goal.id,
+                        "task_id" to task.id,
+                        "source_id" to call.id,
+                        "url" to resolvedUrl,
+                        "http_status" to 200,
+                        "byte_count" to text.toByteArray().size,
+                        "content_type" to contentType
+                    )
+                )
+
                 if (!validation.isValid) {
                     val reason = validation.rejectionReason?.name ?: "UNKNOWN_REJECTION"
-                    executions += AgentToolExecution(
-                        toolName = call.name,
-                        summary = "Rejected full-source read [$reason]: ${source.url}".take(600),
-                        succeeded = false,
-                    )
-                    researchMonitor?.record(
-                        category = "research",
+                    
+                    diagnostics?.warning(
                         event = "source_read_rejected",
-                        correlationId = task.id,
-                        targetSessionId = currentSessionId,
+                        component = "research",
                         fields = mapOf(
+                            "goal_id" to goal.id,
+                            "task_id" to task.id,
+                            "source_id" to call.id,
                             "url" to resolvedUrl,
-                            "reason" to reason,
-                            "content_type" to contentType,
-                            "content_characters" to text.length,
-                        ),
+                            "reason_code" to reason
+                        )
                     )
+                    
+                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                        emitContentEvent(call.id, "source_extract", text, mapOf("url" to resolvedUrl, "rejected" to true, "reason" to reason))
+                    }
                     continue
+                }
+
+                diagnostics?.info(
+                    event = "source_read_accepted",
+                    component = "research",
+                    fields = mapOf(
+                        "goal_id" to goal.id,
+                        "task_id" to task.id,
+                        "source_id" to call.id,
+                        "url" to resolvedUrl,
+                        "authority_score" to validation.authorityScore
+                    )
+                )
+                
+                if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                    emitContentEvent(call.id, "source_extract", text, mapOf("url" to resolvedUrl))
                 }
 
                 payload?.optJSONArray("discovered_leads")?.let { leads ->
@@ -3628,12 +3706,43 @@ class AgentOpenRouterClient internal constructor(
                                 priorOutput
                             } else {
                                 try {
+                                    diagnostics?.info(
+                                        event = "tool_call_started",
+                                        component = "tool",
+                                        fields = mapOf(
+                                            "goal_id" to goal?.id,
+                                            "task_id" to requestContext.taskId,
+                                            "tool_call_id" to call.id,
+                                            "tool_name" to call.name
+                                        )
+                                    )
+                                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                                        emitContentEvent(call.id, "tool_input", call.argumentsJson, mapOf("tool_name" to call.name))
+                                    }
+
                                     val result = runtime.execute(
                                         call = call,
                                         apiKey = apiKey,
                                         modelId = resolvedModel ?: payload.optString("model"),
                                         goal = goal,
                                     )
+                                    
+                                    diagnostics?.info(
+                                        event = "tool_call_completed",
+                                        component = "tool",
+                                        fields = mapOf(
+                                            "goal_id" to goal?.id,
+                                            "task_id" to requestContext.taskId,
+                                            "tool_call_id" to call.id,
+                                            "tool_name" to call.name,
+                                            "duration_ms" to result.durationMs,
+                                            "result_size" to result.outputJson.length
+                                        )
+                                    )
+                                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                                        emitContentEvent(call.id, "tool_result", result.outputJson, mapOf("tool_name" to call.name))
+                                    }
+                                    
                                     promptTokens += result.promptTokens
                                     completionTokens += result.completionTokens
                                     totalTokens += result.totalTokens
@@ -3912,9 +4021,10 @@ class AgentOpenRouterClient internal constructor(
         apiKey: String,
         payload: JSONObject,
     ): RawAgentResponse {
+        val startedAt = System.currentTimeMillis()
         val body = executeNonMissionCapturedOpenRouterBody(apiKey, payload)
         // Non-mission path doesn't track status code reliably through the same loop yet, assume 200 if it returned body
-        return parseResponse(body, apiKey, payload, 200)
+        return parseResponse(body, apiKey, payload, 200, System.currentTimeMillis() - startedAt)
     }
 
     private suspend fun executeNonMissionCapturedOpenRouterBody(
@@ -3971,8 +4081,9 @@ class AgentOpenRouterClient internal constructor(
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
     ): RawAgentResponse {
+        val startedAt = System.currentTimeMillis()
         val (body, statusCode) = executeCapturedOpenRouterBody(apiKey, payload, "agent_structured_chat", generation, requestContext)
-        return parseResponse(body, apiKey, payload, statusCode)
+        return parseResponse(body, apiKey, payload, statusCode, System.currentTimeMillis() - startedAt)
     }
 
     data class ExchangeResolution(
@@ -4223,10 +4334,22 @@ class AgentOpenRouterClient internal constructor(
                 val wirePayloadText = payload.toString()
                 
                 // Create a separate, sanitized copy for diagnostics only.
-                val safeDiagnosticPayloadText = redactResearchMonitorText(wirePayloadText)
+                val safeDiagnosticPayloadText = com.david.openassistant.data.diagnostics.redactResearchMonitorText(wirePayloadText)
                 
                 val targetSessionId = currentSessionId ?: researchMonitor?.status()?.sessionId
                 
+                diagnostics?.info(
+                    event = "provider_request_dispatched",
+                    component = "provider",
+                    fields = mapOf(
+                        "exchange_id" to exchangeId,
+                        "goal_id" to requestContext.goalId,
+                        "operation" to operation,
+                        "requested_model" to payload.optString("model"),
+                        "request_bytes" to wirePayloadText.toByteArray().size
+                    )
+                )
+
                 researchMonitor?.record(
                     category = "provider",
                     event = "request",
@@ -4244,6 +4367,9 @@ class AgentOpenRouterClient internal constructor(
                         "request_bytes" to wirePayloadText.toByteArray().size,
                     ),
                 )
+                
+                emitDetailedContentPreviews(exchangeId, payload, requestContext)
+                
                 val request = Request.Builder()
                     .url(CHAT_URL)
                     .header("Authorization", "Bearer $apiKey")
@@ -4616,7 +4742,7 @@ class AgentOpenRouterClient internal constructor(
         return repaired
     }
 
-    private fun parseResponse(body: String, apiKey: String, payload: JSONObject, statusCode: Int): RawAgentResponse {
+    private fun parseResponse(body: String, apiKey: String, payload: JSONObject, statusCode: Int, durationMs: Long): RawAgentResponse {
         val root = JsonEnvelopeParser.requireObject(body, "OpenRouter agent response")
         val usage = root.optJSONObject("usage")
         val metadata = payload.optJSONObject("metadata")
@@ -4646,11 +4772,12 @@ class AgentOpenRouterClient internal constructor(
             totalTokens = usage.optIntOrNull("total_tokens"),
             costUsd = usage.optDoubleOrNull("cost"),
             webSearchRequests = providerWebSearchRequestCount(usage).takeIf { it > 0 },
+            durationMs = durationMs
         )
         root.optJSONObject("error")?.let { error ->
             throw OpenRouterException(
                 error.optInt("code").takeIf { it > 0 },
-                SecretRedactor.redact(error.providerErrorMessage(), apiKey),
+                com.david.openassistant.data.openrouter.SecretRedactor.redact(error.providerErrorMessage(), apiKey),
             ).withAgentUsage(responseSummary)
         }
         if (choice == null) {
@@ -4665,20 +4792,23 @@ class AgentOpenRouterClient internal constructor(
         val content = JsonEnvelopeParser.messageText(message)
         
         val providerMessage = choiceError?.providerErrorMessage() ?: content
-        val isRateLimit = providerMessage != null && (
-            providerMessage.contains("rate limit", ignoreCase = true) || 
-            providerMessage.contains("temporarily rate-limited", ignoreCase = true) ||
-            providerMessage.contains("429", ignoreCase = true) ||
-            providerMessage.contains("resource exhausted", ignoreCase = true) ||
-            providerMessage.contains("too many requests", ignoreCase = true)
-        )
+        
+        // V36: Stop scanning assistant content for 429. Use HTTP status or structured provider error ONLY.
+        val isRateLimit = (statusCode == 429) || (choiceError != null && (
+            providerMessage != null && (
+                providerMessage.contains("rate limit", ignoreCase = true) || 
+                providerMessage.contains("temporarily rate-limited", ignoreCase = true) ||
+                providerMessage.contains("resource exhausted", ignoreCase = true) ||
+                providerMessage.contains("too many requests", ignoreCase = true)
+            )
+        ))
 
         if (choiceError != null || finishReason == "error" || isRateLimit) {
-            val code = choiceError?.optInt("code")?.takeIf { it > 0 } ?: 429
+            val code = if (isRateLimit) 429 else (choiceError?.optInt("code")?.takeIf { it > 0 } ?: statusCode)
             val userMsg = providerMessage ?: "The selected model returned a choice-level error."
             throw OpenRouterException(
                 statusCode = code,
-                userMessage = SecretRedactor.redact(userMsg, apiKey),
+                userMessage = com.david.openassistant.data.openrouter.SecretRedactor.redact(userMsg, apiKey),
             ).withAgentUsage(responseSummary)
         }
         val toolCalls = message.optJSONArray("tool_calls")
@@ -4699,6 +4829,21 @@ class AgentOpenRouterClient internal constructor(
 
         val nonNullContent = content ?: ""
         
+        // V36: Detailed Content Capture for provider answer
+        val monitorStatus = researchMonitor?.status()
+        if (monitorStatus?.detailedContentCaptureEnabled == true) {
+            emitContentEvent(
+                exchangeId = responseSummary.responseId ?: "unknown",
+                kind = "provider_answer",
+                content = nonNullContent,
+                fields = mapOf(
+                    "goal_id" to payload.optJSONObject("metadata")?.optString("goal_id"),
+                    "role" to role?.name,
+                    "finish_reason" to finishReason
+                )
+            )
+        }
+
         // V34: Semantic classification of successful transport responses
         val semanticOutcome = when {
             nonNullContent.isBlank() && (toolCalls == null || toolCalls.length() == 0) -> ExchangeOutcome.UNUSABLE_EMPTY_RESPONSE
@@ -4706,6 +4851,17 @@ class AgentOpenRouterClient internal constructor(
             else -> ExchangeOutcome.USABLE_STRUCTURED_RESULT
         }
         
+        diagnostics?.info(
+            event = "provider_response_classified",
+            component = "provider",
+            fields = mapOf(
+                "exchange_id" to responseSummary.responseId,
+                "http_status" to statusCode,
+                "semantic_outcome" to semanticOutcome.name,
+                "duration_ms" to responseSummary.durationMs
+            )
+        )
+
         if (semanticOutcome != ExchangeOutcome.USABLE_STRUCTURED_RESULT) {
             throw OpenRouterException(
                 statusCode = 200,
@@ -4958,6 +5114,8 @@ class AgentOpenRouterClient internal constructor(
         role: AgentTaskRole? = null,
         selectionReason: String? = null,
         freeOnly: Boolean = false,
+        goalId: String? = null,
+        taskId: String? = null,
     ): JSONObject {
         val allowlist = setOf(AUTO_BETA_ROUTER_MODEL_ID, FREE_ROUTER_MODEL_ID, BODY_BUILDER_MODEL_ID)
         
@@ -5033,6 +5191,8 @@ class AgentOpenRouterClient internal constructor(
                 put("metadata", JSONObject()
                     .put("agent_role", role?.name)
                     .put("selection_reason", selectionReason)
+                    .put("goal_id", goalId)
+                    .put("task_id", taskId)
                 )
             }
     }
@@ -5728,6 +5888,57 @@ class AgentOpenRouterClient internal constructor(
         val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
     )
 
+    private fun emitDetailedContentPreviews(
+        exchangeId: String,
+        payload: JSONObject,
+        context: ProviderRequestContext.Mission
+    ) {
+        val monitorStatus = researchMonitor?.status() ?: return
+        if (!monitorStatus.detailedContentCaptureEnabled) return
+
+        val messages = payload.optJSONArray("messages") ?: return
+        for (i in 0 until messages.length()) {
+            val msg = messages.optJSONObject(i) ?: continue
+            val role = msg.optString("role")
+            val content = msg.optString("content")
+            if (content.isNotBlank()) {
+                emitContentEvent(
+                    exchangeId = exchangeId,
+                    kind = "provider_instruction",
+                    content = content,
+                    fields = mapOf("role" to role, "index" to i, "goal_id" to context.goalId, "task_id" to context.taskId)
+                )
+            }
+        }
+    }
+
+    private fun emitContentEvent(
+        exchangeId: String,
+        kind: String,
+        content: String,
+        fields: Map<String, Any?>
+    ) {
+        val hash = com.david.openassistant.data.openrouter.OpenRouterProtocolUtils.computePayloadFingerprint(content)
+        val redacted = com.david.openassistant.data.diagnostics.redactResearchMonitorText(content)
+        val limit = 2000 // Logcat bound
+        
+        val chunkCount = (redacted.length + limit - 1) / limit
+        for (i in 0 until chunkCount) {
+            val chunk = redacted.substring(i * limit, minOf((i + 1) * limit, redacted.length))
+            diagnostics?.info(
+                event = "${kind}_content",
+                component = "content",
+                fields = fields + mapOf(
+                    "exchange_id" to exchangeId,
+                    "content_sha256" to hash,
+                    "chunk_index" to i,
+                    "chunk_count" to chunkCount,
+                    "preview" to chunk
+                )
+            )
+        }
+    }
+
     internal companion object {
         const val CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
         const val MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -5865,55 +6076,30 @@ private class CatalogCache {
 }
 
 /**
- * Redacting network logger for OpenRouter requests/responses.
+ * Minimal redacting network logger for OpenRouter.
  */
 private class OpenRouterLoggingInterceptor : okhttp3.Interceptor {
     override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response {
         val request = chain.request()
-        val url = request.url.toString()
+        val url = request.url.toString().substringBefore('?')
         val method = request.method
         
         val requestId = UUID.randomUUID().toString().take(8)
-        val tag = RuntimeDiagnostics.LOGCAT_TAG
+        val tag = com.david.openassistant.data.diagnostics.RuntimeDiagnostics.LOGCAT_TAG
         
-        // Log Request
-        val requestLog = buildString {
-            append("🌐 [REQ-$requestId] $method $url")
-            request.headers.forEach { (name, value) ->
-                val redactedValue = if (name.equals("Authorization", ignoreCase = true)) "[REDACTED]" else value
-                append("\n  $name: $redactedValue")
-            }
-            request.body?.let { body ->
-                val buffer = okio.Buffer()
-                body.writeTo(buffer)
-                val bodyText = buffer.readUtf8()
-                append("\n  Body: ${redactDiagnosticText(bodyText).take(2000)}")
-            }
-        }
-        Log.d(tag, requestLog)
+        android.util.Log.d(tag, "OA_NET level=DEBUG component=network event=request_dispatched request_id=$requestId method=$method url=$url")
         
         val startNs = System.nanoTime()
         val response: okhttp3.Response
         try {
             response = chain.proceed(request)
         } catch (e: Exception) {
-            Log.e(tag, "🌐 [REQ-$requestId] FAILED", e)
+            android.util.Log.e(tag, "OA_NET level=ERROR component=network event=request_failed request_id=$requestId error=${e.javaClass.simpleName}")
             throw e
         }
         
         val tookMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs)
-        
-        // Log Response
-        val responseLog = buildString {
-            append("🌐 [RES-$requestId] ${response.code} ${response.message} (${tookMs}ms)")
-            response.body.let { body ->
-                val source = body.source()
-                source.request(Long.MAX_VALUE)
-                val bodyText = source.buffer.clone().readUtf8()
-                append("\n  Body: ${redactDiagnosticText(bodyText).take(2000)}")
-            }
-        }
-        Log.d(tag, responseLog)
+        android.util.Log.d(tag, "OA_NET level=DEBUG component=network event=response_received request_id=$requestId status=${response.code} duration_ms=$tookMs")
         
         return response
     }

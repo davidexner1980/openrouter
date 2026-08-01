@@ -6,6 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.util.concurrent.TimeUnit
@@ -42,10 +43,10 @@ class AgentOpenRouterClientTest {
         val bodyWithWhitespace = "\n\n  \n  $jsonBody"
 
         val exception = assertThrows(OpenRouterException::class.java) {
-            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType)
+            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
             method.isAccessible = true
             try {
-                method.invoke(client, bodyWithWhitespace, "sk-or-test", JSONObject(), 200)
+                method.invoke(client, bodyWithWhitespace, "sk-or-test", JSONObject(), 200, 100L)
             } catch (e: java.lang.reflect.InvocationTargetException) {
                 throw e.targetException
             }
@@ -67,10 +68,10 @@ class AgentOpenRouterClientTest {
             .toString()
 
         val exception = assertThrows(OpenRouterException::class.java) {
-            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType)
+            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
             method.isAccessible = true
             try {
-                method.invoke(client, body, "sk-or-test", JSONObject(), 200)
+                method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L)
             } catch (e: java.lang.reflect.InvocationTargetException) {
                 throw e.targetException
             }
@@ -99,9 +100,9 @@ class AgentOpenRouterClientTest {
             ))
             .toString()
 
-        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType)
+        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
         method.isAccessible = true
-        val response = method.invoke(client, body, "sk-or-test", JSONObject(), 200)
+        val response = method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L)
         
         // This should not throw an exception because tool_calls are present
         // The return type is RawAgentResponse, which is private. 
@@ -109,7 +110,7 @@ class AgentOpenRouterClientTest {
     }
 
     @Test
-    fun parseResponseDetectsUpstreamRateLimitInContent() {
+    fun parseResponseStopScanningContentForRateLimit() {
         val body = JSONObject()
             .put("id", "gen-123")
             .put("model", "google/gemini-2.5-flash-lite")
@@ -120,18 +121,12 @@ class AgentOpenRouterClientTest {
             ))
             .toString()
 
-        val exception = assertThrows(OpenRouterException::class.java) {
-            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType)
-            method.isAccessible = true
-            try {
-                method.invoke(client, body, "sk-or-test", JSONObject(), 200)
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw e.targetException
-            }
-        }
-
-        assertEquals(429, exception.statusCode)
-        assertEquals("Upstream provider error: rate limit exceeded for gemini-2.5-flash-lite", exception.userMessage)
+        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
+        method.isAccessible = true
+        
+        // V36: Should NOT throw 429 even if content says rate limit, because HTTP status is 200.
+        val response = method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L)
+        assertNotNull(response)
     }
 
     @Test
@@ -140,7 +135,8 @@ class AgentOpenRouterClientTest {
         method.isAccessible = true
         
         // modelId "google/gemini" should be overridden by allowlist logic in basePayload to openrouter/auto-beta with fallback to openrouter/free
-        val payload = method.invoke(client, "google/gemini", "system", "user", null, null, null, false) as JSONObject
+        // Signature: modelId, systemPrompt, userPrompt, reasoningEffort, role, selectionReason, freeOnly, goalId, taskId
+        val payload = method.invoke(client, "google/gemini", "system", "user", null, null, null, false, null, null) as JSONObject
         
         val models = payload.getJSONArray("models")
         assertEquals("openrouter/auto-beta", payload.getString("model"))

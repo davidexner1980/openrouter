@@ -54,6 +54,7 @@ data class ToolExecutionResult(
     val totalTokens: Int = 0,
     val costUsd: Double = 0.0,
     val webSearchRequests: Int = 0,
+    val durationMs: Long = 0,
 )
 
 object SafeToolCatalog {

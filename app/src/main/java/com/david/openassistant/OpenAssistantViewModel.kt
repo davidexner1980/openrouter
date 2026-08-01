@@ -803,6 +803,17 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         createResearchMonitorReport(stopAfterReport = true)
     }
 
+    fun toggleDetailedContentCapture(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = if (enabled) {
+                researchMonitor.enableDetailedContentCapture()
+            } else {
+                researchMonitor.disableDetailedContentCapture()
+            }
+            _uiState.update { it.copy(researchMonitorStatus = status) }
+        }
+    }
+
     fun createOverseerRuntimePacket() {
         viewModelScope.launch {
             _uiState.update { it.copy(isPreparingRuntimePacket = true, researchMonitorError = null) }

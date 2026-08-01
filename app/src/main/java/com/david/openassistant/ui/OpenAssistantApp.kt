@@ -58,6 +58,7 @@ fun OpenAssistantApp(
     onRetryPublicExport: () -> Unit,
     onOpenExportedReport: (android.content.Context) -> Unit,
     onShareExportedReport: (android.content.Context) -> Unit,
+    onToggleDetailedContentCapture: (Boolean) -> Unit = {},
 ) {
     if (state.isRestoringLocalState) {
         RestoringLocalStateScreen()
@@ -167,6 +168,7 @@ fun OpenAssistantApp(
                         onRuntimePacketConsumed = onRuntimePacketConsumed,
                         onSearxngBaseUrlChange = onSearxngBaseUrlChange,
                         onSaveResearchWebSettings = onSaveResearchWebSettings,
+                        onToggleDetailedContentCapture = onToggleDetailedContentCapture,
                     )
                 }
             }

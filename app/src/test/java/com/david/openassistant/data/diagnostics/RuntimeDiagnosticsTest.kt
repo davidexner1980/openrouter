@@ -61,7 +61,7 @@ class RuntimeDiagnosticsTest {
 
     @Test
     fun diagnosticTimerLogsDuration() {
-        val timer = diagnostics.startTimer("timed_event", mapOf("start_key" to "start_value"))
+        val timer = diagnostics.startTimer("timed_event", "test_component", mapOf("start_key" to "start_value"))
         Thread.sleep(10)
         timer.stop(mapOf("stop_key" to "stop_value"))
         

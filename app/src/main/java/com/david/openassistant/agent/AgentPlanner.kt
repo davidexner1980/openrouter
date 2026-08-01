@@ -17,6 +17,7 @@ import com.david.openassistant.agent.ProviderRecoveryAction
 import com.david.openassistant.agent.ProviderRecoveryPolicy
 import com.david.openassistant.agent.ProviderRouteKind
 import com.david.openassistant.agent.WorkerOutcome
+import com.david.openassistant.data.diagnostics.RuntimeDiagnostics
 import com.david.openassistant.data.openrouter.OpenRouterException
 import com.david.openassistant.agent.AgentRoutingPolicy
 import com.david.openassistant.agent.UsageSource
@@ -29,7 +30,8 @@ import kotlinx.coroutines.ensureActive
 
 class AgentPlanner(
     private val client: AgentOpenRouterClient,
-    private val store: AgentStore
+    private val store: AgentStore,
+    private val diagnostics: RuntimeDiagnostics
 ) {
     suspend fun plan(
         apiKey: String,
@@ -38,6 +40,18 @@ class AgentPlanner(
     ): WorkerOutcome {
         val lease = goal.executionLease ?: return WorkerOutcome.FAIL
         val startedAt = System.currentTimeMillis()
+        
+        diagnostics.info(
+            event = "planning_started",
+            component = "mission",
+            fields = mapOf("goal_id" to goal.id, "worker_id" to lease.workerId)
+        )
+        
+        diagnostics.info(
+            event = "planning_started",
+            component = "mission",
+            fields = mapOf("goal_id" to goal.id, "worker_id" to lease.workerId)
+        )
         val attempt = AgentAttempt(
             taskId = null,
             status = AgentAttemptStatus.RUNNING,
@@ -159,6 +173,16 @@ class AgentPlanner(
                     error = null,
                 )
             }
+            
+            diagnostics.info(
+                event = "planning_completed",
+                component = "mission",
+                fields = mapOf(
+                    "goal_id" to goal.id,
+                    "duration_ms" to (System.currentTimeMillis() - startedAt),
+                    "task_count" to tasks.size
+                )
+            )
             WorkerOutcome.CONTINUE
         } catch (error: CancellationException) {
             store.updateGoal(goal.id) { current ->
