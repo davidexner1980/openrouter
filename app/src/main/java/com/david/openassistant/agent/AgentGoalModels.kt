@@ -73,6 +73,15 @@ data class AgentGoal(
     val allocationProfileName: String? = null,
     val allocationSummary: String? = null,
     val lastAllocationReason: String? = null,
+    val planRevision: Int = 0,
+    val lastMeaningfulProgressAt: Long? = null,
+    val noProgressCount: Int = 0,
+    val blockerRecoveryCondition: String? = null,
+    val finalValidationResult: String? = null,
+    val attemptedStrategies: List<String> = emptyList(),
+    val operationFingerprints: List<String> = emptyList(),
+    val classifiedFailures: List<String> = emptyList(),
+    val leaseGeneration: Int = 0,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)

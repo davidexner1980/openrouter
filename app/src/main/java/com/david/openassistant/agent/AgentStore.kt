@@ -725,6 +725,15 @@ class AgentStore private constructor(
         .put("allocation_profile_name", goal.allocationProfileName ?: JSONObject.NULL)
         .put("allocation_summary", goal.allocationSummary ?: JSONObject.NULL)
         .put("last_allocation_reason", goal.lastAllocationReason ?: JSONObject.NULL)
+        .put("plan_revision", goal.planRevision)
+        .put("last_meaningful_progress_at", goal.lastMeaningfulProgressAt ?: JSONObject.NULL)
+        .put("no_progress_count", goal.noProgressCount)
+        .put("blocker_recovery_condition", goal.blockerRecoveryCondition ?: JSONObject.NULL)
+        .put("final_validation_result", goal.finalValidationResult ?: JSONObject.NULL)
+        .put("attempted_strategies", JSONArray(goal.attemptedStrategies))
+        .put("operation_fingerprints", JSONArray(goal.operationFingerprints))
+        .put("classified_failures", JSONArray(goal.classifiedFailures))
+        .put("lease_generation", goal.leaseGeneration)
 
     private fun decodeGoal(json: JSONObject): AgentGoal {
         val legacyCostUsd = json.optDouble("total_cost_usd", 0.0)
@@ -895,6 +904,15 @@ class AgentStore private constructor(
             allocationProfileName = json.optNullableString("allocation_profile_name"),
             allocationSummary = json.optNullableString("allocation_summary"),
             lastAllocationReason = json.optNullableString("last_allocation_reason"),
+            planRevision = json.optInt("plan_revision", 0),
+            lastMeaningfulProgressAt = json.optLongOrNull("last_meaningful_progress_at"),
+            noProgressCount = json.optInt("no_progress_count", 0),
+            blockerRecoveryCondition = json.optNullableString("blocker_recovery_condition"),
+            finalValidationResult = json.optNullableString("final_validation_result"),
+            attemptedStrategies = json.optJSONArray("attempted_strategies").toStringList(),
+            operationFingerprints = json.optJSONArray("operation_fingerprints").toStringList(),
+            classifiedFailures = json.optJSONArray("classified_failures").toStringList(),
+            leaseGeneration = json.optInt("lease_generation", 0),
         )
     }
 
@@ -938,6 +956,11 @@ class AgentStore private constructor(
         .put("last_recovery_strategy", task.lastRecoveryStrategy ?: JSONObject.NULL)
         .put("result_set_fingerprint", task.resultSetFingerprint ?: JSONObject.NULL)
         .put("recovery_strategy_fingerprint", task.recoveryStrategyFingerprint ?: JSONObject.NULL)
+        .put("last_tactic", task.lastTactic ?: JSONObject.NULL)
+        .put("next_tactic", task.nextTactic ?: JSONObject.NULL)
+        .put("outcome_classification", task.outcomeClassification ?: JSONObject.NULL)
+        .put("error_classification", task.errorClassification ?: JSONObject.NULL)
+        .put("retry_eligibility", task.retryEligibility)
         .put("rejected_queries", JSONArray().apply { task.rejectedQueries.forEach { put(encodeRejectedQuery(it)) } })
 
     private fun decodeTask(json: JSONObject): AgentTask {
@@ -987,8 +1010,13 @@ class AgentStore private constructor(
             waitReason = json.optNullableString("wait_reason"),
             waitCondition = json.optNullableString("wait_condition"),
             lastRecoveryStrategy = json.optNullableString("last_recovery_strategy"),
-            resultSetFingerprint = json.optNullableString("resultSet_fingerprint"),
+            resultSetFingerprint = json.optNullableString("result_set_fingerprint"),
             recoveryStrategyFingerprint = json.optNullableString("recovery_strategy_fingerprint"),
+            lastTactic = json.optNullableString("last_tactic"),
+            nextTactic = json.optNullableString("next_tactic"),
+            outcomeClassification = json.optNullableString("outcome_classification"),
+            errorClassification = json.optNullableString("error_classification"),
+            retryEligibility = json.optBoolean("retry_eligibility", true),
             rejectedQueries = json.optJSONArray("rejected_queries").decodeList(::decodeRejectedQuery),
         )
     }
@@ -1576,7 +1604,7 @@ class AgentStore private constructor(
         private const val ATOMIC_BACKUP_SUFFIX = ".bak"
         private const val LEGACY_RECOVERY_FILE_NAME = "legacy_snapshot_recovery.txt"
         private const val CORRUPT_RECOVERY_SUFFIX = ".corrupt-recovery.txt"
-        private const val STORAGE_VERSION = 9
+        private const val STORAGE_VERSION = 10
         private val STORE_LOCK = Any()
 
         fun isTaskBoundOperation(operation: String): Boolean {

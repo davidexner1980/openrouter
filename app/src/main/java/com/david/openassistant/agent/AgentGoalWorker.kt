@@ -663,11 +663,11 @@ class AgentGoalWorker(
         check(lease.workerId == workerId) {
             "Goal $goalId lease worker ID '${lease.workerId}' does not match worker '$workerId'"
         }
+        check(lease.generation == goal.leaseGeneration) {
+            "Goal $goalId lease generation '${lease.generation}' is stale (latest: ${goal.leaseGeneration})"
+        }
         check(lease.attemptId.isNotBlank()) {
             "Goal $goalId lease attempt ID is blank"
-        }
-        check(lease.generation > 0) {
-            "Goal $goalId lease generation must be positive (was ${lease.generation})"
         }
         return goal
     }
@@ -681,10 +681,11 @@ class AgentGoalWorker(
             
             if (existing == null || isStale || existing.workerId == workerId) {
                 val attemptId = UUID.randomUUID().toString()
-                val generation = (existing?.generation ?: 0) + 1
+                val generation = (current.leaseGeneration).coerceAtLeast(existing?.generation ?: 0) + 1
                 
                 acquired = true
                 current.copy(
+                    leaseGeneration = generation,
                     executionLease = AgentExecutionLease(
                         workerId = workerId,
                         taskId = taskId ?: "none",
@@ -723,6 +724,7 @@ class AgentGoalWorker(
     private fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
         AgentGoalStatus.WAITING_FOR_CREDENTIAL,
         AgentGoalStatus.WAITING_FOR_NETWORK,
+        AgentGoalStatus.WAITING_FOR_USER,
         AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
         AgentGoalStatus.PAUSED,
         AgentGoalStatus.CANCELLED,
@@ -730,7 +732,9 @@ class AgentGoalWorker(
         AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
         AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
         AgentGoalStatus.FAILED,
+        AgentGoalStatus.REJECTED,
         AgentGoalStatus.BLOCKED,
+        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
         AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,

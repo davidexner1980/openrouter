@@ -31,7 +31,9 @@ enum class RetryPolicy {
     AFTER_PROVIDER_COOLDOWN,
     ON_DIFFERENT_COMPATIBLE_ROUTE,
     AFTER_USER_CREDENTIAL_ACTION,
-    AFTER_MATERIAL_STRATEGY_CHANGE
+    AFTER_MATERIAL_STRATEGY_CHANGE,
+    PERMANENT_REJECTION,
+    REQUIRES_USER_RECOVERY_ACTION
 }
 
 data class FailureDescriptor(
@@ -272,6 +274,36 @@ object FailureClassifier {
                 taskId = taskId,
                 operationId = operationId,
                 safeDiagnosticSummary = "Research loop made no measurable progress.",
+            )
+        }
+
+        // 10. Permanent Rejection (Safety/Illegal/Unsupported)
+        if (message.contains("policy") || message.contains("safety") || message.contains("illegal") || message.contains("unsupported capability")) {
+            return FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "PERMANENT_REJECTION",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.PERMANENT_REJECTION,
+                statusCode = statusCode,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "The request was rejected due to safety, legal, or capability constraints.",
+            )
+        }
+
+        // 11. Storage / Local Resource Blocker
+        if (message.contains("no space left") || message.contains("storage full") || message.contains("permission denied")) {
+            return FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "LOCAL_RESOURCE_BLOCKER",
+                scope = FailureScope.DEVICE_NETWORK,
+                retryPolicy = RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
+                statusCode = statusCode,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Local resource limitation (e.g. storage) requires user action.",
             )
         }
 

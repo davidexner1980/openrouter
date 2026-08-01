@@ -119,6 +119,10 @@ class AgentInteractor internal constructor(
         agentStore!!.loadSnapshot()
     }
 
+    fun schedulePeriodicRecovery() {
+        agentScheduler?.schedulePeriodicRecovery()
+    }
+
     fun registerListener(listener: android.content.SharedPreferences.OnSharedPreferenceChangeListener) {
         agentStore!!.registerListener(listener)
     }

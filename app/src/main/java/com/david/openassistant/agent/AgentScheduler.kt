@@ -4,10 +4,12 @@ import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import java.util.UUID
@@ -157,6 +159,23 @@ class AgentScheduler(context: Context) {
     fun cancelAllForGoal(goalId: String) {
         AgentCallCancellationRegistry.cancel(goalId)
         workManager.cancelAllWorkByTag(goalTag(goalId))
+    }
+
+    fun schedulePeriodicRecovery() {
+        val request = PeriodicWorkRequestBuilder<MissionRecoveryWorker>(30, TimeUnit.MINUTES)
+            .addTag("mission_recovery_watchdog")
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        
+        workManager.enqueueUniquePeriodicWork(
+            "mission_recovery_watchdog",
+            ExistingPeriodicWorkPolicy.KEEP,
+            request
+        )
     }
 
     private fun createRequest(goalId: String): OneTimeWorkRequest =

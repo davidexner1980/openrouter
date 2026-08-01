@@ -617,6 +617,16 @@ class AgentVerifier(
                         events = appendEvent(routedCurrent.events, "${decision.explanation} Last verification error: $message"),
                         error = decision.explanation,
                     )
+                    ProviderRecoveryAction.REJECTED -> routedCurrent.copy(
+                        status = AgentGoalStatus.REJECTED,
+                        events = appendEvent(routedCurrent.events, "${decision.explanation} The request was rejected."),
+                        error = decision.explanation,
+                    )
+                    ProviderRecoveryAction.BLOCKED_NEEDS_ACTION -> routedCurrent.copy(
+                        status = AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+                        events = appendEvent(routedCurrent.events, "${decision.explanation} Action required."),
+                        error = decision.explanation,
+                    )
                 }
             }
             return when (decision.action) {
@@ -629,7 +639,9 @@ class AgentVerifier(
                 ProviderRecoveryAction.AFTER_MATERIAL_STRATEGY_CHANGE,
                 -> WorkerOutcome.CONTINUE
                 ProviderRecoveryAction.RETRY_CURRENT_ROUTE -> WorkerOutcome.RETRY
-                ProviderRecoveryAction.ROUTE_EXHAUSTED -> WorkerOutcome.DONE
+                ProviderRecoveryAction.ROUTE_EXHAUSTED,
+                ProviderRecoveryAction.REJECTED,
+                ProviderRecoveryAction.BLOCKED_NEEDS_ACTION -> WorkerOutcome.DONE
             }
         }
     }

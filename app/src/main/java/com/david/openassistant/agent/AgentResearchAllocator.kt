@@ -242,16 +242,36 @@ object AgentResearchAllocator {
         return AllocatedTaskSelection(prioritizedTask.id, "Selected ready task based on allocation gaps and dependency order.")
     }
 
-    fun budgetForTask(goal: AgentGoal, @Suppress("UNUSED_PARAMETER") task: AgentTask, profile: ResearchAllocationProfile): ResearchTaskBudget {
+    fun budgetForTask(goal: AgentGoal, task: AgentTask, profile: ResearchAllocationProfile): ResearchTaskBudget {
+        val tactic = chooseNextEscalationTactic(goal, task)
         return ResearchTaskBudget(
             searchQueriesTarget = profile.targetSearchQueriesPerPass,
             fullReadsTarget = profile.targetFullReadsPerPass,
             distinctSourcesTarget = profile.targetDistinctSources,
-            novelSourcesTarget = 1, // Fallback default
+            novelSourcesTarget = 1,
             minFactClaims = if (profile.complexity == ResearchComplexity.EXTREME) 5 else 3,
             maxRabbitHoleIterations = profile.maxRabbitHoleIterations,
-            allowModelEscalation = profile.risk == ResearchRisk.HIGH && !goal.freeOnly
+            allowModelEscalation = (profile.risk == ResearchRisk.HIGH || tactic != EscalationTactic.NONE) && !goal.freeOnly,
+            forcedTactic = tactic
         )
+    }
+
+    private fun chooseNextEscalationTactic(goal: AgentGoal, task: AgentTask): EscalationTactic {
+        val count = task.consecutiveNoProgressCount
+        return when {
+            count <= 0 -> EscalationTactic.NONE
+            count == 1 -> EscalationTactic.REFORMULATE_QUERY
+            count == 2 -> EscalationTactic.DECOMPOSE_QUESTION
+            count == 3 -> EscalationTactic.SEARCH_AUTHORITATIVE_DOMAINS
+            count == 4 -> EscalationTactic.INSPECT_SITEMAPS_INDEXES
+            count == 5 -> EscalationTactic.FOLLOW_RELEVANT_LINKS
+            count == 6 -> EscalationTactic.ALTERNATIVE_DISCOVERY_ADAPTER
+            count == 7 -> EscalationTactic.LOCAL_EVIDENCE_INDEX_SEARCH
+            count == 8 -> EscalationTactic.ALTERNATE_MODEL_PROVIDER
+            count == 9 -> EscalationTactic.RE_EVALUATE_ASSUMPTIONS
+            count == 10 -> EscalationTactic.SMALLEST_MISSING_FACT
+            else -> EscalationTactic.ASK_USER
+        }
     }
 
     fun shouldEscalateModel(goal: AgentGoal, task: AgentTask, gaps: ResearchAllocationGaps): Boolean {

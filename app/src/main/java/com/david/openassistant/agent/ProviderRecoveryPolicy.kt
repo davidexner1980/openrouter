@@ -15,6 +15,8 @@ enum class ProviderRecoveryAction {
     WAIT_FOR_NETWORK,
     LOCAL_REPAIR,
     AFTER_MATERIAL_STRATEGY_CHANGE,
+    REJECTED,
+    BLOCKED_NEEDS_ACTION,
 }
 
 data class ProviderRecoveryDecision(
@@ -25,6 +27,8 @@ data class ProviderRecoveryDecision(
     fun nextGoalStatus(current: AgentGoalStatus): AgentGoalStatus = when (action) {
         ProviderRecoveryAction.WAIT_FOR_CREDENTIAL -> AgentGoalStatus.WAITING_FOR_CREDENTIAL
         ProviderRecoveryAction.WAIT_FOR_NETWORK -> AgentGoalStatus.WAITING_FOR_NETWORK
+        ProviderRecoveryAction.REJECTED -> AgentGoalStatus.REJECTED
+        ProviderRecoveryAction.BLOCKED_NEEDS_ACTION -> AgentGoalStatus.BLOCKED_NEEDS_ACTION
         else -> if (current == AgentGoalStatus.PAUSED) AgentGoalStatus.PAUSED else AgentGoalStatus.QUEUED
     }
 }
@@ -89,6 +93,8 @@ object ProviderRecoveryPolicy {
             emptyModelOutput = descriptor.failureClass == "EMPTY_MODEL_OUTPUT",
             providerCapacityFailure = descriptor.failureClass == "PROVIDER_CAPACITY" || descriptor.failureClass == "PROVIDER_RATE_LIMIT",
             progressStallFailure = descriptor.failureClass == "NO_PROGRESS",
+            permanentRejection = descriptor.retryPolicy == RetryPolicy.PERMANENT_REJECTION,
+            userRecoveryActionRequired = descriptor.retryPolicy == RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
             isFreeOnly = isFreeOnly,
             isIntelligenceEscalation = isIntelligenceEscalation,
         )
@@ -112,6 +118,8 @@ object ProviderRecoveryPolicy {
         repetitiveSearchStall: Boolean = false,
         shallowResearchStall: Boolean = false,
         verificationCircularity: Boolean = false,
+        permanentRejection: Boolean = false,
+        userRecoveryActionRequired: Boolean = false,
         isFreeOnly: Boolean = false,
         isIntelligenceEscalation: Boolean = false,
     ): ProviderRecoveryDecision {
@@ -120,6 +128,22 @@ object ProviderRecoveryPolicy {
         val isFreeRouter = current.equals(FREE_ROUTER_MODEL_ID, ignoreCase = true)
         val isFreeModel = current.endsWith(":free", ignoreCase = true)
         val isFree = isFreeRouter || isFreeModel || isFreeOnly
+
+        if (permanentRejection) {
+            return ProviderRecoveryDecision(
+                action = ProviderRecoveryAction.REJECTED,
+                nextModelId = current,
+                explanation = "The mission was rejected as unsupported, unsafe, or invalid.",
+            )
+        }
+
+        if (userRecoveryActionRequired) {
+            return ProviderRecoveryDecision(
+                action = ProviderRecoveryAction.BLOCKED_NEEDS_ACTION,
+                nextModelId = current,
+                explanation = "The mission is blocked and requires user intervention (e.g., storage full, permissions).",
+            )
+        }
 
         if (localRequestSchemaFailure) {
             return ProviderRecoveryDecision(

@@ -133,6 +133,11 @@ data class AgentTask(
     val lastRecoveryStrategy: String? = null,
     val resultSetFingerprint: String? = null,
     val recoveryStrategyFingerprint: String? = null,
+    val lastTactic: String? = null,
+    val nextTactic: String? = null,
+    val outcomeClassification: String? = null,
+    val errorClassification: String? = null,
+    val retryEligibility: Boolean = true,
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
 ) {
     val effectiveProgressScore: Double

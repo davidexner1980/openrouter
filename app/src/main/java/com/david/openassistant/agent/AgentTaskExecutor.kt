@@ -710,6 +710,8 @@ class AgentTaskExecutor internal constructor(
                     waiting -> AgentGoalStatus.WAITING_FOR_CREDENTIAL
                     waitingForNetwork -> AgentGoalStatus.WAITING_FOR_NETWORK
                     decision.action == ProviderRecoveryAction.ROUTE_EXHAUSTED -> AgentGoalStatus.BLOCKED
+                    decision.action == ProviderRecoveryAction.REJECTED -> AgentGoalStatus.REJECTED
+                    decision.action == ProviderRecoveryAction.BLOCKED_NEEDS_ACTION -> AgentGoalStatus.BLOCKED_NEEDS_ACTION
                     attemptWindowExhausted &&
                         !automaticResearchRecovery &&
                         !automaticCorrectionRecovery &&
@@ -717,6 +719,9 @@ class AgentTaskExecutor internal constructor(
                         !automaticSynthesisAnalysisFallback -> AgentGoalStatus.FAILED
                     else -> AgentGoalStatus.QUEUED
                 },
+                operationFingerprints = (routedCurrent.operationFingerprints + (currentFingerprint ?: "none")).takeLast(50),
+                classifiedFailures = (routedCurrent.classifiedFailures + descriptor.failureClass).takeLast(50),
+                attemptedStrategies = (routedCurrent.attemptedStrategies + allocationRecovery.name).takeLast(50),
                 modelCooldowns = updatedCooldowns,
                 executionLease = updatedLease,
                 networkWaitStartedAt = if (waitingForNetwork) failureFinishedAt else routedCurrent.networkWaitStartedAt,
@@ -910,7 +915,9 @@ class AgentTaskExecutor internal constructor(
             ProviderRecoveryAction.LOCAL_REPAIR -> WorkerOutcome.RETRY
             ProviderRecoveryAction.WAIT_FOR_CREDENTIAL -> WorkerOutcome.DONE
             ProviderRecoveryAction.WAIT_FOR_NETWORK -> WorkerOutcome.DONE
-            ProviderRecoveryAction.ROUTE_EXHAUSTED -> WorkerOutcome.DONE
+            ProviderRecoveryAction.ROUTE_EXHAUSTED,
+            ProviderRecoveryAction.REJECTED,
+            ProviderRecoveryAction.BLOCKED_NEEDS_ACTION -> WorkerOutcome.DONE
             ProviderRecoveryAction.SWITCH_TO_STABLE,
             ProviderRecoveryAction.SWITCH_TO_FREE,
             ProviderRecoveryAction.ESCALATE_TO_PAID,
@@ -1242,7 +1249,16 @@ class AgentTaskExecutor internal constructor(
 
         val nextGoal = routedCurrent.copy(
             status = nextStatus,
-            blockedReason = if (nextStatus == AgentGoalStatus.BLOCKED) "PARTIAL_EVIDENCE_BOUNDARY" else null,
+            blockedReason = if (nextStatus == AgentGoalStatus.BLOCKED || nextStatus == AgentGoalStatus.BLOCKED_NEEDS_ACTION) {
+                "PARTIAL_EVIDENCE_BOUNDARY"
+            } else {
+                null
+            },
+            operationFingerprints = (routedCurrent.operationFingerprints + currentFingerprint).takeLast(50),
+            attemptedStrategies = if (decision != null) (routedCurrent.attemptedStrategies + decision.action.name).takeLast(50) else routedCurrent.attemptedStrategies,
+            lastMeaningfulProgressAt = if (madeMeaningfulProgress) finishedAt else routedCurrent.lastMeaningfulProgressAt,
+            noProgressCount = if (madeMeaningfulProgress) 0 else routedCurrent.noProgressCount + 1,
+            finalValidationResult = if (nextStatus == AgentGoalStatus.COMPLETED) "Acceptance criteria passed." else routedCurrent.finalValidationResult,
             tasks = updatedTasks,
             attempts = retainAttempts(
                 routedCurrent.attempts.map { existing ->

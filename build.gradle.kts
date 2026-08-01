@@ -5,10 +5,8 @@ plugins {
     id("com.android.application") version "9.3.1" apply false
     id("org.jetbrains.kotlin.plugin.compose") version "2.3.21" apply false
     id("org.jetbrains.kotlin.jvm") version "2.3.21" apply false
-    alias(libs.plugins.google.gms.google.services) apply false
     alias(libs.plugins.androidx.room) apply false
     alias(libs.plugins.google.devtools.ksp) apply false
-    // alias(libs.plugins.google.firebase.crashlytics) apply false
 }
 
 fun androidSdkDirectory(): File? {
@@ -213,7 +211,6 @@ tasks.register<Zip>("generateCleanSourceHandoff") {
             "app/src",
             "app/build.gradle.kts",
             "app/proguard-rules.pro",
-            "app/google-services.json",
             "build.gradle.kts",
             "settings.gradle.kts",
             "gradle.properties",

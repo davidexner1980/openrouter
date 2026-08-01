@@ -213,6 +213,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         val startupStartedAt = System.currentTimeMillis()
         diagnostics.info("startup_begin", mapOf("version" to BuildConfig.VERSION_NAME))
         agentInteractor.registerListener(agentPreferenceListener)
+        agentInteractor.schedulePeriodicRecovery()
 
         viewModelScope.launch {
             val lastExport = withContext(Dispatchers.IO) { publicExportManager.loadLastExportMetadata() }

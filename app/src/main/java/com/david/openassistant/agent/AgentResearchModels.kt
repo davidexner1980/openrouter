@@ -44,6 +44,7 @@ data class ResearchTaskBudget(
     val minFactClaims: Int,
     val maxRabbitHoleIterations: Int,
     val allowModelEscalation: Boolean,
+    val forcedTactic: EscalationTactic = EscalationTactic.NONE,
 )
 
 data class ResearchAllocationSnapshot(

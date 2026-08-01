@@ -14,3 +14,7 @@
 /*_TEST_RESULTS*.txt
 /SOURCE_COMPILE_RESULTS*.txt
 *.hprof
+
+# Google Services
+google-services.json
+**/google-services.json

@@ -291,17 +291,26 @@ fun StatusBadge(status: AgentGoalStatus) {
         AgentGoalStatus.PLANNING -> MaterialTheme.colorScheme.tertiary to "Planning"
         AgentGoalStatus.QUEUED -> MaterialTheme.colorScheme.secondary to "Queued"
         AgentGoalStatus.RUNNING -> MaterialTheme.colorScheme.primary to "Running"
+        AgentGoalStatus.RESEARCHING -> MaterialTheme.colorScheme.primary to "Researching"
+        AgentGoalStatus.RETRIEVING -> MaterialTheme.colorScheme.primary to "Retrieving"
+        AgentGoalStatus.EXTRACTING -> MaterialTheme.colorScheme.primary to "Extracting"
         AgentGoalStatus.VERIFYING -> MaterialTheme.colorScheme.primary to "Verifying"
+        AgentGoalStatus.VALIDATING -> MaterialTheme.colorScheme.primary to "Validating"
+        AgentGoalStatus.SYNTHESIZING -> MaterialTheme.colorScheme.primary to "Synthesizing"
+        AgentGoalStatus.RECOVERING -> MaterialTheme.colorScheme.tertiary to "Recovering"
         AgentGoalStatus.WAITING_FOR_CREDENTIAL -> MaterialTheme.colorScheme.error to "Key Needed"
         AgentGoalStatus.WAITING_FOR_NETWORK -> MaterialTheme.colorScheme.secondary to "Network Wait"
+        AgentGoalStatus.WAITING_FOR_USER -> MaterialTheme.colorScheme.tertiary to "User Action"
         AgentGoalStatus.COMPLETED -> com.david.openassistant.ui.theme.MissionSuccess to "Completed"
         AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE -> com.david.openassistant.ui.theme.MissionSuccess to "Verified: Strong"
         AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS -> com.david.openassistant.ui.theme.MissionSuccess to "Verified: Qual"
         AgentGoalStatus.FAILED -> MaterialTheme.colorScheme.error to "Failed"
+        AgentGoalStatus.REJECTED -> MaterialTheme.colorScheme.error to "Rejected"
         AgentGoalStatus.PAUSED -> MaterialTheme.colorScheme.outline to "Paused"
         AgentGoalStatus.CANCELLED -> MaterialTheme.colorScheme.outline to "Cancelled"
         AgentGoalStatus.CANCELLING -> MaterialTheme.colorScheme.primary to "Cancelling"
         AgentGoalStatus.BLOCKED -> MaterialTheme.colorScheme.error to "Blocked"
+        AgentGoalStatus.BLOCKED_NEEDS_ACTION -> MaterialTheme.colorScheme.error to "Action Needed"
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE -> MaterialTheme.colorScheme.error to "Blocked (Partial)"
         AgentGoalStatus.INSUFFICIENT_CURRENT_DATA -> MaterialTheme.colorScheme.error to "Insufficient Data"
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES -> MaterialTheme.colorScheme.error to "Conflicting Sources"
@@ -1164,6 +1173,8 @@ private fun CapabilityPolicyCard(expanded: Boolean, onToggle: () -> Unit) {
 private fun AgentGoal.needsUserAction(): Boolean =
     status in setOf(
         AgentGoalStatus.WAITING_FOR_CREDENTIAL,
+        AgentGoalStatus.WAITING_FOR_USER,
+        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
         AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
         AgentGoalStatus.BLOCKED,
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
@@ -1177,18 +1188,27 @@ private fun AgentGoal.missionPhaseLabel(): String =
         AgentGoalStatus.PLANNING -> "Designing the research plan"
         AgentGoalStatus.QUEUED -> "Queued for autonomous execution"
         AgentGoalStatus.RUNNING -> "Research agent is working"
+        AgentGoalStatus.RESEARCHING -> "Researching sources and claims"
+        AgentGoalStatus.RETRIEVING -> "Retrieving detailed evidence"
+        AgentGoalStatus.EXTRACTING -> "Extracting key facts from sources"
         AgentGoalStatus.VERIFYING -> "Verifying claims and evidence"
+        AgentGoalStatus.VALIDATING -> "Validating final report integrity"
+        AgentGoalStatus.SYNTHESIZING -> "Synthesizing research results"
+        AgentGoalStatus.RECOVERING -> "Recovering mission from interruption"
         AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "Waiting for OpenRouter access"
         AgentGoalStatus.WAITING_FOR_NETWORK -> "Waiting for network recovery"
+        AgentGoalStatus.WAITING_FOR_USER -> "Waiting for user feedback"
         AgentGoalStatus.COMPLETED,
         AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
         AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
         -> "Mission complete"
         AgentGoalStatus.FAILED -> "Mission failed"
+        AgentGoalStatus.REJECTED -> "Mission rejected"
         AgentGoalStatus.PAUSED -> "Mission paused"
         AgentGoalStatus.CANCELLED -> "Mission cancelled"
         AgentGoalStatus.CANCELLING -> "Stopping mission safely"
         AgentGoalStatus.BLOCKED,
+        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
         -> "Blocked with partial progress"
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES -> "Conflicting source evidence found"
@@ -1210,12 +1230,18 @@ private fun AgentGoal.missionNextMove(): String? {
         AgentGoalStatus.QUEUED -> readyTask
             ?.let { "Next: ${it.title}" }
             ?: "Waiting for the scheduler to claim the next safe milestone."
-        AgentGoalStatus.RUNNING -> runningTask
+        AgentGoalStatus.RUNNING,
+        AgentGoalStatus.RESEARCHING,
+        AgentGoalStatus.RETRIEVING,
+        AgentGoalStatus.EXTRACTING,
+        AgentGoalStatus.SYNTHESIZING,
+        AgentGoalStatus.RECOVERING -> runningTask
             ?.let { "Working now: ${it.title}" }
             ?: readyTask?.let { "Next runnable task: ${it.title}" }
             ?: cooldownTask?.let { "Cooling down before retrying: ${it.title}" }
             ?: "The worker is reconciling progress and choosing the next milestone."
-        AgentGoalStatus.VERIFYING -> "The assistant is checking claims against evidence before producing the final answer."
+        AgentGoalStatus.VERIFYING,
+        AgentGoalStatus.VALIDATING -> "The assistant is checking claims against evidence before producing the final answer."
         AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "Add a valid OpenRouter key and the mission will resume automatically."
         AgentGoalStatus.WAITING_FOR_NETWORK -> buildString {
             append(networkWaitReason ?: "Network access is temporarily unavailable.")
@@ -1223,7 +1249,10 @@ private fun AgentGoal.missionNextMove(): String? {
                 append(" Retrying in ${remainingRetrySeconds}s.")
             }
         }
+        AgentGoalStatus.WAITING_FOR_USER -> "Please provide the requested information to continue research."
         AgentGoalStatus.PAUSED -> "Resume when you want the autonomous worker to continue."
+        AgentGoalStatus.REJECTED -> "This mission cannot be fulfilled due to system constraints or safety policy."
+        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
         AgentGoalStatus.BLOCKED,
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
