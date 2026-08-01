@@ -59,8 +59,6 @@ private val LightColorScheme = lightColorScheme(
 @Composable
 fun OpenAssistantTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Disable dynamic color by default for a more controlled "Research Lab" feel,
-    // but keep it as an option.
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
@@ -69,7 +67,6 @@ fun OpenAssistantTheme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-
         darkTheme -> DarkColorScheme
         else -> LightColorScheme
     }

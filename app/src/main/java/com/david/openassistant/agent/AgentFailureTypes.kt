@@ -218,7 +218,7 @@ object FailureClassifier {
         }
 
         // 6. Response schema / JSON envelope failure
-        if (openRouterEx?.isResponseShapeFailure() == true || message.contains("jsonobject") || message.contains("malformed json") || message.contains("jsonschema")) {
+        if (openRouterEx?.isResponseShapeFailure() == true || message.contains("jsonobject") || message.contains("json object") || message.contains("malformed json") || message.contains("jsonschema")) {
             return FailureDescriptor(
                 domain = FailureDomain.PROVIDER,
                 failureClass = "RESPONSE_SCHEMA_FAILURE",

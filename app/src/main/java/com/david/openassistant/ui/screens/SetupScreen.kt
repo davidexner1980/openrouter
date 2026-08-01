@@ -1,28 +1,17 @@
 package com.david.openassistant.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Science
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -31,7 +20,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.david.openassistant.OpenAssistantUiState
-import com.david.openassistant.ui.animations.neuralGlow
 import com.david.openassistant.ui.components.ErrorCard
 
 @Composable
@@ -44,45 +32,56 @@ fun SetupScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .neuralGlow(MaterialTheme.colorScheme.primary)
             .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 32.dp)
+            .padding(horizontal = 28.dp, vertical = 48.dp)
             .imePadding(),
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
     ) {
-        Text(
-            text = "OpenAssistant",
-            style = MaterialTheme.typography.headlineLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = "Your persistent autonomous research partner.",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.secondary
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "Connect one OpenRouter key to run durable multi-provider investigations with source-backed verification.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(32.dp))
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Icon(
+                imageVector = Icons.Default.Science,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "OpenAssistant",
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.ExtraBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Professional Research Node",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Text(
+                text = "Connect an OpenRouter API key to enable autonomous multi-model investigations and primary source verification.",
+                modifier = Modifier.padding(20.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 22.sp
+            )
+        }
 
         OutlinedTextField(
             value = state.keyInput,
             onValueChange = onKeyInputChange,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("OpenRouter API key") },
+            label = { Text("OpenRouter API Key") },
             placeholder = { Text("sk-or-...") },
             singleLine = true,
-            visualTransformation = if (state.keyVisible) {
-                VisualTransformation.None
-            } else {
-                PasswordVisualTransformation()
-            },
+            shape = RoundedCornerShape(12.dp),
+            visualTransformation = if (state.keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
                 TextButton(onClick = onToggleKeyVisibility) {
                     Text(if (state.keyVisible) "Hide" else "Show")
@@ -92,20 +91,19 @@ fun SetupScreen(
             keyboardActions = KeyboardActions(onDone = { onConnect() }),
             enabled = !state.isConnecting,
             supportingText = {
-                Text("The key is tested before it is encrypted with Android Keystore.")
+                Text("Your key is validated then encrypted using hardware-backed storage.")
             },
         )
 
         state.connectionError?.let { error ->
-            Spacer(Modifier.height(16.dp))
             ErrorCard(error)
         }
 
-        Spacer(Modifier.height(24.dp))
         Button(
             onClick = onConnect,
             modifier = Modifier.fillMaxWidth().height(56.dp),
             enabled = state.keyInput.isNotBlank() && !state.isConnecting,
+            shape = RoundedCornerShape(12.dp)
         ) {
             if (state.isConnecting) {
                 CircularProgressIndicator(
@@ -113,32 +111,35 @@ fun SetupScreen(
                     strokeWidth = 3.dp,
                     color = MaterialTheme.colorScheme.onPrimary
                 )
-                Spacer(Modifier.width(12.dp))
-                Text("Connecting to OpenRouter...")
+                Spacer(Modifier.width(16.dp))
+                Text("Validating Connection...")
             } else {
-                Text("Test and save key", style = MaterialTheme.typography.titleMedium)
+                Text("Initialize Assistant", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             }
         }
 
-        Spacer(Modifier.height(32.dp))
-        SecurityCard()
+        SecuritySummaryCard()
     }
 }
 
 @Composable
-private fun SecurityCard() {
-    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(20.dp)) {
-            Text("Credential protection", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(12.dp))
+private fun SecuritySummaryCard() {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Lock, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(8.dp))
+                Text("Security Protocol", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            }
             Text(
-                text = "• The API key is never placed in source code or normal logs.\n" +
-                    "• The stored value is encrypted with AES-GCM using a non-exportable Android Keystore key.\n" +
-                    "• Android cloud backup is disabled for this app.\n" +
-                    "• A compromised or rooted phone can still expose credentials while they are in use.",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "Credentials are encrypted with AES-GCM and stored in the Android Keystore. Cloud backup is disabled to prevent leakage.",
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 22.sp
+                lineHeight = 16.sp
             )
         }
     }

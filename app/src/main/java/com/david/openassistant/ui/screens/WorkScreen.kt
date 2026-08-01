@@ -5,19 +5,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -26,70 +14,28 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Assignment
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.MenuBook
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Route
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.material.icons.automirrored.filled.*
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import com.david.openassistant.OpenAssistantUiState
-import com.david.openassistant.agent.AgentGoal
-import com.david.openassistant.agent.AgentGoalStatus
-import com.david.openassistant.agent.AgentTaskStatus
-import com.david.openassistant.agent.confidenceExplanation
-import com.david.openassistant.agent.descriptiveSourceLabel
-import com.david.openassistant.agent.descriptiveUrlLabel
-import com.david.openassistant.agent.researchActivitySummary
-import com.david.openassistant.agent.sourceRoleLabel
-import com.david.openassistant.agent.normalizeAgentFailureMessage
+import com.david.openassistant.agent.*
 import com.david.openassistant.ui.animations.scanningLine
-import com.david.openassistant.ui.components.ErrorCard
-import com.david.openassistant.ui.components.MarkdownContent
+import com.david.openassistant.ui.components.*
+import com.david.openassistant.ui.theme.MissionSuccess
 import java.text.DateFormat
 import java.util.Date
 
@@ -106,27 +52,26 @@ fun AgentWorkScreen(
     onExportReport: (String) -> Unit,
 ) {
     val selectedGoal = state.selectedAgentGoal
-    var showCapabilityPolicy by rememberSaveable { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
-        Surface(tonalElevation = 2.dp) {
+        Surface(tonalElevation = 1.dp) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
-                    Text("Research Missions", style = MaterialTheme.typography.titleLarge)
+                    Text("Research Missions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        "${state.agentGoals.size} total missions • ${state.agentGoals.count { it.status == AgentGoalStatus.RUNNING }} active",
-                        style = MaterialTheme.typography.bodySmall,
+                        "${state.agentGoals.size} recorded • ${state.agentGoals.count { it.status == AgentGoalStatus.RUNNING }} active",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 IconButton(onClick = onRefresh) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh Missions", modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -138,14 +83,15 @@ fun AgentWorkScreen(
         ) {
             if (state.isPlanningAgentGoal) {
                 item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(12.dp))
-                            Text("A new research plan is being generated and validated...", style = MaterialTheme.typography.bodySmall)
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
+                            Spacer(Modifier.width(16.dp))
+                            Text("Formulating a new investigation plan...", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
                         }
                     }
                 }
@@ -153,8 +99,14 @@ fun AgentWorkScreen(
 
             state.agentError?.let { item { ErrorCard(it) } }
 
-            if (state.agentGoals.isEmpty()) {
-                item { EmptyWorkState() }
+            if (state.agentGoals.isEmpty() && !state.isPlanningAgentGoal) {
+                item {
+                    EmptyState(
+                        title = "No active missions",
+                        message = "Start a research inquiry from the Research tab to see the autonomous agent in action.",
+                        icon = Icons.AutoMirrored.Filled.Assignment
+                    )
+                }
             } else {
                 selectedGoal?.let { goal ->
                     item {
@@ -162,53 +114,30 @@ fun AgentWorkScreen(
                     }
                 }
 
-                item {
-                    Text("Recent Activity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                }
-                
-                items(state.agentGoals, key = { it.id }) { goal ->
-                    AgentGoalListCard(
-                        goal = goal,
-                        selected = goal.id == selectedGoal?.id,
-                        onClick = { onSelectGoal(goal.id) },
-                    )
+                if (state.agentGoals.size > 1 || (selectedGoal == null && state.agentGoals.isNotEmpty())) {
+                    item {
+                        Text(
+                            "Mission Archive",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                        )
+                    }
+                    
+                    items(state.agentGoals, key = { it.id }) { goal ->
+                        AgentGoalListCard(
+                            goal = goal,
+                            selected = goal.id == selectedGoal?.id,
+                            onClick = { onSelectGoal(goal.id) },
+                        )
+                    }
                 }
             }
 
             item {
-                CapabilityPolicyCard(
-                    expanded = showCapabilityPolicy,
-                    onToggle = { showCapabilityPolicy = !showCapabilityPolicy }
-                )
+                CapabilityPolicyCard()
             }
-        }
-    }
-}
-
-@Composable
-private fun EmptyWorkState() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 64.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                Icons.AutoMirrored.Filled.Assignment,
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-            )
-            Spacer(Modifier.height(16.dp))
-            Text("No active missions", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Submit a research query to see the autonomous agent in action.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }
@@ -219,12 +148,12 @@ private fun AgentGoalListCard(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    val containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
+    val containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.surface
     val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
 
     Surface(
         onClick = onClick,
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(12.dp),
         color = containerColor,
         border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
         modifier = Modifier
@@ -233,12 +162,12 @@ private fun AgentGoalListCard(
                 contentDescription = "Mission: ${goal.title}. Status: ${goal.status.name}. Progress: ${(goal.denseProgressScore * 100).toInt()}%"
             }
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
                 Text(
                     goal.title,
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -249,28 +178,19 @@ private fun AgentGoalListCard(
             
             LinearProgressIndicator(
                 progress = { goal.progressFraction.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().height(6.dp),
                 color = if (goal.status == AgentGoalStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
             )
 
-            goal.missionNextMove()?.let { nextMove ->
-                Text(
-                    nextMove,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "${(goal.denseProgressScore * 100).toInt()}% dense progress • ${goal.completedTaskCount}/${goal.tasks.size} milestones",
+                    "${(goal.denseProgressScore * 100).toInt()}% Complete • ${goal.completedTaskCount}/${goal.tasks.size} Steps",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -278,7 +198,7 @@ private fun AgentGoalListCard(
                     "$${"%.3f".format(goal.totalCostUsd)}",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.secondary
                 )
             }
         }
@@ -290,33 +210,33 @@ fun StatusBadge(status: AgentGoalStatus) {
     val (color, text) = when (status) {
         AgentGoalStatus.PLANNING -> MaterialTheme.colorScheme.tertiary to "Planning"
         AgentGoalStatus.QUEUED -> MaterialTheme.colorScheme.secondary to "Queued"
-        AgentGoalStatus.RUNNING -> MaterialTheme.colorScheme.primary to "Running"
-        AgentGoalStatus.RESEARCHING -> MaterialTheme.colorScheme.primary to "Researching"
-        AgentGoalStatus.RETRIEVING -> MaterialTheme.colorScheme.primary to "Retrieving"
-        AgentGoalStatus.EXTRACTING -> MaterialTheme.colorScheme.primary to "Extracting"
-        AgentGoalStatus.VERIFYING -> MaterialTheme.colorScheme.primary to "Verifying"
-        AgentGoalStatus.VALIDATING -> MaterialTheme.colorScheme.primary to "Validating"
-        AgentGoalStatus.SYNTHESIZING -> MaterialTheme.colorScheme.primary to "Synthesizing"
-        AgentGoalStatus.RECOVERING -> MaterialTheme.colorScheme.tertiary to "Recovering"
+        AgentGoalStatus.RUNNING,
+        AgentGoalStatus.RESEARCHING,
+        AgentGoalStatus.RETRIEVING,
+        AgentGoalStatus.EXTRACTING,
+        AgentGoalStatus.VERIFYING,
+        AgentGoalStatus.VALIDATING,
+        AgentGoalStatus.SYNTHESIZING,
+        AgentGoalStatus.RECOVERING -> MaterialTheme.colorScheme.primary to status.name.lowercase().replaceFirstChar(Char::uppercase)
         AgentGoalStatus.WAITING_FOR_CREDENTIAL -> MaterialTheme.colorScheme.error to "Key Needed"
-        AgentGoalStatus.WAITING_FOR_NETWORK -> MaterialTheme.colorScheme.secondary to "Network Wait"
-        AgentGoalStatus.WAITING_FOR_USER -> MaterialTheme.colorScheme.tertiary to "User Action"
-        AgentGoalStatus.COMPLETED -> com.david.openassistant.ui.theme.MissionSuccess to "Completed"
-        AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE -> com.david.openassistant.ui.theme.MissionSuccess to "Verified: Strong"
-        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS -> com.david.openassistant.ui.theme.MissionSuccess to "Verified: Qual"
-        AgentGoalStatus.FAILED -> MaterialTheme.colorScheme.error to "Failed"
-        AgentGoalStatus.REJECTED -> MaterialTheme.colorScheme.error to "Rejected"
-        AgentGoalStatus.PAUSED -> MaterialTheme.colorScheme.outline to "Paused"
-        AgentGoalStatus.CANCELLED -> MaterialTheme.colorScheme.outline to "Cancelled"
-        AgentGoalStatus.CANCELLING -> MaterialTheme.colorScheme.primary to "Cancelling"
-        AgentGoalStatus.BLOCKED -> MaterialTheme.colorScheme.error to "Blocked"
-        AgentGoalStatus.BLOCKED_NEEDS_ACTION -> MaterialTheme.colorScheme.error to "Action Needed"
-        AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE -> MaterialTheme.colorScheme.error to "Blocked (Partial)"
-        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA -> MaterialTheme.colorScheme.error to "Insufficient Data"
-        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES -> MaterialTheme.colorScheme.error to "Conflicting Sources"
-        AgentGoalStatus.REQUIRES_USER_CLARIFICATION -> MaterialTheme.colorScheme.tertiary to "Clarification Needed"
-        AgentGoalStatus.FINALIZING -> MaterialTheme.colorScheme.primary to "Finalizing"
-        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> MaterialTheme.colorScheme.error to "Corrupt / Incomplete"
+        AgentGoalStatus.WAITING_FOR_NETWORK -> MaterialTheme.colorScheme.secondary to "Network"
+        AgentGoalStatus.WAITING_FOR_USER,
+        AgentGoalStatus.REQUIRES_USER_CLARIFICATION -> MaterialTheme.colorScheme.tertiary to "User Action"
+        AgentGoalStatus.COMPLETED,
+        AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
+        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS -> MissionSuccess to "Success"
+        AgentGoalStatus.FAILED,
+        AgentGoalStatus.REJECTED,
+        AgentGoalStatus.BLOCKED,
+        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+        AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
+        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
+        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> MaterialTheme.colorScheme.error to "Blocked"
+        AgentGoalStatus.PAUSED,
+        AgentGoalStatus.CANCELLED -> MaterialTheme.colorScheme.outline to status.name.lowercase().replaceFirstChar(Char::uppercase)
+        AgentGoalStatus.CANCELLING,
+        AgentGoalStatus.FINALIZING -> MaterialTheme.colorScheme.primary to status.name.lowercase().replaceFirstChar(Char::uppercase)
     }
     
     Surface(
@@ -327,7 +247,7 @@ fun StatusBadge(status: AgentGoalStatus) {
             text = text.uppercase(),
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
             style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
+            fontWeight = FontWeight.ExtraBold,
             color = color
         )
     }
@@ -343,13 +263,14 @@ private fun AgentGoalDetailCard(
     onRefineGoal: (String, String) -> Unit,
     onExportReport: (String) -> Unit,
 ) {
-    var expandedClaims by rememberSaveable { mutableStateOf(false) }
+    var expandedOverview by rememberSaveable { mutableStateOf(true) }
+    var expandedMilestones by rememberSaveable { mutableStateOf(false) }
     var expandedEvidence by rememberSaveable { mutableStateOf(false) }
-    var expandedConcepts by rememberSaveable { mutableStateOf(false) }
-    var expandedMilestones by rememberSaveable { mutableStateOf(true) }
+    var expandedClaims by rememberSaveable { mutableStateOf(false) }
+    var expandedMetrics by rememberSaveable { mutableStateOf(false) }
     var expandedLogs by rememberSaveable { mutableStateOf(false) }
+    
     var refinementText by remember { mutableStateOf("") }
-
     var previewEvidenceId by remember { mutableStateOf<String?>(null) }
     val previewEvidence = previewEvidenceId?.let { id -> goal.evidence.firstOrNull { it.id == id } }
 
@@ -357,101 +278,64 @@ private fun AgentGoalDetailCard(
         EvidencePreviewDialog(evidence = previewEvidence, onDismiss = { previewEvidenceId = null })
     }
 
-    OutlinedCard(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surface)
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            // Header
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(goal.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusBadge(goal.status)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(goal.updatedAt)),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(goal.updatedAt)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                IconButton(onClick = { onExportReport(goal.id) }) {
-                    Icon(Icons.Default.Download, contentDescription = "Export Report")
+                Row {
+                    IconButton(onClick = { onExportReport(goal.id) }) {
+                        Icon(Icons.Default.Download, contentDescription = "Export Report")
+                    }
+                    IconButton(onClick = { onDeleteGoal(goal.id) }) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "Delete Mission", tint = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
 
             MissionCommandPanel(goal)
 
-            ResearchAllocationPanel(goal)
+            // Dynamic Progress
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Total Progress", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Text(percentLabel(goal.progressFraction.toDouble()), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+                LinearProgressIndicator(
+                    progress = { goal.progressFraction.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(8.dp),
+                    strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                )
+            }
 
-            ResearchPulseDashboard(goal)
-
-            if (goal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
-                val remaining = ((goal.nextRetryAt ?: 0) - System.currentTimeMillis()) / 1000
-                if (remaining > 0) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(12.dp))
-                            Text("Retrying in ${remaining}s: ${goal.networkWaitReason ?: "Network connection required."}", style = MaterialTheme.typography.bodySmall)
-                        }
+            // Collapsible Sections
+            CollapsibleSection("Overview", expandedOverview, { expandedOverview = it }) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    InfoSection("Objective", goal.objective)
+                    InfoSection("Request", goal.userRequest)
+                    
+                    goal.result?.takeIf { it.isNotBlank() }?.let {
+                        InfoSection("Verified Result", it, isMarkdown = true)
                     }
                 }
             }
 
-            LinearProgressIndicator(
-                progress = { goal.progressFraction.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                StatItem("Integrity", percentLabel(goal.integrityScore), Modifier.weight(1f))
-                StatItem("Health", percentLabel(goal.graphHealthScore), Modifier.weight(1f))
-                StatItem("Cost", "$${"%.3f".format(goal.totalCostUsd)}", Modifier.weight(1f))
-            }
-
-            InfoSection("Original Request", goal.userRequest)
-            InfoSection("Primary Objective", goal.objective)
-
-            CollapsibleSection("Execution Milestones", expandedMilestones, { expandedMilestones = it }) {
+            CollapsibleSection("Execution Steps (${goal.tasks.size})", expandedMilestones, { expandedMilestones = it }) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     goal.tasks.sortedBy { it.order }.forEach { task ->
                         TaskItem(task)
-                    }
-                }
-            }
-
-            goal.result?.takeIf { it.isNotBlank() }?.let {
-                InfoSection("Final Verified Result", it, isMarkdown = true)
-            }
-
-            if (goal.claims.isNotEmpty()) {
-                CollapsibleSection("Claim & Evidence Graph (${goal.claims.size})", expandedClaims, { expandedClaims = it }) {
-                    val evidenceById = remember(goal.evidence) { goal.evidence.associateBy { it.id } }
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        goal.claims.take(if (expandedClaims) Int.MAX_VALUE else 3).forEach { claim ->
-                            ClaimItem(
-                                claim = claim,
-                                evidenceById = evidenceById,
-                                onEvidenceClick = { previewEvidenceId = it },
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (goal.conceptCandidates.isNotEmpty()) {
-                CollapsibleSection("Discovered Research Concepts (${goal.conceptCandidates.size})", expandedConcepts, { expandedConcepts = it }) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        goal.conceptCandidates.forEach { concept ->
-                            ConceptItem(concept)
-                        }
                     }
                 }
             }
@@ -465,11 +349,41 @@ private fun AgentGoalDetailCard(
                     }
                 }
             }
-            
+
+            if (goal.claims.isNotEmpty()) {
+                CollapsibleSection("Factual Claims (${goal.claims.size})", expandedClaims, { expandedClaims = it }) {
+                    val evidenceById = remember(goal.evidence) { goal.evidence.associateBy { it.id } }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        goal.claims.take(if (expandedClaims) Int.MAX_VALUE else 3).forEach { claim ->
+                            ClaimItem(
+                                claim = claim,
+                                evidenceById = evidenceById,
+                                onEvidenceClick = { previewEvidenceId = it },
+                            )
+                        }
+                    }
+                }
+            }
+
+            CollapsibleSection("Advanced Metrics & Policy", expandedMetrics, { expandedMetrics = it }) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ResearchAllocationPanel(goal)
+                    ResearchPulseDashboard(goal)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        StatItem("Integrity", percentLabel(goal.integrityScore), Modifier.weight(1f))
+                        StatItem("Health", percentLabel(goal.graphHealthScore), Modifier.weight(1f))
+                        StatItem("Total Cost", "$${"%.3f".format(goal.totalCostUsd)}", Modifier.weight(1f))
+                    }
+                }
+            }
+
             if (goal.events.isNotEmpty()) {
                 CollapsibleSection("Activity Ledger", expandedLogs, { expandedLogs = it }) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        goal.events.reversed().take(10).forEach { event ->
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        goal.events.reversed().take(15).forEach { event ->
                             Text(
                                 "${DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(event.createdAt))} • ${event.message}",
                                 style = MaterialTheme.typography.bodySmall,
@@ -480,13 +394,15 @@ private fun AgentGoalDetailCard(
                 }
             }
 
+            // Input refinement
             OutlinedTextField(
                 value = refinementText,
                 onValueChange = { refinementText = it },
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = MaterialTheme.typography.bodySmall,
-                label = { Text("Refine mission (add search direction)", style = MaterialTheme.typography.labelSmall) },
-                placeholder = { Text("e.g. focus on 2024 results...", style = MaterialTheme.typography.labelSmall) },
+                label = { Text("Add research direction", style = MaterialTheme.typography.labelSmall) },
+                placeholder = { Text("e.g. Focus on technical whitepapers...", style = MaterialTheme.typography.labelSmall) },
+                shape = RoundedCornerShape(12.dp),
                 trailingIcon = {
                     IconButton(
                         onClick = {
@@ -495,7 +411,7 @@ private fun AgentGoalDetailCard(
                         },
                         enabled = refinementText.isNotBlank()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Refine", modifier = Modifier.size(20.dp))
+                        Icon(Icons.AutoMirrored.Filled.Send, null, modifier = Modifier.size(20.dp))
                     }
                 },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -507,36 +423,30 @@ private fun AgentGoalDetailCard(
                 })
             )
 
+            // Actions
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val actions = com.david.openassistant.agent.MissionUiLogic.getAvailableActions(goal)
+                val actions = MissionUiLogic.getAvailableActions(goal)
                 
-                if (actions.contains(com.david.openassistant.agent.MissionUiAction.PAUSE)) {
+                if (actions.contains(MissionUiAction.PAUSE)) {
                     Button(onClick = { onPauseGoal(goal.id) }) {
-                        Icon(Icons.Default.Pause, contentDescription = null, Modifier.size(18.dp))
+                        Icon(Icons.Default.Pause, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Pause")
                     }
                 }
-                if (actions.contains(com.david.openassistant.agent.MissionUiAction.RESUME)) {
+                if (actions.contains(MissionUiAction.RESUME)) {
                     Button(onClick = { onResumeGoal(goal.id) }) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, Modifier.size(18.dp))
+                        Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Resume")
                     }
                 }
-                if (actions.contains(com.david.openassistant.agent.MissionUiAction.STOP)) {
+                if (actions.contains(MissionUiAction.STOP)) {
                     OutlinedButton(onClick = { onCancelGoal(goal.id) }) {
                         Text("Stop Mission")
-                    }
-                }
-                if (actions.contains(com.david.openassistant.agent.MissionUiAction.DELETE)) {
-                    TextButton(onClick = { onDeleteGoal(goal.id) }) {
-                        Text("Delete Mission Record", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
@@ -551,138 +461,48 @@ private fun MissionCommandPanel(goal: AgentGoal) {
             ?: goal.nextRunnableTask(skipCooldowns = false)
             ?: goal.nextRunnableTask(skipCooldowns = true)
     }
-    val latestEvent = goal.events.lastOrNull()?.message
     val needsUser = goal.needsUserAction()
-    val nextMove = goal.missionNextMove()
 
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics(mergeDescendants = true) {
-                contentDescription = "Mission command. ${goal.missionPhaseLabel()}. ${nextMove.orEmpty()}"
-            },
-        color = if (needsUser) {
-            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.18f)
-        } else {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.18f)
-        },
-        shape = MaterialTheme.shapes.medium,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        modifier = Modifier.fillMaxWidth(),
+        color = if (needsUser) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (needsUser) MaterialTheme.colorScheme.error.copy(alpha = 0.2f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        "Mission Command",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = if (needsUser) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        goal.missionPhaseLabel(),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                Surface(
-                    color = if (needsUser) {
-                        MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
-                    } else {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                    },
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text(
-                        if (needsUser) "ACTION" else "AUTO",
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = if (needsUser) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                    )
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    goal.missionPhaseLabel(),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = if (needsUser) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+                if (needsUser) {
+                    Icon(Icons.Default.PriorityHigh, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
                 }
             }
 
-            nextMove?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            goal.missionNextMove()?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
             }
 
             activeTask?.let { task ->
                 Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                    shape = MaterialTheme.shapes.small,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                if (task.status == AgentTaskStatus.RUNNING) Icons.Default.AutoAwesome else Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                task.title,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (task.status == AgentTaskStatus.RUNNING) {
+                            CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(14.dp))
                         }
-                        LinearProgressIndicator(
-                            progress = { task.effectiveProgressScore.toFloat().coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        task.lastRecoveryStrategy?.takeIf { it.isNotBlank() }?.let { strategy ->
-                            Text(
-                                "Recovery strategy: $strategy",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                            )
-                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(task.title, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
-
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                MissionSignalChip("Autonomy", if (needsUser) "Needs input" else "Self-running")
-                MissionSignalChip("Tasks", "${goal.completedTaskCount}/${goal.tasks.size}")
-                MissionSignalChip("Evidence", goal.evidence.size.toString())
-                MissionSignalChip("Claims", goal.claims.size.toString())
-            }
-
-            latestEvent?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    "Latest: ${normalizeAgentFailureMessage(it, it)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MissionSignalChip(label: String, value: String) {
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(4.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(4.dp))
-            Text(value, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -691,12 +511,12 @@ private fun MissionSignalChip(label: String, value: String) {
 private fun StatItem(label: String, value: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        shape = MaterialTheme.shapes.small
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+        shape = RoundedCornerShape(8.dp)
     ) {
         Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -704,14 +524,14 @@ private fun StatItem(label: String, value: String, modifier: Modifier = Modifier
 @Composable
 private fun InfoSection(label: String, content: String, isMarkdown: Boolean = false) {
     Column {
-        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.secondary)
         Spacer(Modifier.height(4.dp))
         Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
+            shape = RoundedCornerShape(8.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Box(Modifier.padding(12.dp)) {
+            Box(Modifier.padding(10.dp)) {
                 if (isMarkdown) {
                     MarkdownContent(content)
                 } else {
@@ -732,38 +552,43 @@ private fun CollapsibleSection(
     content: @Composable () -> Unit
 ) {
     Column {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onToggle(!expanded) }
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Surface(
+            onClick = { onToggle(!expanded) },
+            color = Color.Transparent,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Icon(
-                if (expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    if (expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            }
         }
         AnimatedVisibility(
             visible = expanded,
             enter = expandVertically(),
             exit = shrinkVertically()
         ) {
-            Column(Modifier.padding(start = 12.dp, bottom = 8.dp)) {
+            Box(Modifier.padding(bottom = 8.dp)) {
                 content()
             }
         }
+        HorizontalDivider(modifier = Modifier.alpha(0.5f))
     }
 }
 
 @Composable
-private fun TaskItem(task: com.david.openassistant.agent.AgentTask) {
+private fun TaskItem(task: AgentTask) {
     val isRunning = task.status == AgentTaskStatus.RUNNING
     val statusColor = when (task.status) {
-        AgentTaskStatus.COMPLETED -> com.david.openassistant.ui.theme.MissionSuccess
+        AgentTaskStatus.COMPLETED -> MissionSuccess
         AgentTaskStatus.FAILED -> MaterialTheme.colorScheme.error
         AgentTaskStatus.RUNNING -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -772,15 +597,12 @@ private fun TaskItem(task: com.david.openassistant.agent.AgentTask) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .semantics(mergeDescendants = true) {
-                contentDescription = "Milestone ${task.order + 1}: ${task.title}. Status: ${task.status.name}. Progress: ${(task.effectiveProgressScore * 100).toInt()}%"
-            }
             .scanningLine(color = MaterialTheme.colorScheme.primary, active = isRunning),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
-        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f),
+        shape = RoundedCornerShape(8.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     when (task.status) {
@@ -795,38 +617,27 @@ private fun TaskItem(task: com.david.openassistant.agent.AgentTask) {
                 Spacer(Modifier.width(8.dp))
                 Text(
                     "${task.order + 1}. ${task.title}",
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold,
-                    color = if (task.status == AgentTaskStatus.RUNNING) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    color = if (isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                 )
             }
             
             LinearProgressIndicator(
                 progress = { task.effectiveProgressScore.toFloat().coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
-                color = statusColor
+                modifier = Modifier.fillMaxWidth().height(4.dp),
+                color = statusColor,
+                strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
             )
             
-            val taskIsTerminal = task.status in setOf(
-                AgentTaskStatus.COMPLETED,
-                AgentTaskStatus.CANCELLED,
-                AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-            )
-            if (!taskIsTerminal) {
+            if (task.status !in setOf(AgentTaskStatus.COMPLETED, AgentTaskStatus.CANCELLED)) {
                 task.lastError?.let {
                     Text(
                         normalizeAgentFailureMessage(it, it),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-
-                if (task.failureClass == "network_resolution" && task.waitReason != null) {
-                    Text(
-                        "Waiting: ${task.waitReason}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                        fontWeight = FontWeight.SemiBold
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -836,69 +647,51 @@ private fun TaskItem(task: com.david.openassistant.agent.AgentTask) {
 
 @Composable
 private fun ClaimItem(
-    claim: com.david.openassistant.agent.AgentClaim,
-    evidenceById: Map<String, com.david.openassistant.agent.AgentEvidence>,
+    claim: AgentClaim,
+    evidenceById: Map<String, AgentEvidence>,
     onEvidenceClick: (String) -> Unit = {},
 ) {
     val uriHandler = LocalUriHandler.current
     var showConfidenceDetails by remember { mutableStateOf(false) }
+    
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
-        shape = MaterialTheme.shapes.small
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f),
+        shape = RoundedCornerShape(8.dp)
     ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                Text(claim.type.wireName.uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                TextButton(
+                Text(claim.type.wireName.uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.secondary)
+                Surface(
                     onClick = { showConfidenceDetails = true },
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text(percentLabel(claim.confidence), style = MaterialTheme.typography.labelSmall)
+                    Text(percentLabel(claim.confidence), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
                 }
             }
             Text(claim.text, style = MaterialTheme.typography.bodySmall)
 
             if (claim.supportingEvidenceIds.isNotEmpty() || claim.sourceUrls.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     claim.supportingEvidenceIds.distinct().forEach { evidenceId ->
                         val evidence = evidenceById[evidenceId]
-                        SuggestionChip(
+                        AssistChip(
                             onClick = { onEvidenceClick(evidenceId) },
-                            label = {
-                                Text(
-                                    evidence?.title?.take(44)?.ifBlank { "Evidence record" } ?: "Evidence record",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            icon = { Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                            label = { Text(evidence?.title?.take(32) ?: "Evidence", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            leadingIcon = { Icon(Icons.Default.Visibility, null, Modifier.size(14.dp)) },
+                            shape = RoundedCornerShape(16.dp)
                         )
                     }
                     claim.sourceUrls
-                        .mapNotNull { url -> com.david.openassistant.agent.canonicalPresentationUrl(url)?.let { it to url } }
+                        .mapNotNull { url -> canonicalPresentationUrl(url)?.let { it to url } }
                         .distinctBy { it.first }
                         .forEach { (_, url) ->
-                            SuggestionChip(
+                            AssistChip(
                                 onClick = { runCatching { uriHandler.openUri(url) } },
-                                label = {
-                                    Column {
-                                        Text(
-                                            descriptiveUrlLabel(url),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(
-                                            sourceRoleLabel(url),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                },
-                                icon = { Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                label = { Text(descriptiveUrlLabel(url), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                leadingIcon = { Icon(Icons.Default.Link, null, Modifier.size(14.dp)) },
+                                shape = RoundedCornerShape(16.dp)
                             )
                         }
                 }
@@ -909,7 +702,7 @@ private fun ClaimItem(
     if (showConfidenceDetails) {
         AlertDialog(
             onDismissRequest = { showConfidenceDetails = false },
-            title = { Text("Why this confidence score?") },
+            title = { Text("Confidence Audit") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     confidenceExplanation(claim, evidenceById).forEach { line ->
@@ -925,52 +718,30 @@ private fun ClaimItem(
 }
 
 @Composable
-private fun EvidenceItem(evidence: com.david.openassistant.agent.AgentEvidence) {
+private fun EvidenceItem(evidence: AgentEvidence) {
     val uriHandler = LocalUriHandler.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.1f),
-        shape = MaterialTheme.shapes.small
+        shape = RoundedCornerShape(8.dp)
     ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(evidence.title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-            Text(evidence.summary, style = MaterialTheme.typography.labelSmall)
+            Text(evidence.summary, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             if (evidence.sources.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     evidence.sources
-                        .distinctBy { com.david.openassistant.agent.canonicalPresentationUrl(it.url) ?: it.url }
+                        .distinctBy { canonicalPresentationUrl(it.url) ?: it.url }
                         .forEach { source ->
-                            SuggestionChip(
+                            AssistChip(
                                 onClick = { runCatching { uriHandler.openUri(source.url) } },
-                                label = {
-                                    Column {
-                                        Text(
-                                            descriptiveSourceLabel(source),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(
-                                            sourceRoleLabel(source.url),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                },
-                                icon = { Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                                label = { Text(descriptiveSourceLabel(source), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                leadingIcon = { Icon(Icons.Default.Link, null, Modifier.size(14.dp)) },
+                                shape = RoundedCornerShape(16.dp)
                             )
                         }
                 }
-            } else if (evidence.kind == com.david.openassistant.agent.AgentEvidenceKind.RESEARCH_HIT) {
-                Text(
-                    text = evidence.content,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable { runCatching { uriHandler.openUri(evidence.content) } },
-                    textDecoration = TextDecoration.Underline
-                )
             }
         }
     }
@@ -983,71 +754,21 @@ private fun ResearchAllocationPanel(goal: AgentGoal) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.15f),
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(12.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Research Allocation",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.tertiary
-                )
-                Surface(
-                    color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f),
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text(
-                        snapshot.estimatedEffortLabel.uppercase(),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
-                }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Research Strategy", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                StatusBadge(AgentGoalStatus.PLANNING) // Reusing look for effort label if possible or custom
             }
 
-            Text(
-                snapshot.profile.explanation,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text(snapshot.profile.explanation, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (snapshot.remainingSourceGap > 0) {
-                    AllocationGapChip("Source Gap: ${snapshot.remainingSourceGap}", Icons.Default.Explore)
-                }
-                if (snapshot.remainingDomainGap > 0) {
-                    AllocationGapChip("Domain Gap: ${snapshot.remainingDomainGap}", Icons.Default.Route)
-                }
-                if (snapshot.remainingPrimarySourceGap) {
-                    AllocationGapChip("Primary Required", Icons.AutoMirrored.Filled.MenuBook)
-                }
-                if (snapshot.remainingContradictionGap) {
-                    AllocationGapChip("Contradiction Needed", Icons.Default.Search)
-                }
-            }
-            
-            if (snapshot.profile.synthesisModelStrength == com.david.openassistant.agent.ModelStrength.STRONG) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.tertiary
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        "Allocated high-intelligence model for synthesis.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
-                }
+                if (snapshot.remainingSourceGap > 0) AllocationGapChip("Sources: ${snapshot.remainingSourceGap}", Icons.Default.Explore)
+                if (snapshot.remainingDomainGap > 0) AllocationGapChip("Domains: ${snapshot.remainingDomainGap}", Icons.Default.Route)
+                if (snapshot.remainingPrimarySourceGap) AllocationGapChip("Primary Source", Icons.AutoMirrored.Filled.MenuBook)
             }
         }
     }
@@ -1057,16 +778,13 @@ private fun ResearchAllocationPanel(goal: AgentGoal) {
 private fun AllocationGapChip(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shape = MaterialTheme.shapes.extraSmall,
+        shape = RoundedCornerShape(6.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(4.dp))
-            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(6.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -1075,23 +793,17 @@ private fun AllocationGapChip(label: String, icon: androidx.compose.ui.graphics.
 private fun ResearchPulseDashboard(goal: AgentGoal) {
     val activity = remember(goal) { goal.researchActivitySummary() }
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics(mergeDescendants = true) {
-                contentDescription = "Research Pulse: ${activity.searches} searches, ${activity.fetches} fetches, ${activity.uniqueSources} unique sources, ${activity.rabbitHoleBranches} rabbit-hole branches"
-            },
+        modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.15f),
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(12.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Research Pulse", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-            
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 PulseItem("Searches", activity.searches.toString(), Icons.Default.Search, Modifier.weight(1f))
                 PulseItem("Fetches", activity.fetches.toString(), Icons.AutoMirrored.Filled.MenuBook, Modifier.weight(1f))
                 PulseItem("Sources", activity.uniqueSources.toString(), Icons.Default.Explore, Modifier.weight(1f))
-                PulseItem("Branches", activity.rabbitHoleBranches.toString(), Icons.Default.Route, Modifier.weight(1f))
             }
         }
     }
@@ -1100,72 +812,46 @@ private fun ResearchPulseDashboard(goal: AgentGoal) {
 @Composable
 private fun PulseItem(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier) {
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(icon, contentDescription = label, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
+        Icon(icon, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
         Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun ConceptItem(concept: com.david.openassistant.agent.AgentConceptCandidate) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.2f),
-        shape = MaterialTheme.shapes.small
-    ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.tertiary)
-                Spacer(Modifier.width(8.dp))
-                Text(concept.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-            }
-            Text(concept.definition, style = MaterialTheme.typography.labelSmall)
-        }
-    }
-}
-
-@Composable
-private fun EvidencePreviewDialog(evidence: com.david.openassistant.agent.AgentEvidence, onDismiss: () -> Unit) {
+private fun EvidencePreviewDialog(evidence: AgentEvidence, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(evidence.title, style = MaterialTheme.typography.titleMedium) },
+        title = { Text(evidence.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
         text = {
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(evidence.summary, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                    Text(evidence.summary, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Text(evidence.content, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
-            }
+            TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
 }
 
 @Composable
-private fun CapabilityPolicyCard(expanded: Boolean, onToggle: () -> Unit) {
-    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+private fun CapabilityPolicyCard() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+        shape = RoundedCornerShape(12.dp)
+    ) {
         Column(Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Autonomous Policy", fontWeight = FontWeight.Bold)
-                IconButton(onClick = onToggle) {
-                    Icon(if (expanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null)
-                }
-            }
-            if (expanded) {
-                Text(
-                    "The agent operates under strict safety protocols. It cannot execute arbitrary code on your device or access personal data without explicit permission. All heavy computation runs in isolated environments.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Text("Autonomous Laboratory Protocol", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.ExtraBold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Missions run on a durable background scheduler. The agent investigates across multiple sources, performs primary verification, and reconciles contradictions before presenting a final verified result.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -1185,93 +871,64 @@ private fun AgentGoal.needsUserAction(): Boolean =
 
 private fun AgentGoal.missionPhaseLabel(): String =
     when (status) {
-        AgentGoalStatus.PLANNING -> "Designing the research plan"
-        AgentGoalStatus.QUEUED -> "Queued for autonomous execution"
-        AgentGoalStatus.RUNNING -> "Research agent is working"
-        AgentGoalStatus.RESEARCHING -> "Researching sources and claims"
-        AgentGoalStatus.RETRIEVING -> "Retrieving detailed evidence"
-        AgentGoalStatus.EXTRACTING -> "Extracting key facts from sources"
-        AgentGoalStatus.VERIFYING -> "Verifying claims and evidence"
-        AgentGoalStatus.VALIDATING -> "Validating final report integrity"
-        AgentGoalStatus.SYNTHESIZING -> "Synthesizing research results"
-        AgentGoalStatus.RECOVERING -> "Recovering mission from interruption"
-        AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "Waiting for OpenRouter access"
-        AgentGoalStatus.WAITING_FOR_NETWORK -> "Waiting for network recovery"
-        AgentGoalStatus.WAITING_FOR_USER -> "Waiting for user feedback"
+        AgentGoalStatus.PLANNING -> "Planning Investigation"
+        AgentGoalStatus.QUEUED -> "Awaiting Scheduler"
+        AgentGoalStatus.RUNNING,
+        AgentGoalStatus.RESEARCHING,
+        AgentGoalStatus.RETRIEVING,
+        AgentGoalStatus.EXTRACTING,
+        AgentGoalStatus.RECOVERING -> "Research in Progress"
+        AgentGoalStatus.VERIFYING,
+        AgentGoalStatus.VALIDATING -> "Verifying Findings"
+        AgentGoalStatus.SYNTHESIZING -> "Synthesizing Report"
+        AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "Credential Required"
+        AgentGoalStatus.WAITING_FOR_NETWORK -> "Network Interruption"
+        AgentGoalStatus.WAITING_FOR_USER,
+        AgentGoalStatus.REQUIRES_USER_CLARIFICATION -> "Awaiting Input"
         AgentGoalStatus.COMPLETED,
         AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-        -> "Mission complete"
-        AgentGoalStatus.FAILED -> "Mission failed"
-        AgentGoalStatus.REJECTED -> "Mission rejected"
-        AgentGoalStatus.PAUSED -> "Mission paused"
-        AgentGoalStatus.CANCELLED -> "Mission cancelled"
-        AgentGoalStatus.CANCELLING -> "Stopping mission safely"
+        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS -> "Mission Complete"
+        AgentGoalStatus.FAILED,
+        AgentGoalStatus.REJECTED,
         AgentGoalStatus.BLOCKED,
         AgentGoalStatus.BLOCKED_NEEDS_ACTION,
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-        -> "Blocked with partial progress"
-        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES -> "Conflicting source evidence found"
-        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA -> "Not enough current evidence"
-        AgentGoalStatus.REQUIRES_USER_CLARIFICATION -> "Clarification needed"
-        AgentGoalStatus.FINALIZING -> "Finalizing report"
-        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> "Mission record needs repair"
+        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
+        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> "Mission Halted"
+        AgentGoalStatus.PAUSED -> "Mission Paused"
+        AgentGoalStatus.CANCELLED -> "Mission Stopped"
+        AgentGoalStatus.CANCELLING,
+        AgentGoalStatus.FINALIZING -> "Settling Records"
     }
 
 private fun AgentGoal.missionNextMove(): String? {
     val runningTask = tasks.firstOrNull { it.status == AgentTaskStatus.RUNNING }
     val readyTask = nextRunnableTask(skipCooldowns = false)
     val cooldownTask = nextRunnableTask(skipCooldowns = true)
-    val remainingRetrySeconds = nextRetryAt
-        ?.let { ((it - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L) }
 
     return when (status) {
-        AgentGoalStatus.PLANNING -> "The assistant is converting the request into evidence-backed milestones."
-        AgentGoalStatus.QUEUED -> readyTask
-            ?.let { "Next: ${it.title}" }
-            ?: "Waiting for the scheduler to claim the next safe milestone."
+        AgentGoalStatus.PLANNING -> "Designing request-specific milestones."
+        AgentGoalStatus.QUEUED -> readyTask?.let { "Next: ${it.title}" } ?: "Waiting for next available milestone."
         AgentGoalStatus.RUNNING,
         AgentGoalStatus.RESEARCHING,
         AgentGoalStatus.RETRIEVING,
         AgentGoalStatus.EXTRACTING,
         AgentGoalStatus.SYNTHESIZING,
-        AgentGoalStatus.RECOVERING -> runningTask
-            ?.let { "Working now: ${it.title}" }
-            ?: readyTask?.let { "Next runnable task: ${it.title}" }
-            ?: cooldownTask?.let { "Cooling down before retrying: ${it.title}" }
-            ?: "The worker is reconciling progress and choosing the next milestone."
+        AgentGoalStatus.RECOVERING -> runningTask?.let { "Working on: ${it.title}" }
+            ?: readyTask?.let { "Starting: ${it.title}" }
+            ?: cooldownTask?.let { "Cooling down: ${it.title}" }
+            ?: "Reconciling progress..."
         AgentGoalStatus.VERIFYING,
-        AgentGoalStatus.VALIDATING -> "The assistant is checking claims against evidence before producing the final answer."
-        AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "Add a valid OpenRouter key and the mission will resume automatically."
-        AgentGoalStatus.WAITING_FOR_NETWORK -> buildString {
-            append(networkWaitReason ?: "Network access is temporarily unavailable.")
-            if (remainingRetrySeconds != null && remainingRetrySeconds > 0L) {
-                append(" Retrying in ${remainingRetrySeconds}s.")
-            }
-        }
-        AgentGoalStatus.WAITING_FOR_USER -> "Please provide the requested information to continue research."
-        AgentGoalStatus.PAUSED -> "Resume when you want the autonomous worker to continue."
-        AgentGoalStatus.REJECTED -> "This mission cannot be fulfilled due to system constraints or safety policy."
-        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
-        AgentGoalStatus.BLOCKED,
-        AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-        AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
-        -> clarificationDetails
-            ?: blockedReason
-            ?: error
-            ?: "Review the evidence gaps or add direction so the assistant can continue."
-        AgentGoalStatus.FINALIZING,
-        AgentGoalStatus.CANCELLING,
-        -> "The app is settling in-flight work and preparing a durable report."
+        AgentGoalStatus.VALIDATING -> "Triangulating claims against retrieved evidence."
+        AgentGoalStatus.WAITING_FOR_CREDENTIAL -> "Mission will resume once valid credentials are provided."
+        AgentGoalStatus.WAITING_FOR_NETWORK -> networkWaitReason ?: "Network connection required."
+        AgentGoalStatus.PAUSED -> "Resume to continue autonomous work."
         AgentGoalStatus.COMPLETED,
         AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-        -> "Open or export the report to inspect the answer, evidence, and unresolved caveats."
-        AgentGoalStatus.FAILED -> error ?: "The mission stopped before completion. Resume can retry from the saved state."
-        AgentGoalStatus.CANCELLED -> "This mission has been stopped. The saved record is still available for review."
-        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> "The mission record is incomplete and should be exported or repaired before continuing."
+        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS -> "Verified report is available."
+        AgentGoalStatus.FAILED -> error ?: "An unexpected error halted the mission."
+        else -> blockedReason ?: clarificationDetails ?: "Review status and provide direction to continue."
     }
 }
 

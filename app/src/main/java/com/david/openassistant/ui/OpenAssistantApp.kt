@@ -2,15 +2,11 @@ package com.david.openassistant.ui
 
 import android.net.Uri
 import androidx.compose.animation.Crossfade
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.material3.Scaffold
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import com.david.openassistant.ui.AppSection
+import androidx.compose.ui.unit.dp
 import com.david.openassistant.OpenAssistantUiState
 import com.david.openassistant.domain.model.ModelProfile
 import com.david.openassistant.ui.components.AppHeader
@@ -83,15 +79,17 @@ fun OpenAssistantApp(
         topBar = {
             AppHeader(
                 title = when (state.section) {
-                    AppSection.CHAT -> state.currentConversationTitle
+                    AppSection.CHAT -> state.currentConversationTitle.ifBlank { "New Research" }
                     AppSection.WORK -> "Research Missions"
                     AppSection.CONVERSATIONS -> "Research Archive"
                     AppSection.MODELS -> "Model Catalog"
                     AppSection.SETTINGS -> "Settings & Diagnostics"
                 },
-                subtitle = state.selectedModel?.name ?: "No model selected",
+                subtitle = if (state.section == AppSection.CHAT || state.section == AppSection.MODELS) {
+                    state.selectedModel?.name ?: "No model selected"
+                } else null,
                 monitorActive = state.researchMonitorStatus.active,
-                showMonitorStatus = state.section == AppSection.SETTINGS,
+                showMonitorStatus = state.section == AppSection.SETTINGS || state.researchMonitorStatus.active,
             )
         },
         bottomBar = {

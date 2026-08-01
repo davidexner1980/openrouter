@@ -1,57 +1,32 @@
 package com.david.openassistant.ui.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.DeleteForever
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.david.openassistant.BuildConfig
 import com.david.openassistant.OpenAssistantUiState
 import com.david.openassistant.data.security.maskCredentialLabel
-import com.david.openassistant.domain.tools.AdvancedToolCatalog
-import com.david.openassistant.domain.tools.HostedSandboxToolCatalog
-import com.david.openassistant.domain.tools.PublicWebToolCatalog
-import com.david.openassistant.domain.tools.RuntimeDiagnosticToolCatalog
-import com.david.openassistant.domain.tools.SafeToolCatalog
-import com.david.openassistant.domain.tools.WorkspaceToolCatalog
+import com.david.openassistant.domain.tools.*
 import com.david.openassistant.ui.components.DiagnosticsCard
 import com.david.openassistant.ui.components.ErrorCard
 import com.david.openassistant.ui.components.SettingLine
 import com.david.openassistant.ui.components.SettingsCard
-import java.util.Locale
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.delay
 
@@ -108,10 +83,134 @@ fun SettingsScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         state.connectionError?.let { ErrorCard(it) }
 
+        // Section: Connection & Account
+        SettingsCard(title = "OpenRouter Connection") {
+            val keyInfo = state.keyInfo
+            SettingLine("Service Status", if (state.isConnecting) "Verifying..." else "Active")
+            SettingLine("Current Key", maskCredentialLabel(keyInfo?.label))
+            keyInfo?.let {
+                SettingLine("Tier", if (it.isFreeTier) "Free" else "Paid / Professional")
+                SettingLine("Usage", "$${"%.4f".format(it.usage ?: 0.0)}")
+                SettingLine("Remaining", "$${"%.4f".format(it.limitRemaining ?: 0.0)}")
+            }
+            
+            Spacer(Modifier.height(16.dp))
+            OutlinedButton(
+                onClick = onRefreshModels,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.isLoadingModels,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                if (state.isLoadingModels) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Sync, null, Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("Refresh Model Catalog")
+            }
+        }
+
+        // Section: Network & Privacy
+        SettingsCard(title = "Research Network") {
+            Text(
+                "Investigations use a hybrid search strategy via SearXNG/DuckDuckGo. Content extraction is performed directly via HTTPS.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = state.searxngBaseUrlInput,
+                onValueChange = onSearxngBaseUrlChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Private SearXNG Instance") },
+                placeholder = { Text("https://search.example.org") },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Done,
+                ),
+            )
+            state.researchWebSettingsMessage?.let { message ->
+                Text(
+                    message,
+                    modifier = Modifier.padding(top = 8.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (message.contains("saved")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onSaveResearchWebSettings,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Save Network Configuration")
+            }
+        }
+
+        // Section: Capabilities
+        SettingsCard(title = "Autonomous Tool Registry") {
+            val deterministicToolCount = SafeToolCatalog.definitions.size + AdvancedToolCatalog.definitions.size
+            val staticToolCount = deterministicToolCount + WorkspaceToolCatalog.definitions.size + RuntimeDiagnosticToolCatalog.definitions.size + HostedSandboxToolCatalog.definitions.size + PublicWebToolCatalog.definitions.size
+            
+            SettingLine("Active Tools", (staticToolCount + state.activeToolRecipeCount).toString())
+            SettingLine("Custom Recipes", state.activeToolRecipeCount.toString())
+            
+            Spacer(Modifier.height(8.dp))
+            TextButton(
+                onClick = { showToolCatalog = !showToolCatalog },
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text(if (showToolCatalog) "Hide Technical Details" else "View Full Capabilities")
+                Icon(if (showToolCatalog) Icons.Default.ExpandLess else Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp))
+            }
+            
+            if (showToolCatalog) {
+                ToolCategoryList("Research Primitives", SafeToolCatalog.definitions.map { it.displayName })
+                ToolCategoryList("Advanced Analysis", AdvancedToolCatalog.definitions.map { it.displayName })
+                ToolCategoryList("Data & Workspace", WorkspaceToolCatalog.definitions.map { it.displayName })
+                ToolCategoryList("Runtime Diagnostics", RuntimeDiagnosticToolCatalog.definitions.map { it.displayName })
+            }
+        }
+
+        // Section: Data & Privacy
+        SettingsCard(title = "Data Management") {
+            SettingLine("Archived Investigations", state.conversations.size.toString())
+            
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    onClick = { confirmClearChat = true },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    enabled = state.messages.isNotEmpty(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.DeleteSweep, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Clear Chat")
+                }
+                
+                Button(
+                    onClick = { confirmDeleteKey = true },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Logout, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Revoke Key")
+                }
+            }
+        }
+
+        // Section: Diagnostics (Moved to bottom)
         ResearchMonitorPanel(
             state = state,
             onStartResearchMonitor = onStartResearchMonitor,
@@ -123,116 +222,24 @@ fun SettingsScreen(
             onCreateOverseerRuntimePacket = onCreateOverseerRuntimePacket,
         )
 
-        SettingsCard(title = "OpenRouter Integration") {
-            val keyInfo = state.keyInfo
-            SettingLine("Connection", if (state.isConnecting) "Checking Status..." else "Active")
-            SettingLine("API Key", maskCredentialLabel(keyInfo?.label))
-            keyInfo?.let { SettingLine("Account Tier", if (it.isFreeTier) "Free" else "Paid/Professional") }
-            keyInfo?.usage?.let { SettingLine("Cumulative Usage", "$${"%.4f".format(it)}") }
-            keyInfo?.limitRemaining?.let { SettingLine("Credits Remaining", "$${"%.4f".format(it)}") }
-            
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = onRefreshModels,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !state.isLoadingModels,
-            ) {
-                Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (state.isLoadingModels) "Updating Catalog..." else "Refresh Model Catalog")
-            }
-        }
-
-        SettingsCard(title = "Network Strategy") {
-            Text(
-                "OpenAssistant uses a hybrid search strategy. Primary research is routed through SearXNG or DuckDuckGo. Direct fetches are performed via high-integrity HTTPS requests.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = state.searxngBaseUrlInput,
-                onValueChange = onSearxngBaseUrlChange,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Custom SearXNG Instance") },
-                placeholder = { Text("https://search.example.org") },
-                supportingText = {
-                    Text("Optional. Queries go to this instance first for increased privacy.")
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Uri,
-                    imeAction = ImeAction.Done,
-                ),
-            )
-            state.researchWebSettingsMessage?.let { message ->
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (message.contains("saved")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = onSaveResearchWebSettings,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Apply Network Settings")
-            }
-        }
-
-        SettingsCard(title = "Autonomous Tool Registry") {
-            val deterministicToolCount = SafeToolCatalog.definitions.size + AdvancedToolCatalog.definitions.size
-            val staticToolCount = deterministicToolCount + WorkspaceToolCatalog.definitions.size + RuntimeDiagnosticToolCatalog.definitions.size + HostedSandboxToolCatalog.definitions.size + PublicWebToolCatalog.definitions.size
-            
-            SettingLine("Total Available Tools", (staticToolCount + state.activeToolRecipeCount).toString())
-            SettingLine("Research Server Tools", "6")
-            SettingLine("User-Created Recipes", state.activeToolRecipeCount.toString())
-            
-            Spacer(Modifier.height(8.dp))
-            TextButton(
-                onClick = { showToolCatalog = !showToolCatalog },
-                modifier = Modifier.align(Alignment.End)
-            ) {
-                Text(if (showToolCatalog) "Hide Details" else "View Detailed Catalog")
-                Icon(if (showToolCatalog) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
-            }
-            
-            if (showToolCatalog) {
-                ToolCategoryList("Core Research Primitives", SafeToolCatalog.definitions.map { it.displayName })
-                ToolCategoryList("Advanced Analysis", AdvancedToolCatalog.definitions.map { it.displayName })
-                ToolCategoryList("Secure Workspace", WorkspaceToolCatalog.definitions.map { it.displayName })
-                ToolCategoryList("Sandbox Environment", HostedSandboxToolCatalog.definitions.map { it.displayName })
-            }
-        }
-
         DiagnosticsCard(state.diagnostics, state.diagnosticLogPath)
 
-        SettingsCard(title = "Data Management") {
-            SettingLine("Active Records", state.messages.count { it.content.isNotBlank() }.toString())
-            SettingLine("Archived Investigations", state.conversations.size.toString())
-            
-            Spacer(Modifier.height(16.dp))
-            OutlinedButton(
-                onClick = { confirmClearChat = true },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                enabled = state.messages.isNotEmpty(),
-            ) {
-                Icon(Icons.Default.DeleteForever, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Purge Current Conversation")
-            }
-            
-            Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = { confirmDeleteKey = true },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-            ) {
-                Text("Remove API Credentials")
-            }
+        // Footer: About
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                "OpenAssistant Research Engine",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "Build Version ${BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.alpha(0.6f)
+            )
         }
     }
 
@@ -240,11 +247,11 @@ fun SettingsScreen(
     if (confirmDeleteKey) {
         AlertDialog(
             onDismissRequest = { confirmDeleteKey = false },
-            title = { Text("Delete API Key?") },
-            text = { Text("This will permanently remove your OpenRouter key from this device's secure storage.") },
+            title = { Text("Revoke API Credentials?") },
+            text = { Text("This will permanently remove your OpenRouter key from the device's secure Keystore. All background missions will be paused.") },
             confirmButton = {
                 TextButton(onClick = { confirmDeleteKey = false; onDeleteCredential() }) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                    Text("Revoke", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
@@ -256,8 +263,8 @@ fun SettingsScreen(
     if (confirmClearChat) {
         AlertDialog(
             onDismissRequest = { confirmClearChat = false },
-            title = { Text("Clear Conversation?") },
-            text = { Text("All messages and evidence in this conversation will be permanently removed.") },
+            title = { Text("Clear Active Conversation?") },
+            text = { Text("All messages and evidence in the current thread will be deleted. Persistent missions are not affected.") },
             confirmButton = {
                 TextButton(onClick = { confirmClearChat = false; onClearConversation() }) {
                     Text("Clear", color = MaterialTheme.colorScheme.error)
@@ -272,8 +279,9 @@ fun SettingsScreen(
 
 @Composable
 private fun ToolCategoryList(title: String, tools: List<String>) {
-    Column(Modifier.padding(vertical = 4.dp)) {
-        Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+    Column(Modifier.padding(vertical = 8.dp)) {
+        Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.secondary)
+        Spacer(Modifier.height(4.dp))
         tools.forEach { tool ->
             Text("• $tool", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -292,15 +300,14 @@ private fun ResearchMonitorPanel(
     onCreateOverseerRuntimePacket: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    SettingsCard(title = "Deep Research Recorder") {
+    SettingsCard(title = "Forensic Recorder") {
         val monitor = state.researchMonitorStatus
-        SettingLine("Recorder Status", if (monitor.active) "ACTIVE" else "Idle")
+        SettingLine("Status", if (monitor.active) "RECORDING" else "Inactive")
         SettingLine("Events Captured", monitor.eventCount.toString())
-        SettingLine("Trace Volume", formatByteCount(monitor.traceBytes))
         
         Spacer(Modifier.height(12.dp))
         Text(
-            "The monitor records the internal reasoning chain, searches, and tool executions. This forensic data is used for verification and debugging.",
+            "Captures internal reasoning chains and tool logs for verification. Data is stored locally and can be exported as a technical report.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -322,6 +329,7 @@ private fun ResearchMonitorPanel(
                     onClick = onCreateResearchMonitorSnapshot,
                     modifier = Modifier.weight(1f),
                     enabled = !state.isPreparingResearchMonitorReport && !state.isPreparingRuntimePacket,
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(if (state.isPreparingResearchMonitorReport) "..." else "Snapshot")
                 }
@@ -329,6 +337,7 @@ private fun ResearchMonitorPanel(
                     onClick = onStopResearchMonitor,
                     modifier = Modifier.weight(1f),
                     enabled = !state.isPreparingResearchMonitorReport && !state.isPreparingRuntimePacket,
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Text("Stop & Report")
                 }
@@ -338,18 +347,24 @@ private fun ResearchMonitorPanel(
                 onClick = onStartResearchMonitor,
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !state.isPreparingResearchMonitorReport && !state.isPreparingRuntimePacket,
+                shape = RoundedCornerShape(8.dp)
             ) {
+                Icon(Icons.Default.FiberManualRecord, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                Spacer(Modifier.width(8.dp))
                 Text("Start Recording Session")
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(12.dp))
         OutlinedButton(
             onClick = onCreateOverseerRuntimePacket,
             modifier = Modifier.fillMaxWidth(),
             enabled = !state.isPreparingResearchMonitorReport && !state.isPreparingRuntimePacket,
+            shape = RoundedCornerShape(8.dp)
         ) {
-            Text(if (state.isPreparingRuntimePacket) "Preparing Packet..." else "Create Overseer Runtime Packet")
+            Icon(Icons.Default.BugReport, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(if (state.isPreparingRuntimePacket) "Assembling Packet..." else "Create Debug Packet")
         }
     }
 }
@@ -364,60 +379,52 @@ private fun ExportResultView(
     val status = result.status
     val isSuccess = status == com.david.openassistant.data.diagnostics.ExportStatus.EXPORTED
     
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = if (isSuccess) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f),
+        shape = RoundedCornerShape(8.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSuccess) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.error.copy(alpha = 0.1f))
     ) {
-        val message = when (status) {
-            com.david.openassistant.data.diagnostics.ExportStatus.EXPORTED -> {
-                val kind = if (result.reportKind == com.david.openassistant.data.diagnostics.ReportKind.FINAL) "Final report" else "Snapshot"
-                "$kind saved to Downloads/OpenAssistant/${result.displayName}"
-            }
-            com.david.openassistant.data.diagnostics.ExportStatus.PERMISSION_REQUIRED -> "Storage permission required to save to Downloads."
-            else -> "The report was created safely inside OpenAssistant, but it could not be copied to Downloads."
-        }
-
-        Text(
-            text = message,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-            fontWeight = if (isSuccess) FontWeight.Normal else FontWeight.Bold
-        )
-
-        if (isSuccess) {
-            result.displayName?.let { SettingLine("File", it) }
-            SettingLine("Size", formatByteCount(result.bytesWritten))
-            result.verifiedSha256?.let { SettingLine("SHA-256", it.take(8)) }
-            
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onOpen, modifier = Modifier.weight(1f)) {
-                    Text("Open")
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val message = when (status) {
+                com.david.openassistant.data.diagnostics.ExportStatus.EXPORTED -> {
+                    val kind = if (result.reportKind == com.david.openassistant.data.diagnostics.ReportKind.FINAL) "Final report" else "Snapshot"
+                    "$kind ready in Downloads/OpenAssistant"
                 }
-                OutlinedButton(onClick = onShare, modifier = Modifier.weight(1f)) {
-                    Text("Share")
+                com.david.openassistant.data.diagnostics.ExportStatus.PERMISSION_REQUIRED -> "Storage permission required."
+                else -> "Export failed to reach Downloads folder."
+            }
+
+            Text(
+                text = message,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+
+            if (isSuccess) {
+                result.displayName?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onOpen, modifier = Modifier.weight(1f)) {
+                        Text("Open")
+                    }
+                    TextButton(onClick = onShare, modifier = Modifier.weight(1f)) {
+                        Text("Share")
+                    }
                 }
-            }
-        } else {
-            result.failureMessage?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-            if (result.retryable) {
-                Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
-                    Text("Retry Save to Downloads")
+            } else {
+                result.failureMessage?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
+                if (result.retryable) {
+                    Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
+                        Text("Retry")
+                    }
                 }
             }
         }
     }
 }
 
-private fun formatByteCount(bytes: Long): String = when {
-    bytes >= 1024L * 1024L -> "%.2f MiB".format(Locale.US, bytes / (1024.0 * 1024.0))
-    bytes >= 1024L -> "%.1f KiB".format(Locale.US, bytes / 1024.0)
-    else -> "$bytes B"
-}

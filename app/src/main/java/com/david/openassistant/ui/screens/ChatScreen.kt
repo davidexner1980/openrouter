@@ -4,52 +4,26 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Science
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -57,12 +31,7 @@ import com.david.openassistant.OpenAssistantUiState
 import com.david.openassistant.agent.AgentGoalStatus
 import com.david.openassistant.agent.AgentTaskStatus
 import com.david.openassistant.ui.animations.scanningLine
-import com.david.openassistant.ui.components.ErrorCard
-import com.david.openassistant.ui.components.MessageBubble
-import com.david.openassistant.ui.components.PendingImageCard
-import com.david.openassistant.ui.components.SmallBadge
-import com.david.openassistant.ui.components.ResearchBriefSheet
-import com.david.openassistant.ui.components.ToolEvidenceCard
+import com.david.openassistant.ui.components.*
 
 private const val STREAMING_SCROLL_BUCKET_CHARS = 160
 
@@ -124,49 +93,47 @@ fun ChatScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
-        // Simplified Header
-        Surface(tonalElevation = 2.dp) {
+        // Lightweight Screen Toolbar
+        Surface(tonalElevation = 1.dp) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                IconButton(onClick = onOpenConversations) {
-                    Icon(Icons.Default.History, contentDescription = "History")
+                TextButton(onClick = onOpenConversations) {
+                    Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("History", style = MaterialTheme.typography.labelLarge)
                 }
                 
+                VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp))
+
                 AssistChip(
                     onClick = onOpenModels,
                     label = { Text(state.selectedModelProfile.displayName) },
-                    modifier = Modifier.weight(1f)
+                    leadingIcon = { Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(16.dp)) },
+                    modifier = Modifier.weight(1f),
+                    border = null,
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
                 )
 
                 if (activeMission != null) {
-                    AssistChip(
-                        onClick = { onOpenMission(activeMission.id) },
-                        label = { Text(if (isResearchRunning) "Mission Running" else "Mission Active") },
-                        leadingIcon = {
-                            if (isResearchRunning) {
-                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.5.dp)
-                            } else {
-                                Icon(Icons.Default.Science, contentDescription = null, modifier = Modifier.size(14.dp))
-                            }
-                        },
-                        colors = AssistChipDefaults.assistChipColors(
-                            labelColor = if (isResearchRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                        )
-                    )
-                }
-
-                if (state.isLoadingModels) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    IconButton(onClick = { onOpenMission(activeMission.id) }) {
+                        if (isResearchRunning) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Science, contentDescription = "Active Mission", tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
                 }
             }
         }
 
-        state.modelError?.let { ErrorCard(it, modifier = Modifier.padding(horizontal = 12.dp)) }
+        state.modelError?.let { ErrorCard(it, modifier = Modifier.padding(12.dp)) }
         state.chatError?.let { ErrorCard(it, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
         state.attachmentError?.let { ErrorCard(it, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
         
@@ -179,7 +146,12 @@ fun ChatScreen(
         }
 
         if (state.messages.isEmpty()) {
-            EmptyChatState(modifier = Modifier.weight(1f))
+            EmptyState(
+                title = "OpenAssistant Research Lab",
+                message = "Ask a complex question to start an autonomous investigation. The runtime will search multiple sources, follow leads, and verify its findings.",
+                icon = Icons.Default.Science,
+                modifier = Modifier.weight(1f)
+            )
         } else {
             LazyColumn(
                 state = listState,
@@ -205,17 +177,16 @@ fun ChatScreen(
             }
         }
 
-        // Input Area
+        // Refined Input Area
         Surface(
-            tonalElevation = 6.dp,
-            shadowElevation = 8.dp,
-            shape = MaterialTheme.shapes.medium,
-            modifier = Modifier.padding(8.dp),
+            tonalElevation = 2.dp,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp)
+                    .padding(12.dp)
                     .imePadding(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -229,7 +200,7 @@ fun ChatScreen(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Bottom,
                 ) {
                     IconButton(
                         onClick = {
@@ -237,9 +208,7 @@ fun ChatScreen(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                             )
                         },
-                        enabled = !state.isGenerating &&
-                            !state.isPlanningAgentGoal &&
-                            !state.isImportingImage,
+                        enabled = !state.isGenerating && !state.isPlanningAgentGoal && !state.isImportingImage,
                     ) {
                         Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Attach image")
                     }
@@ -255,15 +224,15 @@ fun ChatScreen(
                         placeholder = {
                             Text(
                                 when {
-                                    pendingImage != null -> "Ask about this image..."
-                                    activeMission != null -> "Ask the assistant..."
-                                    else -> "Message OpenAssistant..."
+                                    pendingImage != null -> "Ask about image..."
+                                    activeMission != null -> "Ask assistant..."
+                                    else -> "Enter research goal..."
                                 },
                             )
                         },
-                        minLines = 1,
-                        maxLines = 6,
+                        maxLines = 5,
                         enabled = !state.isGenerating && !state.isPlanningAgentGoal,
+                        shape = RoundedCornerShape(24.dp),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions {
                             if (hasSendableContent && canSendPendingImage && state.selectedModelId != null) {
@@ -274,7 +243,7 @@ fun ChatScreen(
                     )
 
                     if (state.isGenerating) {
-                        IconButton(
+                        FilledIconButton(
                             onClick = onStopGeneration,
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = MaterialTheme.colorScheme.errorContainer,
@@ -284,70 +253,62 @@ fun ChatScreen(
                             Icon(Icons.Default.Stop, contentDescription = "Stop")
                         }
                     } else if (state.isPlanningAgentGoal) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        CircularProgressIndicator(modifier = Modifier.size(40.dp).padding(8.dp), strokeWidth = 3.dp)
                     } else {
-                        IconButton(
+                        FilledIconButton(
                             onClick = {
                                 onSendMessage(draft)
                                 draft = ""
                             },
                             enabled = hasSendableContent && canSendPendingImage && state.selectedModelId != null && !state.isImportingImage,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            )
                         ) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                         }
                     }
                 }
 
-                // Explicit Research Controls
+                // Explicit Research Action
                 if (!state.isGenerating && !state.isPlanningAgentGoal) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (activeMission != null) {
-                            Button(
+                    if (activeMission == null) {
+                        Button(
+                            onClick = onStartResearchBriefing,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.isGeneratingBrief,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            if (state.isGeneratingBrief) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                                Spacer(Modifier.width(12.dp))
+                                Text("Analyzing Request...")
+                            } else {
+                                Icon(Icons.Default.Science, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text("Launch Autonomous Investigation")
+                            }
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
                                 onClick = { onOpenMission(activeMission.id) },
                                 modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
+                                shape = RoundedCornerShape(12.dp)
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.Assignment, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.AutoMirrored.Filled.Assignment, null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("Open Mission", style = MaterialTheme.typography.labelLarge)
+                                Text("Mission Control")
                             }
-
                             Button(
                                 onClick = { 
                                     onAddDirectionToMission(activeMission.id, draft)
                                     draft = ""
                                 },
                                 modifier = Modifier.weight(1f),
-                                enabled = draft.isNotBlank()
+                                enabled = draft.isNotBlank(),
+                                shape = RoundedCornerShape(12.dp)
                             ) {
-                                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Explore, null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("Add Direction", style = MaterialTheme.typography.labelLarge)
-                            }
-                        } else {
-                            Button(
-                                onClick = onStartResearchBriefing,
-                                modifier = Modifier.fillMaxWidth(),
-                                enabled = !state.isGeneratingBrief,
-                                shape = MaterialTheme.shapes.medium
-                            ) {
-                                if (state.isGeneratingBrief) {
-                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                                } else {
-                                    Icon(Icons.Default.Science, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("Start Deep Research", style = MaterialTheme.typography.labelLarge)
-                                }
+                                Text("Add Direction")
                             }
                         }
                     }
@@ -358,7 +319,7 @@ fun ChatScreen(
                         "Vision model required for images",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(start = 48.dp, top = 4.dp)
+                        modifier = Modifier.padding(start = 12.dp)
                     )
                 }
             }
@@ -383,83 +344,49 @@ private fun ActiveInvestigationBubble(mission: com.david.openassistant.agent.Age
     
     Surface(
         modifier = Modifier
-            .fillMaxWidth(0.92f)
+            .fillMaxWidth(0.85f)
             .semantics(mergeDescendants = true) {
                 contentDescription = "Investigation in progress. Current milestone: ${currentTask?.title ?: "Unknown"}"
             }
             .scanningLine(color = MaterialTheme.colorScheme.primary, active = true),
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 2.dp, bottomEnd = 18.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 2.dp, bottomEnd = 16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                 Text(
-                    text = "Investigation in progress...",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
+                    text = "AUTONOMOUS RESEARCH",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.ExtraBold,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
             
             if (currentTask != null) {
                 Text(
-                    text = "Current Milestone: ${currentTask.title}",
+                    text = currentTask.title,
                     style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
-            val hits = mission.evidence.filter { it.kind == com.david.openassistant.agent.AgentEvidenceKind.RESEARCH_HIT }.reversed().take(2)
+            val hits = mission.evidence.filter { it.kind == com.david.openassistant.agent.AgentEvidenceKind.RESEARCH_HIT }.reversed().take(1)
             if (hits.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    hits.forEach { hit ->
-                        Text(
-                            text = "found: ${hit.title}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textDecoration = TextDecoration.Underline
-                        )
-                    }
+                hits.forEach { hit ->
+                    Text(
+                        text = "Hit: ${hit.title}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textDecoration = TextDecoration.Underline
+                    )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun EmptyChatState(modifier: Modifier = Modifier) {
-    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier
-                .padding(32.dp)
-                .semantics(mergeDescendants = true) {
-                    contentDescription = "OpenAssistant Research Lab. Ask a complex question to start an autonomous investigation."
-                },
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Icon(
-                Icons.Default.Science,
-                contentDescription = "Research Lab Icon",
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
-            )
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "OpenAssistant Research Lab",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Ask a complex question to start an autonomous investigation. The runtime will search multiple sources, follow leads, and verify its findings.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }

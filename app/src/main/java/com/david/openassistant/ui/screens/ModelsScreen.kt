@@ -1,42 +1,16 @@
 package com.david.openassistant.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -63,9 +37,9 @@ fun ModelsScreen(
 ) {
     var search by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(ModelFilter.ALL) }
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
 
     val visibleModels = remember(state.models, search, filter) {
-        val routers = setOf("openrouter/auto-beta", "openrouter/free", "openrouter/bodybuilder")
         state.models.filter { model ->
             val matchesSearch = search.isBlank() ||
                 model.name.contains(search, ignoreCase = true) ||
@@ -77,122 +51,166 @@ fun ModelsScreen(
                 ModelFilter.VISION -> model.supportsVision
                 ModelFilter.TOOLS -> model.supportsTools
             }
-            // Prominently expose only the 3 routers when not searching
-            val shouldShow = if (search.isBlank() && filter == ModelFilter.ALL) {
-                 model.id in routers
-            } else {
-                 matchesSearch && matchesFilter && model.id != "openrouter/auto" && model.id != "openrouter/auto-lite"
-            }
-            shouldShow
-        }.sortedByDescending { it.id in routers }
+            matchesSearch && matchesFilter && model.id != "openrouter/auto" && model.id != "openrouter/auto-lite"
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
-        Surface(tonalElevation = 2.dp) {
-            Column(Modifier.padding(16.dp)) {
+        Surface(tonalElevation = 1.dp) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     text = "Research Profiles",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
-                Spacer(Modifier.height(8.dp))
+                
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     ModelProfile.entries.forEach { profile ->
+                        val selected = state.selectedModelProfile == profile
                         FilterChip(
-                            selected = state.selectedModelProfile == profile,
+                            selected = selected,
                             onClick = { onSelectModelProfile(profile) },
-                            label = { Text(profile.displayName) },
+                            label = { Text(profile.displayName, style = MaterialTheme.typography.labelLarge) },
+                            leadingIcon = if (selected) {
+                                { Icon(Icons.Default.Check, null, Modifier.size(16.dp)) }
+                            } else null,
+                            shape = RoundedCornerShape(12.dp)
                         )
                     }
                 }
-                Text(
-                    text = state.selectedModelProfile.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = state.selectedModelProfile.description,
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
         }
 
-        Column(Modifier.padding(12.dp)) {
-            OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search model catalog...") },
-                leadingIcon = { Icon(Icons.Default.Search, null) },
-                singleLine = true,
-                shape = MaterialTheme.shapes.medium
-            )
-            
-            Spacer(Modifier.height(12.dp))
-            
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.FilterList, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            item {
                 Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    ModelFilter.entries.forEach { item ->
-                        FilterChip(
-                            selected = filter == item,
-                            onClick = { filter = item },
-                            label = { Text(item.name.lowercase().replaceFirstChar(Char::uppercase)) },
-                        )
+                    Text(
+                        "Advanced Selection",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    IconButton(onClick = { showAdvanced = !showAdvanced }) {
+                        Icon(if (showAdvanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
                     }
                 }
             }
-            
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    "${visibleModels.size} models available",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TextButton(onClick = onRefresh, enabled = !state.isLoadingModels) {
+
+            if (showAdvanced || search.isNotBlank()) {
+                item {
+                    OutlinedTextField(
+                        value = search,
+                        onValueChange = { search = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Filter model catalog...") },
+                        leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(20.dp)) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    )
+                }
+
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ModelFilter.entries.forEach { item ->
+                            FilterChip(
+                                selected = filter == item,
+                                onClick = { filter = item },
+                                label = { Text(item.name.lowercase().replaceFirstChar(Char::uppercase)) },
+                            )
+                        }
+                    }
+                }
+
+                if (state.isLoadingModels && state.models.isEmpty()) {
+                    item {
+                        Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(strokeWidth = 3.dp)
+                        }
+                    }
+                } else if (visibleModels.isEmpty()) {
+                    item {
+                        Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            Text("No models match your search.", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                } else {
+                    items(visibleModels, key = { it.id }) { model ->
+                        ModelCard(
+                            model = model,
+                            selected = model.id == state.selectedModelId,
+                            selectable = model.supportsTextChat && model.id != "openrouter/bodybuilder",
+                            onClick = { onSelectModel(model.id) },
+                        )
+                    }
+                }
+            } else {
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        shape = RoundedCornerShape(12.dp),
+                        onClick = { showAdvanced = true }
+                    ) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Tune, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.secondary)
+                            Spacer(Modifier.width(16.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Advanced Model Selection", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                Text("Browse the full catalog and select specific providers.", style = MaterialTheme.typography.labelSmall)
+                            }
+                            Icon(Icons.Default.ChevronRight, null)
+                        }
+                    }
+                }
+            }
+
+            item {
+                TextButton(
+                    onClick = onRefresh,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isLoadingModels
+                ) {
                     if (state.isLoadingModels) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
+                        Text("Syncing Catalog...")
+                    } else {
+                        Icon(Icons.Default.Sync, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Refresh Catalog from OpenRouter")
                     }
-                    Text("Refresh Catalog")
-                }
-            }
-        }
-
-        if (state.isLoadingModels && state.models.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        } else if (visibleModels.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No matching models found.", style = MaterialTheme.typography.bodyMedium)
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(visibleModels, key = { it.id }) { model ->
-                    ModelCard(
-                        model = model,
-                        selected = model.id == state.selectedModelId,
-                        selectable = model.supportsTextChat && model.id != "openrouter/bodybuilder",
-                        onClick = { onSelectModel(model.id) },
-                    )
                 }
             }
         }
@@ -206,14 +224,15 @@ private fun ModelCard(
     selectable: Boolean,
     onClick: () -> Unit,
 ) {
-    val containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+    val containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface
+    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
     
-    OutlinedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = selectable, onClick = onClick),
-        colors = CardDefaults.outlinedCardColors(containerColor = containerColor),
-        border = if (selected) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else CardDefaults.outlinedCardBorder()
+    Surface(
+        onClick = if (selectable) onClick else ({}),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = containerColor,
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor)
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -241,16 +260,6 @@ private fun ModelCard(
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium
             )
-            if (model.description.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    model.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
             
             if (model.supportsVision || model.supportsTools || model.isFree || model.id == "openrouter/bodybuilder" || !selectable) {
                 Spacer(Modifier.height(12.dp))
@@ -259,7 +268,7 @@ private fun ModelCard(
                     if (model.isFree) SmallBadge("Free")
                     if (model.supportsVision) SmallBadge("Vision")
                     if (model.supportsTools) SmallBadge("Tools")
-                    if (!selectable) Text("Non-text", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                    if (!selectable) Text("Non-text", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                 }
             }
         }
