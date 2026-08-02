@@ -50,11 +50,12 @@ sealed class RefreshLeaseResult {
 }
 
 sealed class LeaseAcquisitionResult {
-    data class Acquired(val goal: AgentGoal) : LeaseAcquisitionResult()
+    data class Acquired(val ticket: AgentOwnershipTicket, val goal: AgentGoal) : LeaseAcquisitionResult()
     object LiveOwnerPresent : LeaseAcquisitionResult()
-    data class OrphanReclaimed(val goal: AgentGoal) : LeaseAcquisitionResult()
+    data class OrphanReclaimed(val ticket: AgentOwnershipTicket, val goal: AgentGoal) : LeaseAcquisitionResult()
     object RetryRequired : LeaseAcquisitionResult()
     object MissionTerminal : LeaseAcquisitionResult()
+    data class Rejected(val reason: String) : LeaseAcquisitionResult()
     data class StorageFailure(val cause: Throwable) : LeaseAcquisitionResult()
 }
 
@@ -122,6 +123,23 @@ class AgentStore private constructor(
         updateGoalInternalLocked(goalId, transform)
     }
 
+    fun updateGoalAtomic(
+        goalId: String,
+        ticket: AgentOwnershipTicket?,
+        transform: (AgentGoal) -> AgentGoal
+    ): AgentSnapshot = synchronized(STORE_LOCK) {
+        if (ticket != null) {
+            val validation = validateTicketInternalLocked(ticket)
+            if (validation !is TicketValidationResult.Valid) {
+                // If validation fails, return current snapshot without changes.
+                // Callers must handle the fact that their update was rejected.
+                return@synchronized loadSnapshotFromFilesLocked()
+            }
+        }
+        migrateLegacyIfNeededLocked()
+        updateGoalInternalLocked(goalId, transform)
+    }
+
     fun refreshExecutionLease(
         goalId: String,
         workerId: String,
@@ -150,17 +168,28 @@ class AgentStore private constructor(
         RefreshLeaseResult.Refreshed
     }
 
-    fun acquireLeaseAtomic(
+    fun acquirePlanningLeaseAtomic(goalId: String, workerId: String): LeaseAcquisitionResult = synchronized(STORE_LOCK) {
+        acquireLeaseInternalLocked(goalId, workerId, null)
+    }
+
+    fun acquireTaskLeaseAtomic(goalId: String, workerId: String, taskId: String): LeaseAcquisitionResult = synchronized(STORE_LOCK) {
+        if (taskId.isBlank() || taskId == "none") {
+            return@synchronized LeaseAcquisitionResult.Rejected("Execution requires a valid task ID.")
+        }
+        acquireLeaseInternalLocked(goalId, workerId, taskId)
+    }
+
+    private fun acquireLeaseInternalLocked(
         goalId: String,
         workerId: String,
         taskId: String?,
-    ): LeaseAcquisitionResult = synchronized(STORE_LOCK) {
+    ): LeaseAcquisitionResult {
         migrateLegacyIfNeededLocked()
         val currentSnapshot = loadSnapshotFromFilesLocked()
-        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return@synchronized LeaseAcquisitionResult.RetryRequired
+        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return LeaseAcquisitionResult.RetryRequired
         
         if (goal.status.isFinalTerminalStatus() || goal.status == AgentGoalStatus.REJECTED || goal.status == AgentGoalStatus.BLOCKED) {
-            return@synchronized LeaseAcquisitionResult.MissionTerminal
+            return LeaseAcquisitionResult.MissionTerminal
         }
 
         val now = System.currentTimeMillis()
@@ -168,10 +197,12 @@ class AgentStore private constructor(
         val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
         
         val isStale = AgentLeasePolicy.isStale(existing, now)
-        val isOrphan = existing != null && existing.ownerProcessSessionId != currentSessionId
-        val isMyOwn = existing != null && existing.workerId == workerId && existing.ownerProcessSessionId == currentSessionId
+        // Explicit legacy detection: missing session ID or 'unknown'
+        val isLegacy = existing != null && (existing.ownerProcessSessionId.isBlank() || existing.ownerProcessSessionId == "unknown")
+        val isOrphan = existing != null && !isLegacy && existing.ownerProcessSessionId != currentSessionId
+        val isMyOwn = existing != null && !isLegacy && existing.workerId == workerId && existing.ownerProcessSessionId == currentSessionId
 
-        if (existing == null || isStale || isOrphan || isMyOwn) {
+        if (existing == null || isStale || isOrphan || isMyOwn || isLegacy) {
             val attemptId = UUID.randomUUID().toString()
             val newGeneration = maxOf(goal.leaseGeneration, existing?.generation ?: 0) + 1
             
@@ -186,10 +217,11 @@ class AgentStore private constructor(
             )
             
             val reason = when {
+                isLegacy -> "Recovered legacy lease without process identity."
                 isMyOwn -> "Re-acquired existing local lease."
                 existing == null -> "Acquired initial execution lease."
                 isStale -> "Recovered a stale execution lease (last heartbeat: ${existing.heartbeatAt})."
-                isOrphan -> "Reclaimed an orphaned lease from dead process session '${existing.ownerProcessSessionId}'."
+                isOrphan -> "Reclaimed an orphaned lease from dead process session '${existing?.ownerProcessSessionId}'."
                 else -> "Acquired lease."
             }
 
@@ -203,29 +235,53 @@ class AgentStore private constructor(
             
             return try {
                 writeGoalLocked(updatedGoal)
-                if (isOrphan || (isStale && existing != null)) {
+                
+                val reloaded = readGoalLocked(goalFileLocked(goalId))
+                val reloadedLease = reloaded.executionLease!!
+                val ticket = if (taskId != null) {
+                    TaskExecutionTicket(
+                        goalId = goalId,
+                        taskIdentity = reloadedLease.taskId,
+                        workerId = reloadedLease.workerId,
+                        ownerProcessSessionId = reloadedLease.ownerProcessSessionId,
+                        generation = reloadedLease.generation,
+                        attemptId = reloadedLease.attemptId,
+                        acquiredAt = reloadedLease.acquiredAt
+                    )
+                } else {
+                    PlanningTicket(
+                        goalId = goalId,
+                        workerId = reloadedLease.workerId,
+                        ownerProcessSessionId = reloadedLease.ownerProcessSessionId,
+                        generation = reloadedLease.generation,
+                        attemptId = reloadedLease.attemptId,
+                        acquiredAt = reloadedLease.acquiredAt
+                    )
+                }
+
+                if (isOrphan || (isStale && existing != null) || isLegacy) {
                     diagnostics?.info(
-                        event = if (isOrphan) "lease_orphan_reclaimed" else "lease_stale_reclaimed",
+                        event = if (isOrphan) "lease_orphan_reclaimed" else if (isLegacy) "lease_legacy_reclaimed" else "lease_stale_reclaimed",
                         component = "lease",
                         fields = mapOf(
                             "goal_id" to goalId,
                             "worker_id" to workerId,
                             "old_session" to (existing?.ownerProcessSessionId ?: "none"),
-                            "new_session" to currentSessionId
+                            "new_session" to currentSessionId,
+                            "task_id" to (taskId ?: "none")
                         )
                     )
-                    LeaseAcquisitionResult.OrphanReclaimed(updatedGoal)
+                    LeaseAcquisitionResult.OrphanReclaimed(ticket, updatedGoal)
                 } else {
                     diagnostics?.info(
                         event = "lease_acquired",
                         component = "lease",
-                        fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "lease_gen" to newGeneration)
+                        fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "lease_gen" to newGeneration, "task_id" to (taskId ?: "none"))
                     )
-                    LeaseAcquisitionResult.Acquired(updatedGoal)
+                    LeaseAcquisitionResult.Acquired(ticket, updatedGoal)
                 }
-            } catch (e: Throwable) {
-                LeaseAcquisitionResult.StorageFailure(e)
-                LeaseAcquisitionResult.RetryRequired
+            } catch (error: Throwable) {
+                LeaseAcquisitionResult.StorageFailure(error)
             }
         } else {
             diagnostics?.info(
@@ -235,25 +291,50 @@ class AgentStore private constructor(
                     "goal_id" to goalId,
                     "worker_id" to workerId,
                     "owner_sid" to existing.ownerProcessSessionId,
-                    "owner_worker" to existing.workerId
+                    "owner_worker" to existing.workerId,
+                    "target_task" to (taskId ?: "none"),
+                    "owner_task" to existing.taskId
                 )
             )
             return LeaseAcquisitionResult.LiveOwnerPresent
         }
     }
 
-    fun releaseLeaseAtomic(goalId: String, workerId: String): Boolean = synchronized(STORE_LOCK) {
+    private fun validateTicketInternalLocked(ticket: AgentOwnershipTicket): TicketValidationResult {
         val current = loadSnapshotFromFilesLocked()
-        val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized false
-        val lease = goal.executionLease ?: return@synchronized false
-        
-        if (lease.workerId != workerId || lease.ownerProcessSessionId != com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID) {
-            return@synchronized false
-        }
+        val goal = current.goals.firstOrNull { it.id == ticket.goalId } ?: return TicketValidationResult.LeaseMissing
+        val lease = goal.executionLease ?: return TicketValidationResult.LeaseMissing
 
+        return when {
+            lease.workerId != ticket.workerId -> 
+                TicketValidationResult.Mismatch("WORKER_MISMATCH", "workerId", ticket.workerId, lease.workerId)
+            lease.ownerProcessSessionId != ticket.ownerProcessSessionId ->
+                TicketValidationResult.Mismatch("PROCESS_SESSION_MISMATCH", "ownerProcessSessionId", ticket.ownerProcessSessionId, lease.ownerProcessSessionId)
+            lease.generation != ticket.generation ->
+                TicketValidationResult.Mismatch("GENERATION_MISMATCH", "generation", ticket.generation.toString(), lease.generation.toString())
+            lease.attemptId != ticket.attemptId ->
+                TicketValidationResult.Mismatch("ATTEMPT_MISMATCH", "attemptId", ticket.attemptId, lease.attemptId)
+            lease.taskId != (ticket.taskId ?: "none") ->
+                TicketValidationResult.Mismatch("TASK_MISMATCH", "taskId", ticket.taskId ?: "none", lease.taskId)
+            AgentLeasePolicy.isStale(lease) ->
+                TicketValidationResult.LeaseExpired
+            else -> TicketValidationResult.Valid
+        }
+    }
+
+    fun validateTicket(ticket: AgentOwnershipTicket): TicketValidationResult = synchronized(STORE_LOCK) {
+        validateTicketInternalLocked(ticket)
+    }
+
+    fun releaseLeaseAtomic(ticket: AgentOwnershipTicket): Boolean = synchronized(STORE_LOCK) {
+        if (validateTicketInternalLocked(ticket) !is TicketValidationResult.Valid) return@synchronized false
+
+        val current = loadSnapshotFromFilesLocked()
+        val goal = current.goals.firstOrNull { it.id == ticket.goalId } ?: return@synchronized false
+        
         val updatedGoal = goal.copy(
             executionLease = null,
-            events = appendEvent(goal.events, "Released execution lease for worker $workerId."),
+            events = appendEvent(goal.events, "Released execution lease for worker ${ticket.workerId}."),
             updatedAt = System.currentTimeMillis()
         )
         return try {
@@ -261,7 +342,7 @@ class AgentStore private constructor(
             diagnostics?.info(
                 event = "lease_released",
                 component = "lease",
-                fields = mapOf("goal_id" to goalId, "worker_id" to workerId)
+                fields = mapOf("goal_id" to ticket.goalId, "worker_id" to ticket.workerId, "task_id" to (ticket.taskId ?: "none"))
             )
             true
         } catch (e: Throwable) {
@@ -425,16 +506,40 @@ class AgentStore private constructor(
         TransitionOutcomeResult.Updated(updatedAttempt)
     }
 
-    fun applyUsageOnce(
-        goalId: String,
+    fun commitTaskResultAtomic(
+        ticket: TaskExecutionTicket,
+        transform: (AgentGoal) -> AgentGoal
+    ): AgentSnapshot = synchronized(STORE_LOCK) {
+        val validation = validateTicketInternalLocked(ticket)
+        if (validation !is TicketValidationResult.Valid) {
+            diagnostics?.warning(
+                event = "atomic_commit_rejected_ownership_lost",
+                fields = mapOf(
+                    "goal_id" to ticket.goalId,
+                    "task_id" to ticket.taskId,
+                    "reason" to (validation as? TicketValidationResult.Mismatch)?.reason
+                )
+            )
+            return@synchronized loadSnapshotFromFilesLocked()
+        }
+        
+        migrateLegacyIfNeededLocked()
+        updateGoalInternalLocked(ticket.goalId, transform)
+    }
+
+    fun applyUsageOnceAtomic(
+        ticket: AgentOwnershipTicket,
         accountingKey: String,
         tokenDelta: Int?,
         costUsd: Double?,
         usageSource: UsageSource,
-        workerId: String,
     ): AgentSnapshot = synchronized(STORE_LOCK) {
+        if (validateTicketInternalLocked(ticket) !is TicketValidationResult.Valid) {
+            return@synchronized loadSnapshotFromFilesLocked()
+        }
+        
         migrateLegacyIfNeededLocked()
-        updateGoalInternalLocked(goalId) { current ->
+        updateGoalInternalLocked(ticket.goalId) { current ->
             if (current.idempotencyRecords.any { it.key == accountingKey && it.state == IdempotencyState.COMMITTED }) {
                 current
             } else {
@@ -443,9 +548,9 @@ class AgentStore private constructor(
                     key = accountingKey,
                     effectType = IdempotencyEffectType.PROVIDER_ACCOUNTING,
                     state = IdempotencyState.COMMITTED,
-                    claimOwner = workerId,
+                    claimOwner = ticket.workerId,
                     committedAt = System.currentTimeMillis(),
-                    completedBy = workerId
+                    completedBy = ticket.workerId
                 )
                 updated.copy(idempotencyRecords = updated.idempotencyRecords + record)
             }

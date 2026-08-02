@@ -50,6 +50,7 @@ class AgentExchangeRaceTest {
                 taskId = taskId,
                 attemptId = "attempt-1",
                 executionGeneration = generation,
+                acquiredAt = System.currentTimeMillis(),
                 role = AgentTaskRole.PRIMARY_REASONING,
                 operation = MissionOperation.EXECUTE_TASK,
                 parentOperationId = "op-1"

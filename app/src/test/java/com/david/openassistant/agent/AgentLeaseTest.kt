@@ -162,13 +162,16 @@ class AgentLeaseTest {
             )
         )
 
-        val ownership1 = ExecutionOwnership(
-            workerId = worker1Id,
-            leaseAttemptId = "attempt-1",
-            executionGeneration = 1,
-            taskId = taskId,
+        val ticket = TaskExecutionTicket(
+            goal.id,
+            taskId,
+            worker1Id,
+            "session-1",
+            1,
+            "attempt-1",
+            0L
         )
-        val canCommit = canCommitMilestoneResult(goal, taskId, attempt1Id, ownership1)
+        val canCommit = canCommitMilestoneResult(goal, taskId, attempt1Id, ticket)
         assertFalse(canCommit)
     }
 }

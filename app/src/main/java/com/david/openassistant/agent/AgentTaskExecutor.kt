@@ -25,30 +25,46 @@ class AgentTaskExecutor internal constructor(
         apiKey: String,
         goal: AgentGoal,
         task: AgentTask,
-        workerId: String,
+        ticket: TaskExecutionTicket,
         models: List<OpenRouterModel> = emptyList(),
     ): WorkerOutcome {
         val taskDiagnostics = diagnostics.withContext(
             mapOf(
                 "goal_id" to goal.id,
                 "task_id" to task.id,
-                "worker_id" to workerId,
+                "worker_id" to ticket.workerId,
                 "capability" to task.capability.name,
                 "attempt" to (task.attemptCount + 1)
             )
         )
 
-        if (revalidatePreservedResearchMilestone(goal, task)) {
+        // V37 Phase 1: Execution Start Validation
+        val startValidation = store.validateTicket(ticket)
+        diagnostics.info(
+            event = "ownership_validation_completed",
+            component = "lease",
+            fields = mapOf(
+                "goal_id" to goal.id,
+                "task_id" to task.id,
+                "validation_stage" to "EXECUTION_START",
+                "outcome" to if (startValidation is TicketValidationResult.Valid) "PASS" else "FAIL",
+                "reason_code" to (startValidation as? TicketValidationResult.Mismatch)?.reason,
+                "field" to (startValidation as? TicketValidationResult.Mismatch)?.field,
+                "expected" to (startValidation as? TicketValidationResult.Mismatch)?.expected,
+                "actual" to (startValidation as? TicketValidationResult.Mismatch)?.actual
+            )
+        )
+        if (startValidation !is TicketValidationResult.Valid) {
+            return WorkerOutcome.DONE
+        }
+
+        if (revalidatePreservedResearchMilestone(goal, task, ticket)) {
             taskDiagnostics.info("agent_milestone_revalidated_skipped_execution")
             return WorkerOutcome.CONTINUE
         }
-        val activeLease = goal.executionLease
-        if (activeLease == null || activeLease.workerId != workerId || activeLease.taskId != task.id) {
-            taskDiagnostics.warning("agent_task_executor_ownership_validation_failed")
-            return WorkerOutcome.FAIL
-        }
-        val leaseAttemptId = activeLease.attemptId
-        val generation = activeLease.generation
+        
+        val leaseAttemptId = ticket.attemptId
+        val generation = ticket.generation
         val allocationProfile = AgentResearchAllocator.profileForGoal(goal, autonomyPolicy)
         val budget = AgentResearchAllocator.budgetForTask(goal, task, allocationProfile)
         
@@ -71,7 +87,7 @@ class AgentTaskExecutor internal constructor(
             fields = mapOf(
                 "goal_id" to goal.id,
                 "task_id" to task.id,
-                "worker_id" to workerId,
+                "worker_id" to ticket.workerId,
                 "attempt_id" to leaseAttemptId,
                 "generation" to generation,
                 "task_order" to task.order,
@@ -94,11 +110,11 @@ class AgentTaskExecutor internal constructor(
             modelId = goal.executionModelId,
             councilRole = councilRole,
         )
-        val startSnapshot = store.updateGoal(goal.id) { current ->
+        val startSnapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
             if (current.status !in setOf(AgentGoalStatus.QUEUED, AgentGoalStatus.RUNNING)) {
                 current
             } else {
-                val updatedLease = if (current.executionLease?.workerId == workerId) {
+                val updatedLease = if (current.executionLease?.workerId == ticket.workerId) {
                     current.executionLease.copy(heartbeatAt = System.currentTimeMillis())
                 } else {
                     current.executionLease
@@ -145,13 +161,7 @@ class AgentTaskExecutor internal constructor(
         
         if (task.lastRequestFingerprint == currentFingerprint && task.attemptCount >= 1 && !isAuthorizedRetry) {
             val error = IllegalStateException("Identical context fingerprint detected; skipping repetitive provider request.")
-            val ownership = ExecutionOwnership(
-                workerId = lease.workerId,
-                leaseAttemptId = lease.attemptId,
-                executionGeneration = lease.generation,
-                taskId = task.id,
-            )
-            return persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ownership, models, taskDiagnostics)
+            return persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ticket, models, taskDiagnostics)
         }
         
         if (isAuthorizedRetry) {
@@ -170,6 +180,7 @@ class AgentTaskExecutor internal constructor(
             taskId = task.id,
             attemptId = leaseAttemptId,
             executionGeneration = lease.generation,
+            acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.EXECUTE_TASK,
             parentOperationId = parentOperationId,
@@ -189,7 +200,7 @@ class AgentTaskExecutor internal constructor(
                 requestContext = missionContext,
                 onProgress = { source ->
                     val sanitizedSource = source.sanitizedForPersistence()
-                    store.updateGoal(goal.id) { current ->
+                    store.updateGoalAtomic(goal.id, ticket) { current ->
                         if (current.evidence.any { it.kind == AgentEvidenceKind.RESEARCH_HIT && it.content == sanitizedSource.url }) {
                             current
                         } else {
@@ -210,28 +221,15 @@ class AgentTaskExecutor internal constructor(
                 },
                 models = models
             )
-            currentCoroutineContext().ensureActive()
-            val ownership = ExecutionOwnership(
-                workerId = lease.workerId,
-                leaseAttemptId = lease.attemptId,
-                executionGeneration = lease.generation,
-                taskId = task.id,
-            )
             timer.stop(mapOf("status" to "success"))
-            persistTaskResult(startedGoal, task, attempt, result, ownership, taskDiagnostics)
+            persistTaskResult(startedGoal, task, attempt, result, ticket, taskDiagnostics)
         } catch (error: CancellationException) {
             timer.stop(mapOf("status" to "cancelled"))
             taskDiagnostics.info("agent_milestone_cancelled")
             throw error
         } catch (error: Throwable) {
             timer.stop(mapOf("status" to "failed", "error_type" to error::class.java.simpleName))
-            val ownership = ExecutionOwnership(
-                workerId = lease.workerId,
-                leaseAttemptId = lease.attemptId,
-                executionGeneration = lease.generation,
-                taskId = task.id,
-            )
-            persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ownership, models, taskDiagnostics)
+            persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ticket, models, taskDiagnostics)
         }
     }
 
@@ -396,7 +394,7 @@ class AgentTaskExecutor internal constructor(
         )
     }
 
-    private fun revalidatePreservedResearchMilestone(goal: AgentGoal, task: AgentTask): Boolean {
+    private fun revalidatePreservedResearchMilestone(goal: AgentGoal, task: AgentTask, ticket: TaskExecutionTicket): Boolean {
         if (task.status != AgentTaskStatus.FAILED) return false
         val evidence = task.outputEvidenceId
             ?.let { evidenceId -> goal.evidence.firstOrNull { it.id == evidenceId } }
@@ -411,13 +409,13 @@ class AgentTaskExecutor internal constructor(
         ) ?: return false
 
         val completedAt = System.currentTimeMillis()
-        val snapshot = store.updateGoal(goal.id) { current ->
-            val currentTask = current.tasks.firstOrNull { it.id == task.id } ?: return@updateGoal current
+        val snapshot = store.commitTaskResultAtomic(ticket) { current ->
+            val currentTask = current.tasks.firstOrNull { it.id == task.id } ?: return@commitTaskResultAtomic current
             if (
                 (currentTask.status != AgentTaskStatus.FAILED) ||
                 (current.status == AgentGoalStatus.PAUSED || current.status.isFinalTerminalStatus())
             ) {
-                return@updateGoal current
+                return@commitTaskResultAtomic current
             }
             val updatedTasks = current.tasks.map { existing ->
                 if (existing.id == task.id) {
@@ -497,10 +495,10 @@ class AgentTaskExecutor internal constructor(
         task: AgentTask,
         attempt: AgentAttempt,
         rawResult: AgentStepResult,
-        ownership: ExecutionOwnership,
+        ticket: TaskExecutionTicket,
         taskDiagnostics: RuntimeDiagnostics,
     ): WorkerOutcome {
-        beforeCommitHook?.beforeCommit(startedGoal.id, task.id, ownership)
+        beforeCommitHook?.beforeCommit(startedGoal.id, task.id, ExecutionOwnership(ticket.workerId, ticket.attemptId, ticket.generation, ticket.taskId))
         val currentFingerprint = calculateTaskFingerprint(startedGoal, task)
         val result = recoverResearchAssessment(
             task = task,
@@ -531,14 +529,21 @@ class AgentTaskExecutor internal constructor(
         val currentTaskAfterCall = currentAfterCall.tasks.firstOrNull { it.id == task.id }
             ?: return WorkerOutcome.FAIL
         val currentAttemptAfterCall = currentAfterCall.attempts.firstOrNull { it.id == attempt.id }
-        if (!canCommitMilestoneResult(currentAfterCall, task.id, attempt.id, ownership)) {
-            taskDiagnostics.warning(
-                "agent_late_milestone_result_discarded",
-                mapOf(
-                    "task_status" to currentTaskAfterCall.status.name,
-                    "attempt_status" to currentAttemptAfterCall?.status?.name,
-                ),
+        
+        // V37 RESULT_COMMIT validation
+        val commitValidation = store.validateTicket(ticket)
+        diagnostics.info(
+            event = "ownership_validation_completed",
+            component = "lease",
+            fields = mapOf(
+                "goal_id" to startedGoal.id,
+                "task_id" to task.id,
+                "validation_stage" to "RESULT_COMMIT",
+                "outcome" to if (commitValidation is TicketValidationResult.Valid) "PASS" else "FAIL",
+                "reason_code" to (commitValidation as? TicketValidationResult.Mismatch)?.reason
             )
+        )
+        if (commitValidation !is TicketValidationResult.Valid) {
             return WorkerOutcome.DONE
         }
 
@@ -554,8 +559,8 @@ class AgentTaskExecutor internal constructor(
             SynthesisGapDecision(emptyList(), requiresDeterministicAnalysis = false, qualifiesForBoundedPublication = false)
         }
 
-        val persistedSnapshot = store.updateGoal(startedGoal.id) { current ->
-            commitTaskResult(current, task, attempt.id, result, quality, synthesisGapDecision, finishedAt, proposedEvidenceItem, evidenceKind, currentFingerprint, ownership)
+        val persistedSnapshot = store.commitTaskResultAtomic(ticket) { current ->
+            commitTaskResult(current, task, attempt.id, result, quality, synthesisGapDecision, finishedAt, proposedEvidenceItem, evidenceKind, currentFingerprint, ticket)
         }
 
         val persistedGoal = persistedSnapshot.goals.firstOrNull { it.id == startedGoal.id }
@@ -599,11 +604,11 @@ class AgentTaskExecutor internal constructor(
         agentAttemptId: String,
         error: Throwable,
         currentFingerprint: String? = null,
-        ownership: ExecutionOwnership,
+        ticket: TaskExecutionTicket,
         models: List<OpenRouterModel> = emptyList(),
         taskDiagnostics: RuntimeDiagnostics,
     ): WorkerOutcome {
-        beforeCommitHook?.beforeCommit(goalId, taskId, ownership)
+        beforeCommitHook?.beforeCommit(goalId, taskId, ExecutionOwnership(ticket.workerId, ticket.attemptId, ticket.generation, ticket.taskId))
         val message = error.toAgentFailureMessage("The agent milestone failed.").take(1_000)
         val latest = store.loadSnapshot().goals.firstOrNull { it.id == goalId } ?: return WorkerOutcome.FAIL
         val currentTask = latest.tasks.firstOrNull { it.id == taskId } ?: return WorkerOutcome.FAIL
@@ -652,15 +657,15 @@ class AgentTaskExecutor internal constructor(
         var automaticCorrectionWindowOpened = false
         var automaticEvidenceBoundedWindowOpened = false
         var automaticSynthesisAnalysisFallbackOpened = false
-        val updatedSnapshot = store.updateGoal(goalId) { current ->
+        val updatedSnapshot = store.commitTaskResultAtomic(ticket) { current ->
             // Failures obey the same exact goal/task/attempt lease as successful
             // results. A cancelled or superseded call must not consume usage,
             // change routing, or overwrite the newer Worker's durable state.
-            if (!canCommitMilestoneResult(current, taskId, agentAttemptId, ownership)) return@updateGoal current
+            if (!canCommitMilestoneResult(current, taskId, agentAttemptId, ticket)) return@commitTaskResultAtomic current
             val currentTaskInUpdate = current.tasks.firstOrNull { it.id == taskId }
-                ?: return@updateGoal current
+                ?: return@commitTaskResultAtomic current
             failureCommitted = true
-            val updatedLease = if (current.executionLease?.workerId == ownership.workerId) {
+            val updatedLease = if (current.executionLease?.workerId == ticket.workerId) {
                 current.executionLease.copy(heartbeatAt = System.currentTimeMillis())
             } else {
                 current.executionLease
@@ -1057,9 +1062,9 @@ class AgentTaskExecutor internal constructor(
         proposedEvidenceItem: AgentEvidence,
         evidenceKind: AgentEvidenceKind,
         currentFingerprint: String,
-        ownership: ExecutionOwnership,
+        ticket: TaskExecutionTicket,
     ): AgentGoal {
-        if (!canCommitMilestoneResult(current, task.id, attemptId, ownership)) return current
+        if (!canCommitMilestoneResult(current, task.id, attemptId, ticket)) return current
         val currentTask = current.tasks.firstOrNull { it.id == task.id } ?: return current
 
         val stallDiagnosis = detectExecutionStall(current, currentTask, result, quality.passed)
@@ -1351,9 +1356,9 @@ class AgentTaskExecutor internal constructor(
                 key = accountingKey,
                 effectType = IdempotencyEffectType.PROVIDER_ACCOUNTING,
                 state = IdempotencyState.COMMITTED,
-                claimOwner = ownership.workerId,
+                claimOwner = ticket.workerId,
                 committedAt = System.currentTimeMillis(),
-                completedBy = ownership.workerId
+                completedBy = ticket.workerId
             )
             updated.copy(idempotencyRecords = updated.idempotencyRecords + record)
         }

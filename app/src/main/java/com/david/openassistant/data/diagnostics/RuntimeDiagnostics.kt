@@ -36,21 +36,23 @@ open class RuntimeDiagnostics internal constructor(
 
     init {
         if (context != null && !INITIALIZED.getAndSet(true)) {
-            emitAppIdentity(context)
+            emitAppIdentity()
             detectPreviousExit(context)
         }
     }
 
-    private fun emitAppIdentity(context: Context) {
+    private fun emitAppIdentity() {
         info(
             event = "app_build_identity",
             component = "app",
             fields = mapOf(
-                "application_id" to context.packageName,
+                "application_id" to context?.packageName,
                 "version_name" to BuildConfig.VERSION_NAME,
                 "version_code" to BuildConfig.VERSION_CODE,
                 "build_type" to BuildConfig.BUILD_TYPE,
                 "git_sha" to BuildConfig.GIT_SHA,
+                "source_dirty" to BuildConfig.SOURCE_DIRTY,
+                "build_timestamp_utc" to BuildConfig.BUILD_TIMESTAMP_UTC,
                 "api_level" to Build.VERSION.SDK_INT,
                 "device_model" to Build.MODEL,
                 "is_emulator" to isEmulator(),

@@ -115,6 +115,7 @@ class OpenRouterProtocolTest {
                 workerId = "w1",
                 attemptId = "a1",
                 executionGeneration = 0,
+                acquiredAt = System.currentTimeMillis(),
                 operation = MissionOperation.CREATE_PLAN,
                 parentOperationId = "op-test-1",
             )
@@ -254,6 +255,7 @@ class OpenRouterProtocolTest {
                 workerId = "w1",
                 attemptId = "a1",
                 executionGeneration = 0,
+                acquiredAt = System.currentTimeMillis(),
                 operation = MissionOperation.CREATE_PLAN,
                 parentOperationId = "op-test-2",
             )

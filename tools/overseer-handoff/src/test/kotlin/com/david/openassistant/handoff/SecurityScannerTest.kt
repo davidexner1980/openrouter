@@ -10,7 +10,8 @@ class SecurityScannerTest {
 
     @Test
     fun testSecretRedaction() {
-        val raw = "My key is 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 and I use Bearer token.xyz.123"
+        val fakeKey = "sk-or-v1-" + "a".repeat(64)
+        val raw = "My key is $fakeKey and I use Bearer token.xyz.123"
         val (redacted, result) = scanner.redact(raw, ScannerScope.RUNTIME_PROVIDER_DATA)
         
         assertTrue(result.secretFindings >= 1)

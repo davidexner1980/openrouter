@@ -38,19 +38,23 @@ class AgentStoreLeaseTest {
 
     @Test
     fun acquireLeaseAtomic_AcquiresInitialLease() {
-        val result = store.acquireLeaseAtomic(goalId, workerId, "task-1")
+        val result = store.acquireTaskLeaseAtomic(goalId, workerId, "task-1")
         assertTrue(result is LeaseAcquisitionResult.Acquired)
-        val goal = (result as LeaseAcquisitionResult.Acquired).goal
+        val acquired = result as LeaseAcquisitionResult.Acquired
+        val goal = acquired.goal
         assertNotNull(goal.executionLease)
         assertEquals(workerId, goal.executionLease?.workerId)
         assertEquals("task-1", goal.executionLease?.taskId)
         assertEquals(1, goal.leaseGeneration)
+        
+        val ticket = acquired.ticket as TaskExecutionTicket
+        assertEquals("task-1", ticket.taskIdentity)
     }
 
     @Test
     fun acquireLeaseAtomic_ReclaimsOrphanedLease() {
         // Manually inject a lease from a "different" process session
-        store.updateGoal(goalId) { current ->
+        store.updateGoalAtomic(goalId, null) { current ->
             current.copy(
                 executionLease = AgentExecutionLease(
                     workerId = "old-worker",
@@ -65,7 +69,7 @@ class AgentStoreLeaseTest {
             )
         }
 
-        val result = store.acquireLeaseAtomic(goalId, workerId, "task-2")
+        val result = store.acquireTaskLeaseAtomic(goalId, workerId, "task-2")
         assertTrue(result is LeaseAcquisitionResult.OrphanReclaimed)
         val goal = (result as LeaseAcquisitionResult.OrphanReclaimed).goal
         assertEquals(workerId, goal.executionLease?.workerId)
@@ -76,18 +80,18 @@ class AgentStoreLeaseTest {
     @Test
     fun acquireLeaseAtomic_ContendsWhenLiveOwnerPresent() {
         // Acquire lease in current session
-        store.acquireLeaseAtomic(goalId, "worker-original", "task-1")
+        store.acquireTaskLeaseAtomic(goalId, "worker-original", "task-1")
 
         // Try to acquire with different worker in same session
-        val result = store.acquireLeaseAtomic(goalId, "worker-contender", "task-2")
+        val result = store.acquireTaskLeaseAtomic(goalId, "worker-contender", "task-2")
         assertTrue(result is LeaseAcquisitionResult.LiveOwnerPresent)
     }
 
     @Test
     fun acquireLeaseAtomic_ReentrantAcquisition() {
-        store.acquireLeaseAtomic(goalId, workerId, "task-1")
+        store.acquireTaskLeaseAtomic(goalId, workerId, "task-1")
         
-        val result = store.acquireLeaseAtomic(goalId, workerId, "task-1")
+        val result = store.acquireTaskLeaseAtomic(goalId, workerId, "task-1")
         assertTrue(result is LeaseAcquisitionResult.Acquired)
         val goal = (result as LeaseAcquisitionResult.Acquired).goal
         assertEquals(2, goal.leaseGeneration) // Generation increments even if re-entrant? 
@@ -96,8 +100,9 @@ class AgentStoreLeaseTest {
 
     @Test
     fun releaseLeaseAtomic_ReleasesOwnLease() {
-        store.acquireLeaseAtomic(goalId, workerId, "task-1")
-        val released = store.releaseLeaseAtomic(goalId, workerId)
+        val result = store.acquireTaskLeaseAtomic(goalId, workerId, "task-1")
+        val ticket = (result as LeaseAcquisitionResult.Acquired).ticket
+        val released = store.releaseLeaseAtomic(ticket)
         assertTrue(released)
         
         val snapshot = store.loadSnapshot()
@@ -107,7 +112,7 @@ class AgentStoreLeaseTest {
     @Test
     fun releaseLeaseAtomic_FailsToReleaseOthersLease() {
         // Manually inject lease from another session
-        store.updateGoal(goalId) { current ->
+        store.updateGoalAtomic(goalId, null) { current ->
             current.copy(
                 executionLease = AgentExecutionLease(
                     workerId = workerId,
@@ -121,7 +126,14 @@ class AgentStoreLeaseTest {
             )
         }
 
-        val released = store.releaseLeaseAtomic(goalId, workerId)
+        // Create a ticket that looks like it's from the other session but we don't have it
+        val fakeTicket = TaskExecutionTicket(goalId, "task-1", workerId, "other-session", 1, "attempt-1", System.currentTimeMillis())
+        // Wait, if session is 'other-session' and it matches, it *would* release if we could construct it.
+        // But releaseLeaseAtomic uses validateTicket which checks session.
+        
+        // If we use a ticket with OUR session, it should fail.
+        val myTicket = TaskExecutionTicket(goalId, "task-1", workerId, com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID, 1, "attempt-1", System.currentTimeMillis())
+        val released = store.releaseLeaseAtomic(myTicket)
         assertFalse(released)
         
         val snapshot = store.loadSnapshot()
