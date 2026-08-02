@@ -30,6 +30,7 @@ sealed class CreateAttemptResult {
     data class InvalidGeneration(val expected: Int, val actual: Int) : CreateAttemptResult()
     object InvalidLeaseOrGoalState : CreateAttemptResult()
     data class StorageFailure(val cause: Throwable) : CreateAttemptResult()
+    object UnauthorizedRetry : CreateAttemptResult()
 }
 
 sealed class TransitionOutcomeResult {
@@ -226,6 +227,7 @@ class AgentStore private constructor(
             }
 
             val updatedGoal = goal.copy(
+                // Forced rebuild of copy method call
                 status = if (goal.status == AgentGoalStatus.QUEUED) AgentGoalStatus.RUNNING else goal.status,
                 leaseGeneration = newGeneration,
                 executionLease = newLease,
@@ -237,7 +239,7 @@ class AgentStore private constructor(
                 writeGoalLocked(updatedGoal)
                 
                 val reloaded = readGoalLocked(goalFileLocked(goalId))
-                val reloadedLease = reloaded.executionLease!!
+                val reloadedLease = reloaded.executionLease ?: throw IllegalStateException("executionLease is null in reloaded goal: ${goalFileLocked(goalId).readText()}")
                 val ticket = if (taskId != null) {
                     TaskExecutionTicket(
                         goalId = goalId,
@@ -281,7 +283,8 @@ class AgentStore private constructor(
                     LeaseAcquisitionResult.Acquired(ticket, updatedGoal)
                 }
             } catch (error: Throwable) {
-                LeaseAcquisitionResult.StorageFailure(error)
+                error.printStackTrace()
+                throw error
             }
         } else {
             diagnostics?.info(
@@ -427,9 +430,39 @@ class AgentStore private constructor(
             return@synchronized CreateAttemptResult.DuplicateExchange
         }
 
-        val updatedGoal = goal.copy(requestAttempts = goal.requestAttempts + attempt, updatedAt = now)
+        // 11. Validate retry authorization if attempt > 1
+        var authorizationsToKeep = goal.retryAuthorizations
+        if (attempt.wireAttemptOrdinal > 1) {
+            val validAuth = goal.retryAuthorizations.firstOrNull { 
+                it.logicalRequestId == attempt.logicalRequestId && 
+                it.attemptOrdinal == attempt.wireAttemptOrdinal &&
+                it.executionGeneration == attempt.executionGeneration 
+            }
+            if (validAuth == null) {
+                return@synchronized CreateAttemptResult.UnauthorizedRetry
+            }
+            // Consume it
+            authorizationsToKeep = goal.retryAuthorizations.filter { it != validAuth }
+        }
+
+        val updatedGoal = goal.copy(
+            requestAttempts = goal.requestAttempts + attempt, 
+            retryAuthorizations = authorizationsToKeep,
+            updatedAt = now
+        )
         runCatching { writeGoalLocked(updatedGoal) }.onFailure { return@synchronized CreateAttemptResult.StorageFailure(it) }
         CreateAttemptResult.Created
+    }
+
+    fun authorizeRetry(goalId: String, authorization: ProviderRetryAuthorization): Boolean = synchronized(STORE_LOCK) {
+        migrateLegacyIfNeededLocked()
+        updateGoalInternalLocked(goalId) { current ->
+            if (current.retryAuthorizations.any { it.logicalRequestId == authorization.logicalRequestId && it.attemptOrdinal == authorization.attemptOrdinal }) {
+                current
+            } else {
+                current.copy(retryAuthorizations = current.retryAuthorizations + authorization)
+            }
+        } != null
     }
 
     fun transitionExchangeOutcome(
@@ -440,6 +473,7 @@ class AgentStore private constructor(
         statusCode: Int? = null,
         failureClass: String? = null,
         safeDiagnosticSummary: String? = null,
+        providerResponseId: String? = null,
     ): TransitionOutcomeResult = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
         val current = loadSnapshotFromFilesLocked()
@@ -494,6 +528,7 @@ class AgentStore private constructor(
             httpStatusCode = statusCode ?: existingAttempt.httpStatusCode,
             failureClass = failureClass ?: existingAttempt.failureClass,
             safeDiagnosticSummary = safeDiagnosticSummary ?: existingAttempt.safeDiagnosticSummary,
+            providerResponseId = providerResponseId ?: existingAttempt.providerResponseId,
             finishedAt = now,
         )
 
@@ -842,6 +877,8 @@ class AgentStore private constructor(
             stream.write(encodeGoal(goal).toString().toByteArray(StandardCharsets.UTF_8))
             atomicFile.finishWrite(stream)
         } catch (error: Throwable) {
+            println("NPE DETAILS: ")
+            error.printStackTrace()
             atomicFile.failWrite(stream)
             throw error
         }
@@ -1014,6 +1051,7 @@ class AgentStore private constructor(
         .put("network_wait_reason", goal.networkWaitReason ?: JSONObject.NULL)
         .put("resume_status_after_network", goal.resumeStatusAfterNetwork?.name ?: JSONObject.NULL)
         .put("request_attempts", JSONArray().apply { goal.requestAttempts.forEach { put(encodeRequestAttempt(it)) } })
+        .put("retry_authorizations", JSONArray().apply { goal.retryAuthorizations.forEach { put(encodeRetryAuthorization(it)) } })
         .put("idempotency_records", JSONArray().apply { goal.idempotencyRecords.forEach { put(encodeIdempotencyRecord(it)) } })
         .put("monitor_outbox", JSONArray().apply { goal.monitorOutbox.forEach { put(encodeMonitorOutbox(it)) } })
         .put("route_fingerprints", JSONArray().apply { goal.routeFingerprints.forEach { put(encodeRouteFingerprint(it)) } })
@@ -1194,6 +1232,7 @@ class AgentStore private constructor(
             resumeStatusAfterNetwork = json.optNullableString("resume_status_after_network")
                 ?.let { runCatching { AgentGoalStatus.valueOf(it) }.getOrNull() },
             requestAttempts = json.optJSONArray("request_attempts").decodeList(::decodeRequestAttempt),
+            retryAuthorizations = json.optJSONArray("retry_authorizations").decodeList(::decodeRetryAuthorization),
             idempotencyRecords = json.optJSONArray("idempotency_records").decodeList(::decodeIdempotencyRecord),
             monitorOutbox = json.optJSONArray("monitor_outbox").decodeList(::decodeMonitorOutbox),
             routeFingerprints = json.optJSONArray("route_fingerprints").decodeList(::decodeRouteFingerprint),
@@ -1391,11 +1430,18 @@ class AgentStore private constructor(
 
     private fun encodeRequestAttempt(attempt: ProviderRequestAttempt): JSONObject = JSONObject()
         .put("exchange_id", attempt.exchangeId)
+        .put("logical_request_id", attempt.logicalRequestId)
+        .put("wire_attempt_ordinal", attempt.wireAttemptOrdinal)
+        .put("previous_exchange_id", attempt.previousExchangeId ?: JSONObject.NULL)
+        .put("provider_response_id", attempt.providerResponseId ?: JSONObject.NULL)
+        .put("transport_stage", attempt.transportStage.name)
+        .put("delivery_certainty", attempt.deliveryCertainty.name)
         .put("parent_operation_id", attempt.parentOperationId)
         .put("goal_id", attempt.goalId)
         .put("task_id", attempt.taskId ?: JSONObject.NULL)
         .put("execution_generation", attempt.executionGeneration)
         .put("requested_model", attempt.requestedModel)
+        .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
         .put("role", attempt.role?.name ?: JSONObject.NULL)
         .put("payload_fingerprint", attempt.payloadFingerprint)
         .put("exchange_outcome", attempt.exchangeOutcome.name)
@@ -1417,11 +1463,18 @@ class AgentStore private constructor(
 
     private fun decodeRequestAttempt(json: JSONObject): ProviderRequestAttempt = ProviderRequestAttempt(
         exchangeId = json.getString("exchange_id"),
+        logicalRequestId = json.optString("logical_request_id", json.getString("exchange_id")), // fallback for old records
+        wireAttemptOrdinal = json.optInt("wire_attempt_ordinal", 1),
+        previousExchangeId = json.optNullableString("previous_exchange_id"),
+        providerResponseId = json.optNullableString("provider_response_id"),
+        transportStage = json.optEnum("transport_stage", ProviderTransportStage.NOT_DISPATCHED),
+        deliveryCertainty = json.optEnum("delivery_certainty", ProviderDeliveryCertainty.NOT_SENT),
         parentOperationId = json.optString("parent_operation_id"),
         goalId = json.optString("goal_id"),
         taskId = json.optNullableString("task_id"),
         executionGeneration = json.optInt("execution_generation", 0),
         requestedModel = json.optString("requested_model"),
+        resolvedModel = json.optNullableString("resolved_model"),
         role = json.optNullableString("role")?.let { runCatching { AgentTaskRole.valueOf(it) }.getOrNull() },
         payloadFingerprint = json.optString("payload_fingerprint"),
         exchangeOutcome = json.optEnum("exchange_outcome", ExchangeOutcome.INTERRUPTED_OUTCOME_UNKNOWN),
@@ -1440,6 +1493,27 @@ class AgentStore private constructor(
         reconciliationClaimOwner = json.optNullableString("reconciliation_claim_owner"),
         reconciliationClaimedAt = json.optLongOrNull("reconciliation_claimed_at"),
         safeDiagnosticSummary = json.optNullableString("safe_diagnostic_summary"),
+    )
+
+    private fun encodeRetryAuthorization(auth: ProviderRetryAuthorization): JSONObject = JSONObject()
+        .put("logical_request_id", auth.logicalRequestId)
+        .put("payload_fingerprint", auth.payloadFingerprint)
+        .put("execution_generation", auth.executionGeneration)
+        .put("previous_exchange_id", auth.previousExchangeId ?: JSONObject.NULL)
+        .put("failure_class", auth.failureClass)
+        .put("delivery_certainty", auth.deliveryCertainty.name)
+        .put("attempt_ordinal", auth.attemptOrdinal)
+        .put("authorization_timestamp", auth.authorizationTimestamp)
+
+    private fun decodeRetryAuthorization(json: JSONObject): ProviderRetryAuthorization = ProviderRetryAuthorization(
+        logicalRequestId = json.getString("logical_request_id"),
+        payloadFingerprint = json.getString("payload_fingerprint"),
+        executionGeneration = json.getInt("execution_generation"),
+        previousExchangeId = json.optNullableString("previous_exchange_id"),
+        failureClass = json.getString("failure_class"),
+        deliveryCertainty = ProviderDeliveryCertainty.valueOf(json.getString("delivery_certainty")),
+        attemptOrdinal = json.getInt("attempt_ordinal"),
+        authorizationTimestamp = json.optLong("authorization_timestamp", System.currentTimeMillis()),
     )
 
     private fun encodeIdempotencyRecord(rec: IdempotencyRecord): JSONObject = JSONObject()

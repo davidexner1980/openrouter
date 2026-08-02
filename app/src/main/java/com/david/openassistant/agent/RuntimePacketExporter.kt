@@ -127,6 +127,33 @@ class RuntimePacketExporter(private val context: Context) {
         val networkSummary = calculateNetworkSummary(goals)
         addToZip(zos, "network-summary.json", networkSummary.toString(2), filesToHash)
 
+        val attemptSummary = calculateAttemptSummary(goals)
+        addToZip(zos, "provider-attempt-summary.json", attemptSummary.toString(2), filesToHash)
+
+        val attemptsJsonl = buildString {
+            goals.flatMap { it.requestAttempts }.forEach { attempt ->
+                appendLine(JSONObject()
+                    .put("logical_request_id", attempt.logicalRequestId)
+                    .put("exchange_id", attempt.exchangeId)
+                    .put("previous_exchange_id", attempt.previousExchangeId ?: JSONObject.NULL)
+                    .put("wire_attempt_ordinal", attempt.wireAttemptOrdinal)
+                    .put("goal_id", attempt.goalId)
+                    .put("task_id", attempt.taskId ?: JSONObject.NULL)
+                    .put("execution_generation", attempt.executionGeneration)
+                    .put("requested_route", attempt.requestedModel)
+                    .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
+                    .put("payload_fingerprint", attempt.payloadFingerprint)
+                    .put("transport_stage", attempt.transportStage.name)
+                    .put("delivery_certainty", attempt.deliveryCertainty.name)
+                    .put("failure_class", attempt.failureClass ?: JSONObject.NULL)
+                    .put("http_status", attempt.httpStatusCode ?: JSONObject.NULL)
+                    .put("provider_response_id", attempt.providerResponseId ?: JSONObject.NULL)
+                    .put("duration_ms", attempt.finishedAt?.let { it - attempt.startedAt } ?: JSONObject.NULL)
+                .toString())
+            }
+        }
+        addToZip(zos, "provider-attempts.jsonl", attemptsJsonl, filesToHash)
+
         // 5b. Public Export Ledger
         val publicExportLedger = collectPublicExportLedger()
         addToZip(zos, "public-export-ledger.jsonl", publicExportLedger, filesToHash)
@@ -374,5 +401,21 @@ class RuntimePacketExporter(private val context: Context) {
     private fun sha256(bytes: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256")
         return digest.digest(bytes).joinToString("") { "%02x".format(it) }
+    }
+
+    private fun calculateAttemptSummary(goals: List<AgentGoal>): JSONObject {
+        val attempts = goals.flatMap { it.requestAttempts }
+        val logicalRequestIds = attempts.map { it.logicalRequestId }.distinct()
+        
+        val reqsOneAttempt = logicalRequestIds.count { id -> attempts.count { it.logicalRequestId == id } == 1 }
+        val reqsTwoAttempts = logicalRequestIds.count { id -> attempts.count { it.logicalRequestId == id } == 2 }
+        
+        return JSONObject()
+            .put("logical_request_count", logicalRequestIds.size)
+            .put("physical_http_attempt_count", attempts.size)
+            .put("requests_with_one_attempt", reqsOneAttempt)
+            .put("requests_with_two_attempts", reqsTwoAttempts)
+            .put("ambiguous_accounting_count", attempts.count { it.providerAccountingOutcome == ProviderAccountingOutcome.PENDING && it.transportStage == ProviderTransportStage.REQUEST_BODY_COMPLETE })
+            .put("terminal_persistence_failures", attempts.count { it.failureClass == "TerminalPersistenceException" })
     }
 }

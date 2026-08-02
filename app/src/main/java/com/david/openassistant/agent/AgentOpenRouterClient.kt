@@ -393,6 +393,42 @@ class AgentOpenRouterClient internal constructor(
     private val terminalHook: TerminalTransitionHook? = null,
     private val postActiveHook: PostActivePreDispatchHook? = null,
 ) {
+    private val missionClient: OkHttpClient = client.newBuilder()
+        .retryOnConnectionFailure(false)
+        .eventListenerFactory { TransportEventListener() }
+        .build()
+
+    internal class TransportTracker {
+        @Volatile var stage = ProviderTransportStage.NOT_DISPATCHED
+        @Volatile var certainty = ProviderDeliveryCertainty.NOT_SENT
+    }
+
+    internal class TransportEventListener : okhttp3.EventListener() {
+        override fun connectStart(call: okhttp3.Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy) {
+            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.CONNECTING
+        }
+        override fun requestHeadersStart(call: okhttp3.Call) {
+            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.REQUEST_HEADERS_SENT
+        }
+        override fun requestBodyStart(call: okhttp3.Call) {
+            call.request().tag(TransportTracker::class.java)?.let {
+                it.stage = ProviderTransportStage.REQUEST_BODY_STARTED
+                it.certainty = ProviderDeliveryCertainty.SENT_UNCONFIRMED
+            }
+        }
+        override fun requestBodyEnd(call: okhttp3.Call, byteCount: Long) {
+            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.REQUEST_BODY_COMPLETE
+        }
+        override fun responseHeadersStart(call: okhttp3.Call) {
+            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.RESPONSE_HEADERS_RECEIVED
+        }
+        override fun responseHeadersEnd(call: okhttp3.Call, response: okhttp3.Response) {
+            call.request().tag(TransportTracker::class.java)?.let {
+                it.stage = ProviderTransportStage.RESPONSE_BODY_READING
+                it.certainty = ProviderDeliveryCertainty.RESPONSE_CONFIRMED
+            }
+        }
+    }
     internal fun interface TerminalTransitionHook {
         fun onTerminalTransition(
             goalId: String,
@@ -4149,7 +4185,7 @@ class AgentOpenRouterClient internal constructor(
         val startedAt = System.currentTimeMillis()
         val body = executeNonMissionCapturedOpenRouterBody(apiKey, payload)
         // Non-mission path doesn't track status code reliably through the same loop yet, assume 200 if it returned body
-        return parseResponse(body, apiKey, payload, 200, System.currentTimeMillis() - startedAt)
+        return parseResponse(body, apiKey, payload, 200, System.currentTimeMillis() - startedAt, "non-mission")
     }
 
     private suspend fun executeNonMissionCapturedOpenRouterBody(
@@ -4207,8 +4243,8 @@ class AgentOpenRouterClient internal constructor(
         requestContext: ProviderRequestContext.Mission,
     ): RawAgentResponse {
         val startedAt = System.currentTimeMillis()
-        val (body, statusCode) = executeCapturedOpenRouterBody(apiKey, payload, "agent_structured_chat", generation, requestContext)
-        return parseResponse(body, apiKey, payload, statusCode, System.currentTimeMillis() - startedAt)
+        val (body, statusCode, exchangeId) = executeCapturedOpenRouterBody(apiKey, payload, "agent_structured_chat", generation, requestContext)
+        return parseResponse(body, apiKey, payload, statusCode, System.currentTimeMillis() - startedAt, exchangeId)
     }
 
     data class ExchangeResolution(
@@ -4216,6 +4252,7 @@ class AgentOpenRouterClient internal constructor(
         val statusCode: Int? = null,
         val failureClass: String? = null,
         val safeDiagnosticSummary: String? = null,
+        val providerResponseId: String? = null,
     )
 
     private fun handleTerminalTransition(
@@ -4236,6 +4273,7 @@ class AgentOpenRouterClient internal constructor(
             statusCode = resolution.statusCode,
             failureClass = resolution.failureClass,
             safeDiagnosticSummary = resolution.safeDiagnosticSummary,
+            providerResponseId = resolution.providerResponseId,
         )
         when (result) {
             is TransitionOutcomeResult.Updated -> {
@@ -4327,11 +4365,13 @@ class AgentOpenRouterClient internal constructor(
         operation: String,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
-    ): Pair<String, Int> {
+    ): Triple<String, Int, String> {
         val parentOperationId = requestContext.parentOperationId
+        val logicalRequestId = parentOperationId // For V39: stable logical request ID
         var payload = initialPayload
         var attempt = 0
         val maxAttempts = 2
+        var previousExchangeId: String? = null
 
         while (attempt < maxAttempts) {
             attempt++
@@ -4416,15 +4456,22 @@ class AgentOpenRouterClient internal constructor(
                 userMessage = "AgentStore is mandatory for autonomous mission requests [op=${requestContext.operation.operationName}, parentOp=${requestContext.parentOperationId}]",
                 failureClass = OpenRouterFailureClass.LOCAL_REQUEST_SCHEMA_FAILURE,
             )
+            val payloadFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(payload.toString())
             val attemptRecord = ProviderRequestAttempt(
                 exchangeId = exchangeId,
+                logicalRequestId = logicalRequestId,
+                wireAttemptOrdinal = attempt,
+                previousExchangeId = previousExchangeId,
+                providerResponseId = null,
+                transportStage = ProviderTransportStage.NOT_DISPATCHED,
+                deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
                 parentOperationId = parentOperationId,
                 goalId = requestContext.goalId,
                 taskId = requestContext.taskId,
                 executionGeneration = requestContext.executionGeneration,
                 requestedModel = payload.optString("model"),
                 role = requestContext.role,
-                payloadFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(payload.toString()),
+                payloadFingerprint = payloadFingerprint,
                 exchangeOutcome = ExchangeOutcome.ACTIVE,
                 startedAt = startedAt,
             )
@@ -4438,6 +4485,7 @@ class AgentOpenRouterClient internal constructor(
             }
             
             var terminalResolution: ExchangeResolution? = null
+            var tracker = TransportTracker()
             try {
                 ProviderRequestLedger.start(exchangeId)
                 postActiveHook?.afterActivePersisted(requestContext.goalId, exchangeId)
@@ -4503,9 +4551,10 @@ class AgentOpenRouterClient internal constructor(
                     .header("X-OpenRouter-Metadata", "enabled")
                     .header("User-Agent", "OpenAssistant-Android/${BuildConfig.VERSION_NAME}")
                     .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
+                    .tag(TransportTracker::class.java, tracker)
                     .build()
                 
-                val call = client.newCall(request)
+                val call = missionClient.newCall(request)
                 activeCalls += call
                 
                 val responseBody = try {
@@ -4513,14 +4562,17 @@ class AgentOpenRouterClient internal constructor(
                         val rawBody = response.body.string()
                         val choiceError = runCatching { extractEmbeddedChoiceError(rawBody) }.getOrNull()
                         val semanticSuccess = response.isSuccessful && choiceError == null
+                        val parsedRoot = runCatching { JSONObject(rawBody) }.getOrNull()
+                        val providerRespId = parsedRoot?.optString("id")?.takeIf { it.isNotBlank() && it != "null" }
                         
                         val resolution = if (semanticSuccess) {
-                            ExchangeResolution(outcome = ExchangeOutcome.RESPONSE_SUCCESS, statusCode = response.code)
+                            ExchangeResolution(outcome = ExchangeOutcome.RESPONSE_SUCCESS, statusCode = response.code, providerResponseId = providerRespId)
                         } else {
                             ExchangeResolution(
                                 outcome = ExchangeOutcome.RESPONSE_ERROR,
                                 statusCode = response.code,
                                 failureClass = choiceError ?: "HTTP_${response.code}",
+                                providerResponseId = providerRespId
                             )
                         }
                         if (ProviderRequestLedger.terminalize(exchangeId, if (semanticSuccess) RequestState.COMPLETED else RequestState.FAILED)) {
@@ -4559,7 +4611,7 @@ class AgentOpenRouterClient internal constructor(
                         }
 
                         if (!response.isSuccessful) throw response.toException(rawBody, apiKey)
-                        rawBody to response.code
+                        Triple(rawBody, response.code, exchangeId)
                     }
                 } finally {
                     activeCalls -= call
@@ -4625,7 +4677,19 @@ class AgentOpenRouterClient internal constructor(
                     else -> false
                 }
                 
-                if (attempt >= maxAttempts || !isRetryable) {
+                if (isRetryable && attempt < maxAttempts) {
+                    val auth = ProviderRetryAuthorization(
+                        logicalRequestId = logicalRequestId,
+                        payloadFingerprint = attemptRecord.payloadFingerprint,
+                        executionGeneration = requestContext.executionGeneration,
+                        previousExchangeId = exchangeId,
+                        failureClass = error::class.java.simpleName,
+                        deliveryCertainty = tracker.certainty,
+                        attemptOrdinal = attempt + 1
+                    )
+                    requiredStore.authorizeRetry(requestContext.goalId, auth)
+                    previousExchangeId = exchangeId
+                } else {
                     researchMonitor?.record(
                         category = "provider",
                         event = "failure",
@@ -4639,6 +4703,8 @@ class AgentOpenRouterClient internal constructor(
                             "error_type" to error::class.java.name,
                             "error_message" to error.message.orEmpty(),
                             "stack_trace" to error.stackTraceToString(),
+                            "transport_stage" to tracker.stage.name,
+                            "delivery_certainty" to tracker.certainty.name
                         ),
                     )
                     throw error
@@ -4866,7 +4932,7 @@ class AgentOpenRouterClient internal constructor(
         return repaired
     }
 
-    private fun parseResponse(body: String, apiKey: String, payload: JSONObject, statusCode: Int, durationMs: Long): RawAgentResponse {
+    private fun parseResponse(body: String, apiKey: String, payload: JSONObject, statusCode: Int, durationMs: Long, exchangeId: String): RawAgentResponse {
         val root = JsonEnvelopeParser.requireObject(body, "OpenRouter agent response")
         val usage = root.optJSONObject("usage")
         val metadata = payload.optJSONObject("metadata")
@@ -4981,7 +5047,8 @@ class AgentOpenRouterClient internal constructor(
             event = "provider_response_classified",
             component = "provider",
             fields = mapOf(
-                "exchange_id" to responseSummary.responseId,
+                "exchange_id" to exchangeId,
+                "provider_response_id" to responseSummary.responseId,
                 "http_status" to statusCode,
                 "semantic_outcome" to semanticOutcome.name,
                 "duration_ms" to responseSummary.durationMs
