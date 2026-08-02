@@ -1,6 +1,5 @@
 package com.david.openassistant.agent
 
-import com.david.openassistant.agent.AgentRoutingPolicy
 import com.david.openassistant.agent.IdempotencyEffectType
 import com.david.openassistant.agent.IdempotencyRecord
 import com.david.openassistant.agent.IdempotencyState
@@ -62,14 +61,34 @@ class AgentTaskExecutor internal constructor(
             taskDiagnostics.info("agent_milestone_revalidated_skipped_execution")
             return WorkerOutcome.CONTINUE
         }
-        
+
+        // V42.1: Pre-dispatch duplicate detection
+        val freshSnapshot = store.loadSnapshot()
+        val freshGoal = freshSnapshot.goals.firstOrNull { it.id == goal.id } ?: return WorkerOutcome.DONE
+        val freshTask = freshGoal.tasks.firstOrNull { it.id == task.id } ?: return WorkerOutcome.DONE
+
+        val currentFingerprint = FingerprintUtils.calculateExecutionFingerprint(freshGoal, freshTask)
+        val isAuthorizedRetry = freshTask.retryAuthorizedFingerprint == currentFingerprint
+
+        if (freshTask.lastRequestFingerprint == currentFingerprint && freshTask.attemptCount >= 1 && !isAuthorizedRetry) {
+            taskDiagnostics.warning("identical_context_pre_dispatch_suppressed", mapOf("fingerprint" to currentFingerprint))
+            store.commitTaskResultAtomic(ticket) { current ->
+                current.copy(
+                    status = AgentGoalStatus.PAUSED,
+                    tasks = current.tasks.map { if (it.id == task.id) it.copy(status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, failureClass = "STRUCTURED_SYNTHESIS_DEFICIT") else it },
+                    events = appendEvent(current.events, "Execution paused: identical context fingerprint detected. Awaiting new evidence or user intervention.")
+                )
+            }
+            return WorkerOutcome.DONE
+        }
+
         val leaseAttemptId = ticket.attemptId
         val generation = ticket.generation
-        val allocationProfile = AgentResearchAllocator.profileForGoal(goal, autonomyPolicy)
-        val budget = AgentResearchAllocator.budgetForTask(goal, task, allocationProfile)
+        val allocationProfile = AgentResearchAllocator.profileForGoal(freshGoal, autonomyPolicy)
+        val budget = AgentResearchAllocator.budgetForTask(freshGoal, freshTask, allocationProfile)
         
-        val executionStrategy = selectAgentExecutionStrategy(goal, task)
-        taskDiagnostics.section("Task ${task.order + 1}: ${task.title}")
+        val executionStrategy = selectAgentExecutionStrategy(freshGoal, freshTask)
+        taskDiagnostics.section("Task ${freshTask.order + 1}: ${freshTask.title}")
 
         // Diagnostics for budget
         taskDiagnostics.info(
@@ -85,12 +104,12 @@ class AgentTaskExecutor internal constructor(
             event = "agent_milestone_started",
             component = "mission",
             fields = mapOf(
-                "goal_id" to goal.id,
-                "task_id" to task.id,
+                "goal_id" to freshGoal.id,
+                "task_id" to freshTask.id,
                 "worker_id" to ticket.workerId,
                 "attempt_id" to leaseAttemptId,
                 "generation" to generation,
-                "task_order" to task.order,
+                "task_order" to freshTask.order,
                 "execution_profile" to executionStrategy.profile.name,
                 "allocation_profile" to allocationProfile.complexity.name,
                 "tool_call_required" to (executionStrategy.profile == AgentExecutionProfile.FOCUSED_TOOL),
@@ -100,17 +119,17 @@ class AgentTaskExecutor internal constructor(
         val startedAt = System.currentTimeMillis()
         
         // V34: Pre-calculate council role for the attempt record
-        val councilRole = AgentCouncilPolicy.roleForCapability(task.capability)
+        val councilRole = AgentCouncilPolicy.roleForCapability(freshTask.capability)
         
         val attempt = AgentAttempt(
             id = agentAttemptId,
-            taskId = task.id,
+            taskId = freshTask.id,
             status = AgentAttemptStatus.RUNNING,
             startedAt = startedAt,
-            modelId = goal.executionModelId,
+            modelId = freshGoal.executionModelId,
             councilRole = councilRole,
         )
-        val startSnapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
+        val startSnapshot = store.updateGoalAtomic(freshGoal.id, ticket) { current ->
             if (current.status !in setOf(AgentGoalStatus.QUEUED, AgentGoalStatus.RUNNING)) {
                 current
             } else {
@@ -123,7 +142,7 @@ class AgentTaskExecutor internal constructor(
                     status = AgentGoalStatus.RUNNING,
                     executionLease = updatedLease,
                     tasks = current.tasks.map { existing ->
-                        if (existing.id == task.id) {
+                        if (existing.id == freshTask.id) {
                             existing.copy(
                                 status = AgentTaskStatus.RUNNING,
                                 attemptCount = existing.attemptCount + 1,
@@ -131,6 +150,8 @@ class AgentTaskExecutor internal constructor(
                                 lastError = null,
                                 startedAt = startedAt,
                                 finishedAt = null,
+                                // V42.1: Consume authorized retry
+                                retryAuthorizedFingerprint = if (existing.retryAuthorizedFingerprint == currentFingerprint) null else existing.retryAuthorizedFingerprint
                             )
                         } else {
                             existing
@@ -140,7 +161,7 @@ class AgentTaskExecutor internal constructor(
                     events = appendEvent(
                         current.events,
                         buildString {
-                            append("Running milestone ${task.order + 1}: ${task.title}")
+                            append("Running milestone ${freshTask.order + 1}: ${freshTask.title}")
                             if (executionStrategy.profile != AgentExecutionProfile.FULL) {
                                 append(" — ")
                                 append(executionStrategy.explanation)
@@ -151,41 +172,16 @@ class AgentTaskExecutor internal constructor(
                 )
             }
         }
-        val startedGoal = startSnapshot.goals.firstOrNull { it.id == goal.id }
+        val startedGoal = startSnapshot.goals.firstOrNull { it.id == freshGoal.id }
         if (startedGoal?.status != AgentGoalStatus.RUNNING) return WorkerOutcome.DONE
 
         val lease = startedGoal.executionLease ?: return WorkerOutcome.FAIL
-        val currentFingerprint = calculateTaskFingerprint(startedGoal, task)
-        
-        val isAuthorizedRetry = task.retryAuthorizedFingerprint == currentFingerprint
-        
-        if (task.lastRequestFingerprint == currentFingerprint && task.attemptCount >= 1 && !isAuthorizedRetry) {
-            taskDiagnostics.warning("identical_context_fingerprint_suppressed", mapOf("fingerprint" to currentFingerprint))
-            store.commitTaskResultAtomic(ticket) { current ->
-                val currentTask = current.tasks.firstOrNull { it.id == task.id } ?: return@commitTaskResultAtomic current
-                current.copy(
-                    status = AgentGoalStatus.PAUSED,
-                    tasks = current.tasks.map { if (it.id == task.id) it.copy(status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, failureClass = "STRUCTURED_SYNTHESIS_DEFICIT") else it },
-                    events = appendEvent(current.events, "Execution paused: identical context fingerprint detected. Awaiting new evidence or user intervention.")
-                )
-            }
-            return WorkerOutcome.DONE
-        }
-        
-        if (isAuthorizedRetry) {
-            taskDiagnostics.info("authorized_fingerprint_retry_consumed", mapOf("fingerprint" to currentFingerprint))
-            store.updateGoal(goal.id) { current ->
-                current.copy(tasks = current.tasks.map { t ->
-                    if (t.id == task.id) t.copy(retryAuthorizedFingerprint = null) else t
-                })
-            }
-        }
         
         val parentOperationId = "op-task-${UUID.randomUUID()}"
         val missionContext = ProviderRequestContext.Mission(
-            goalId = goal.id,
+            goalId = freshGoal.id,
             workerId = lease.workerId,
-            taskId = task.id,
+            taskId = freshTask.id,
             attemptId = leaseAttemptId,
             executionGeneration = lease.generation,
             acquiredAt = ticket.acquiredAt,
@@ -204,16 +200,16 @@ class AgentTaskExecutor internal constructor(
                 apiKey = apiKey,
                 modelId = councilModelId,
                 goal = startedGoal,
-                task = task,
+                task = freshTask,
                 requestContext = missionContext,
                 onProgress = { source ->
                     val sanitizedSource = source.sanitizedForPersistence()
-                    store.updateGoalAtomic(goal.id, ticket) { current ->
+                    store.updateGoalAtomic(freshGoal.id, ticket) { current ->
                         if (current.evidence.any { it.kind == AgentEvidenceKind.RESEARCH_HIT && it.content == sanitizedSource.url }) {
                             current
                         } else {
                             val hitEvidence = AgentEvidence(
-                                taskId = task.id,
+                                taskId = freshTask.id,
                                 kind = AgentEvidenceKind.RESEARCH_HIT,
                                 title = "Live Research Hit: ${sanitizedSource.title}",
                                 summary = sanitizedSource.excerpt ?: "Discovered a relevant source URL during live research.",
@@ -230,55 +226,17 @@ class AgentTaskExecutor internal constructor(
                 models = models
             )
             timer.stop(mapOf("status" to "success"))
-            persistTaskResult(startedGoal, task, attempt, result, ticket, taskDiagnostics)
+            persistTaskResult(startedGoal, freshTask, attempt, result, ticket, taskDiagnostics)
         } catch (error: CancellationException) {
             timer.stop(mapOf("status" to "cancelled"))
             taskDiagnostics.info("agent_milestone_cancelled")
             throw error
         } catch (error: Throwable) {
             timer.stop(mapOf("status" to "failed", "error_type" to error::class.java.simpleName))
-            persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ticket, models, taskDiagnostics)
+            persistTaskFailure(freshGoal.id, freshTask.id, agentAttemptId, error, currentFingerprint, ticket, models, taskDiagnostics)
         }
     }
 
-    private fun calculateTaskFingerprint(goal: AgentGoal, task: AgentTask): String {
-        val selectedContext = EvidenceContextSelector.select(goal, task)
-        return buildString {
-            append("g:").append(goal.id).append(';')
-            append("t:").append(task.id).append(';')
-            append("cap:").append(task.capability.name).append(';')
-            append("state:").append(task.status.name).append(':').append(task.failureClass ?: "").append(';')
-            append("schema:").append(com.david.openassistant.BuildConfig.DIAGNOSTIC_SCHEMA_VERSION).append(';')
-            append("ctx:").append(selectedContext.fingerprint).append(';')
-            
-            // Acceptance criteria definition
-            task.acceptanceCriteria.sortedBy { it.id }.forEach { crit ->
-                append("ac:").append(crit.id).append(':').append(crit.description.hashCode()).append(';')
-            }
-
-            // Retry counters, timestamps, and model wording are deliberately excluded.
-            // Only durable accepted state may change the progress fingerprint.
-            goal.evidence
-                .asSequence()
-                .filter { it.taskId == task.id }
-                .sortedBy { it.id }
-                .forEach { evidence ->
-                    append("e:").append(evidence.id).append(':').append(evidence.content.hashCode()).append(';')
-                }
-            goal.acceptedClaims
-                .asSequence()
-                .filter { it.taskId == task.id }
-                .sortedBy { it.id }
-                .forEach { claim ->
-                    append("c:").append(claim.id).append(':').append(claim.contentHash).append(';')
-                }
-            task.acceptanceChecks
-                .sortedBy { it.criterionId }
-                .forEach { check ->
-                    append("a:").append(check.criterionId).append(':').append(check.status.name).append(';')
-                }
-        }.hashCode().toString(16)
-    }
 
     private fun detectExecutionStall(
         current: AgentGoal,
@@ -515,10 +473,10 @@ class AgentTaskExecutor internal constructor(
         attempt: AgentAttempt,
         rawResult: AgentStepResult,
         ticket: TaskExecutionTicket,
-        taskDiagnostics: RuntimeDiagnostics,
+        diagnostics: RuntimeDiagnostics,
     ): WorkerOutcome {
         beforeCommitHook?.beforeCommit(startedGoal.id, task.id, ExecutionOwnership(ticket.workerId, ticket.attemptId, ticket.generation, ticket.taskId))
-        val currentFingerprint = calculateTaskFingerprint(startedGoal, task)
+        val currentFingerprint = FingerprintUtils.calculateExecutionFingerprint(startedGoal, task)
         val result = recoverResearchAssessment(
             task = task,
             result = rawResult.copy(claims = normalizeDurableClaims(task, rawResult.claims)),
@@ -545,9 +503,6 @@ class AgentTaskExecutor internal constructor(
             sources = result.sources,
         )
         val currentAfterCall = store.loadSnapshot().goals.firstOrNull { it.id == startedGoal.id } ?: return WorkerOutcome.FAIL
-        val currentTaskAfterCall = currentAfterCall.tasks.firstOrNull { it.id == task.id }
-            ?: return WorkerOutcome.FAIL
-        val currentAttemptAfterCall = currentAfterCall.attempts.firstOrNull { it.id == attempt.id }
         
         // V37 RESULT_COMMIT validation
         val commitValidation = store.validateTicket(ticket)
