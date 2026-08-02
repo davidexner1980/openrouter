@@ -79,6 +79,7 @@ data class AgentAcceptanceCheck(
  */
 data class AgentExecutionLease(
     val workerId: String,
+    val ownerProcessSessionId: String, // V36
     val taskId: String,
     val attemptId: String,
     val generation: Int,

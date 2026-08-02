@@ -68,6 +68,7 @@ class MissionPersistenceReliabilityTest {
             leaseGeneration = 5,
             executionLease = AgentExecutionLease(
                 workerId = "worker-2",
+                ownerProcessSessionId = "session-1",
                 taskId = taskId,
                 attemptId = "attempt-2",
                 generation = 5,
@@ -79,6 +80,7 @@ class MissionPersistenceReliabilityTest {
         // Stale worker with generation 4 tries to commit
         val staleLease = AgentExecutionLease(
             workerId = "worker-1",
+            ownerProcessSessionId = "session-1",
             taskId = taskId,
             attemptId = "attempt-1",
             generation = 4,

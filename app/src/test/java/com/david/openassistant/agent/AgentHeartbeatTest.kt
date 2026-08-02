@@ -34,6 +34,7 @@ class AgentHeartbeatTest {
                 tasks = listOf(AgentTask(id = taskId, order = 0, title = "t", instructions = "i", capability = AgentCapability.REASON, status = AgentTaskStatus.RUNNING)),
                 executionLease = AgentExecutionLease(
                     workerId = workerId,
+                    ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                     taskId = taskId,
                     attemptId = attemptId,
                     generation = generation,
@@ -94,6 +95,7 @@ class AgentHeartbeatTest {
                 tasks = emptyList(),
                 executionLease = AgentExecutionLease(
                     workerId = worker2Id, // worker-2 took the lease!
+                    ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                     taskId = taskId,
                     attemptId = "attempt-2",
                     generation = 2,

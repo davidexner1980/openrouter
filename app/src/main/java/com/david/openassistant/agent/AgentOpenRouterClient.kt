@@ -924,6 +924,7 @@ class AgentOpenRouterClient internal constructor(
             (task.capability != AgentCapability.SYNTHESIZE) && 
             (modelId != FREE_ROUTER_MODEL_ID)
         
+        val baseAllowedUrls = goal.sourceReads.map { it.url }.toSet()
         if (useBodyBuilderForDesign) {
             val designInstructions = "Repair or design a high-intelligence request for milestone: ${task.title}. Instructions: ${task.instructions}"
             val designContext = "Goal: ${goal.objective}\nPrior evidence: $evidenceContext"
@@ -946,7 +947,7 @@ class AgentOpenRouterClient internal constructor(
                     taskId = task.id,
                 )
                 val rawDesignResponse = executeJsonRequest(apiKey, generatedPayload, generation, bodyBuilderExecContext)
-                val designResponse = rawDesignResponse.withRecoveredInlineSources()
+                val designResponse = rawDesignResponse.withRecoveredInlineSources(baseAllowedUrls)
                 return runCatching { parseStepResponse(designResponse, goal, task) }
                     .getOrElse { error ->
                         AgentStepResult(
@@ -1213,9 +1214,10 @@ class AgentOpenRouterClient internal constructor(
             buildResearchBootstrapFailureCheckpoint(error, researchBootstrap)
                 ?: throw error.withAgentUsage(researchBootstrap.summary)
         }
+        val allowedUrls = baseAllowedUrls + researchBootstrap.sources.map { it.url } + rawResponse.sources.map { it.url }
         val response = rawResponse
             .withResearchBootstrap(researchBootstrap)
-            .withRecoveredInlineSources()
+            .withRecoveredInlineSources(allowedUrls)
         val parsedResponse = runCatching { parseStepResponse(response, goal, task) }
             .getOrNull()
             ?.let { recoverResearchAssessment(task, it, autonomyPolicy) }
@@ -1258,7 +1260,7 @@ class AgentOpenRouterClient internal constructor(
             rejectedQueries = response.rejectedQueries,
         )
 
-        val accountedResponse = response.mergeRepair(repairResponse).withRecoveredInlineSources()
+        val accountedResponse = response.mergeRepair(repairResponse).withRecoveredInlineSources(allowedUrls)
         val repairedResult = runCatching { parseStepResponse(accountedResponse, goal, task) }
             .getOrNull()
             ?.let { repaired ->
@@ -1893,6 +1895,7 @@ class AgentOpenRouterClient internal constructor(
     ): ResearchBootstrap {
         val runtime = toolRuntime ?: return ResearchBootstrap.EMPTY
         val sources = linkedMapOf<String, AgentSourceCitation>()
+        val verifiedUrls = mutableSetOf<String>()
         val executions = mutableListOf<AgentToolExecution>()
         val fetchedPages = mutableListOf<Pair<AgentSourceCitation, String>>()
         var successfulSearches = 0
@@ -2068,7 +2071,13 @@ class AgentOpenRouterClient internal constructor(
                 )
                 
                 if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                    emitContentEvent(call.id, "generated_query", currentQuery, mapOf("goal_id" to goal.id, "task_id" to task.id))
+                    diagnostics?.contentPreview(
+                        kind = "generated_query",
+                        content = currentQuery,
+                        goalId = goal.id,
+                        taskId = task.id,
+                        exchangeId = call.id
+                    )
                 }
 
                 var searchResult = runCatching { runtime.execute(call, apiKey, modelId, goal) }
@@ -2218,7 +2227,14 @@ class AgentOpenRouterClient internal constructor(
                     
                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
                         newSources.forEach { s ->
-                            emitContentEvent(call.id, "search_result_snippet", s.excerpt.orEmpty(), mapOf("url" to s.url))
+                            diagnostics?.contentPreview(
+                                kind = "search_result_snippet",
+                                content = s.excerpt.orEmpty(),
+                                goalId = goal.id,
+                                taskId = task.id,
+                                exchangeId = call.id,
+                                extraFields = mapOf("url" to s.url)
+                            )
                         }
                     }
 
@@ -2353,11 +2369,19 @@ class AgentOpenRouterClient internal constructor(
                     )
                     
                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                        emitContentEvent(call.id, "source_extract", text, mapOf("url" to resolvedUrl, "rejected" to true, "reason" to reason))
+                        diagnostics?.contentPreview(
+                            kind = "source_extract",
+                            content = text,
+                            goalId = goal.id,
+                            taskId = task.id,
+                            exchangeId = call.id,
+                            extraFields = mapOf("url" to resolvedUrl, "rejected" to true, "reason" to reason)
+                        )
                     }
                     continue
                 }
 
+                verifiedUrls.add(resolvedUrl)
                 diagnostics?.info(
                     event = "source_read_accepted",
                     component = "research",
@@ -2371,7 +2395,14 @@ class AgentOpenRouterClient internal constructor(
                 )
                 
                 if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                    emitContentEvent(call.id, "source_extract", text, mapOf("url" to resolvedUrl))
+                    diagnostics?.contentPreview(
+                        kind = "source_extract",
+                        content = text,
+                        goalId = goal.id,
+                        taskId = task.id,
+                        exchangeId = call.id,
+                        extraFields = mapOf("url" to resolvedUrl)
+                    )
                 }
 
                 payload?.optJSONArray("discovered_leads")?.let { leads ->
@@ -2635,6 +2666,7 @@ class AgentOpenRouterClient internal constructor(
                                     return@onSuccess
                                 }
 
+                                verifiedUrls.add(resolvedUrl)
                                 payload?.optJSONArray("discovered_leads")?.let { leads ->
                                     for (i in 0 until leads.length()) {
                                         val lead = leads.optJSONObject(i) ?: continue
@@ -2759,6 +2791,7 @@ class AgentOpenRouterClient internal constructor(
             ),
             queryFingerprints = executedQueryFingerprints.toList(),
             rejectedQueries = rejectedQueries,
+            verifiedUrls = verifiedUrls
         )
     }
 
@@ -3461,6 +3494,7 @@ class AgentOpenRouterClient internal constructor(
         
         val messages = payload.getJSONArray("messages")
         val accumulatedSources = linkedMapOf<String, AgentSourceCitation>()
+        val verifiedUrls = mutableSetOf<String>()
         val unavailableSourceKeys = mutableSetOf<String>()
         val executions = mutableListOf<AgentToolExecution>()
         val usedProviderCallIds = mutableSetOf<String>()
@@ -3499,6 +3533,7 @@ class AgentOpenRouterClient internal constructor(
         }
 
         fun preserveSource(source: AgentSourceCitation, successfulFetch: Boolean = false) {
+            if (successfulFetch) verifiedUrls.add(source.url)
             val key = sourceKey(source.url)
             val matchingEntries = accumulatedSources.entries
                 .filter { entry -> sourceKey(entry.key) == key }
@@ -3717,7 +3752,14 @@ class AgentOpenRouterClient internal constructor(
                                         )
                                     )
                                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                                        emitContentEvent(call.id, "tool_input", call.argumentsJson, mapOf("tool_name" to call.name))
+                                        diagnostics?.contentPreview(
+                                            kind = "tool_input",
+                                            content = call.argumentsJson,
+                                            goalId = goal?.id,
+                                            taskId = requestContext.taskId,
+                                            exchangeId = call.id,
+                                            extraFields = mapOf("tool_name" to call.name)
+                                        )
                                     }
 
                                     val result = runtime.execute(
@@ -3740,7 +3782,14 @@ class AgentOpenRouterClient internal constructor(
                                         )
                                     )
                                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                                        emitContentEvent(call.id, "tool_result", result.outputJson, mapOf("tool_name" to call.name))
+                                        diagnostics?.contentPreview(
+                                            kind = "tool_result",
+                                            content = result.outputJson,
+                                            goalId = goal?.id,
+                                            taskId = requestContext.taskId,
+                                            exchangeId = call.id,
+                                            extraFields = mapOf("tool_name" to call.name)
+                                        )
                                     }
                                     
                                     promptTokens += result.promptTokens
@@ -3875,6 +3924,7 @@ class AgentOpenRouterClient internal constructor(
                     ),
                     sources = accumulatedSources.values.take(MAX_SOURCE_CITATIONS).toList(),
                     toolExecutions = executions.toList(),
+                    verifiedUrls = verifiedUrls
                 )
             }
         } catch (error: Throwable) {
@@ -4344,6 +4394,7 @@ class AgentOpenRouterClient internal constructor(
                     fields = mapOf(
                         "exchange_id" to exchangeId,
                         "goal_id" to requestContext.goalId,
+                        "task_id" to requestContext.taskId,
                         "operation" to operation,
                         "requested_model" to payload.optString("model"),
                         "request_bytes" to wirePayloadText.toByteArray().size
@@ -4362,8 +4413,7 @@ class AgentOpenRouterClient internal constructor(
                         "endpoint" to CHAT_URL,
                         "requested_model" to payload.optString("model"),
                         "fallback_models" to (payload.optJSONArray("models")?.toString() ?: "none"),
-                        "safe_headers" to "Accept: application/json; Content-Type: application/json; X-OpenRouter-Title: OpenAssistant Android; X-OpenRouter-Metadata: enabled; User-Agent: OpenAssistant-Android/${BuildConfig.VERSION_NAME}; Authorization: Bearer [REDACTED]",
-                        "request_body" to safeDiagnosticPayloadText,
+                        "safe_headers" to "Accept: application/json; Authorization: Bearer [REDACTED]",
                         "request_bytes" to wirePayloadText.toByteArray().size,
                     ),
                 )
@@ -4419,7 +4469,6 @@ class AgentOpenRouterClient internal constructor(
                                 put("successful", semanticSuccess)
                                 put("duration_ms", System.currentTimeMillis() - startedAt)
                                 put("response_headers", response.headers.filterSensitive().toString())
-                                put("response_body", safeDiagnosticResponseBody)
                                 put("response_bytes", rawBody.toByteArray().size)
                                 choiceError?.let { put("embedded_error", it) }
                             },
@@ -4832,14 +4881,16 @@ class AgentOpenRouterClient internal constructor(
         // V36: Detailed Content Capture for provider answer
         val monitorStatus = researchMonitor?.status()
         if (monitorStatus?.detailedContentCaptureEnabled == true) {
-            emitContentEvent(
-                exchangeId = responseSummary.responseId ?: "unknown",
+            diagnostics?.contentPreview(
                 kind = "provider_answer",
                 content = nonNullContent,
-                fields = mapOf(
-                    "goal_id" to payload.optJSONObject("metadata")?.optString("goal_id"),
+                goalId = payload.optJSONObject("metadata")?.optString("goal_id"),
+                taskId = payload.optJSONObject("metadata")?.optString("task_id"),
+                exchangeId = responseSummary.responseId,
+                extraFields = mapOf(
                     "role" to role?.name,
-                    "finish_reason" to finishReason
+                    "finish_reason" to finishReason,
+                    "capture_sid" to monitorStatus.captureSessionId
                 )
             )
         }
@@ -5704,7 +5755,8 @@ class AgentOpenRouterClient internal constructor(
         sources = (sources + repair.sources).distinctBy { it.url }.take(MAX_SOURCE_CITATIONS),
         toolExecutions = toolExecutions + repair.toolExecutions,
         queryFingerprints = (queryFingerprints + repair.queryFingerprints).distinct(),
-        rejectedQueries = (rejectedQueries + repair.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } }
+        rejectedQueries = (rejectedQueries + repair.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } },
+        verifiedUrls = verifiedUrls + repair.verifiedUrls
     )
 
     private fun RawAgentResponse.withResearchBootstrap(bootstrap: ResearchBootstrap): RawAgentResponse = copy(
@@ -5712,14 +5764,26 @@ class AgentOpenRouterClient internal constructor(
         sources = (bootstrap.sources + sources).distinctBy { it.url }.take(MAX_SOURCE_CITATIONS),
         toolExecutions = bootstrap.executions + toolExecutions,
         queryFingerprints = (queryFingerprints + bootstrap.queryFingerprints).distinct(),
-        rejectedQueries = (rejectedQueries + bootstrap.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } }
+        rejectedQueries = (rejectedQueries + bootstrap.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } },
+        verifiedUrls = verifiedUrls + bootstrap.verifiedUrls
     )
 
-    private fun RawAgentResponse.withRecoveredInlineSources(): RawAgentResponse = copy(
-        sources = (sources + recoverHttpsSourceCitations(content))
-            .distinctBy { it.url }
-            .take(MAX_SOURCE_CITATIONS),
-    )
+    private fun RawAgentResponse.withRecoveredInlineSources(allowedUrls: Set<String>): RawAgentResponse {
+        val found = recoverHttpsSourceCitations(content)
+        val verified = found.filter { it.url in allowedUrls }
+        found.filter { it.url !in allowedUrls }.forEach { rejected ->
+            diagnostics?.warning(
+                event = "fabricated_source_rejected",
+                component = "research",
+                fields = mapOf("url" to rejected.url, "reason" to "model_fabricated_unverified")
+            )
+        }
+        return copy(
+            sources = (sources + verified)
+                .distinctBy { it.url }
+                .take(MAX_SOURCE_CITATIONS),
+        )
+    }
 
     private fun AgentStepResult.needsResearchMetadataRepair(task: AgentTask): Boolean {
         if (task.capability !in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH)) return false
@@ -5852,6 +5916,7 @@ class AgentOpenRouterClient internal constructor(
         val summary: AgentApiSummary,
         val queryFingerprints: List<String> = emptyList(),
         val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
+        val verifiedUrls: Set<String> = emptySet(),
     ) {
         fun hasCompletedResearchToolWork(
             minimumSearches: Int,
@@ -5886,6 +5951,7 @@ class AgentOpenRouterClient internal constructor(
         val toolExecutions: List<AgentToolExecution> = emptyList(),
         val queryFingerprints: List<String> = emptyList(),
         val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
+        val verifiedUrls: Set<String> = emptySet(),
     )
 
     private fun emitDetailedContentPreviews(
@@ -5902,40 +5968,19 @@ class AgentOpenRouterClient internal constructor(
             val role = msg.optString("role")
             val content = msg.optString("content")
             if (content.isNotBlank()) {
-                emitContentEvent(
-                    exchangeId = exchangeId,
+                diagnostics?.contentPreview(
                     kind = "provider_instruction",
                     content = content,
-                    fields = mapOf("role" to role, "index" to i, "goal_id" to context.goalId, "task_id" to context.taskId)
+                    goalId = context.goalId,
+                    taskId = context.taskId,
+                    exchangeId = exchangeId,
+                    extraFields = mapOf(
+                        "role" to role, 
+                        "index" to i,
+                        "capture_sid" to monitorStatus.captureSessionId
+                    )
                 )
             }
-        }
-    }
-
-    private fun emitContentEvent(
-        exchangeId: String,
-        kind: String,
-        content: String,
-        fields: Map<String, Any?>
-    ) {
-        val hash = com.david.openassistant.data.openrouter.OpenRouterProtocolUtils.computePayloadFingerprint(content)
-        val redacted = com.david.openassistant.data.diagnostics.redactResearchMonitorText(content)
-        val limit = 2000 // Logcat bound
-        
-        val chunkCount = (redacted.length + limit - 1) / limit
-        for (i in 0 until chunkCount) {
-            val chunk = redacted.substring(i * limit, minOf((i + 1) * limit, redacted.length))
-            diagnostics?.info(
-                event = "${kind}_content",
-                component = "content",
-                fields = fields + mapOf(
-                    "exchange_id" to exchangeId,
-                    "content_sha256" to hash,
-                    "chunk_index" to i,
-                    "chunk_count" to chunkCount,
-                    "preview" to chunk
-                )
-            )
         }
     }
 

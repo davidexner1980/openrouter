@@ -425,8 +425,13 @@ private fun ResearchMonitorPanel(
         Text("System Identity", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         SettingLine("Application ID", state.researchMonitorStatus.applicationId ?: "com.david.openassistant")
         SettingLine("Build Version", "${state.researchMonitorStatus.versionName} (${state.researchMonitorStatus.versionCode})")
+        SettingLine("Git SHA", BuildConfig.GIT_SHA.take(8))
         SettingLine("Logcat Tag", com.david.openassistant.data.diagnostics.RuntimeDiagnostics.LOGCAT_TAG)
+        SettingLine("Boot SID", com.david.openassistant.data.diagnostics.DiagnosticEvent.BOOT_SESSION_ID)
         SettingLine("Process SID", com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID)
+        if (monitor.detailedContentCaptureEnabled) {
+            SettingLine("Capture SID", monitor.captureSessionId ?: "none")
+        }
     }
 }
 

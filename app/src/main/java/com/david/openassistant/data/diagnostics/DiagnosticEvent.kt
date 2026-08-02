@@ -10,9 +10,10 @@ import java.util.concurrent.atomic.AtomicLong
  * V36 Schema: compact, ordered, and privacy-safe.
  */
 data class DiagnosticEvent(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = 2, // V36
     val timestampUtc: Long = System.currentTimeMillis(),
     val elapsedRealtimeMs: Long = android.os.SystemClock.elapsedRealtime(),
+    val bootSessionId: String = BOOT_SESSION_ID,
     val processSessionId: String = PROCESS_SESSION_ID,
     val processSequence: Long = PROCESS_SEQUENCE.getAndIncrement(),
     val level: String, // INFO, WARN, ERROR, DEBUG
@@ -39,7 +40,7 @@ data class DiagnosticEvent(
 ) {
     /**
      * Formats the event for Logcat as a compact, one-line structured string.
-     * Shape: OA1 level=LEVEL component=COMP event=EVENT IDs FIELDS
+     * Shape: OA2 level=LEVEL component=COMP event=EVENT IDs FIELDS
      */
     fun toLogcatLine(): String {
         return buildString {
@@ -69,13 +70,15 @@ data class DiagnosticEvent(
             // Append fields (already sanitized by the caller/RuntimeDiagnostics)
             fields.entries.sortedBy { it.key }.forEach { (key, value) ->
                 if (value != null && value != JSONObject.NULL) {
+                    if (key in ENVELOPE_FIELDS) return@forEach
+                    
                     append(' ')
                     append(key)
                     append('=')
                     val str = value.toString()
-                    if (str.contains(' ') || str.contains('"')) {
+                    if (str.contains(' ') || str.contains('"') || str.contains('=') || str.contains('\n')) {
                         append('"')
-                        append(str.replace("\"", "\\\""))
+                        append(str.replace("\"", "\\\"").replace("\n", " "))
                         append('"')
                     } else {
                         append(str)
@@ -99,6 +102,7 @@ data class DiagnosticEvent(
             put("v", schemaVersion)
             put("ts", timestampUtc)
             put("uptime", elapsedRealtimeMs)
+            put("boot_id", bootSessionId)
             put("sid", processSessionId)
             put("seq", processSequence)
             put("level", level)
@@ -115,14 +119,25 @@ data class DiagnosticEvent(
             
             if (fields.isNotEmpty()) {
                 val f = JSONObject()
-                fields.forEach { (k, v) -> f.put(k, v) }
-                put("fields", f)
+                fields.forEach { (k, v) -> 
+                    if (k !in ENVELOPE_FIELDS) f.put(k, v)
+                }
+                if (f.length() > 0) put("fields", f)
             }
         }
     }
 
     companion object {
+        val BOOT_SESSION_ID: String = runCatching {
+            java.io.File("/proc/sys/kernel/random/boot_id").readText().trim().take(8)
+        }.getOrDefault(UUID.randomUUID().toString().take(8))
+
         val PROCESS_SESSION_ID: String = UUID.randomUUID().toString().take(8)
         private val PROCESS_SEQUENCE = AtomicLong(1)
+        
+        private val ENVELOPE_FIELDS = setOf(
+            "outcome", "reason_code", "goal_id", "task_id", "exchange_id", "operation_id", "duration_ms",
+            "worker_id", "lease_gen", "state_before", "state_after"
+        )
     }
 }

@@ -49,6 +49,15 @@ sealed class RefreshLeaseResult {
     data class StorageFailure(val cause: Throwable) : RefreshLeaseResult()
 }
 
+sealed class LeaseAcquisitionResult {
+    data class Acquired(val goal: AgentGoal) : LeaseAcquisitionResult()
+    object LiveOwnerPresent : LeaseAcquisitionResult()
+    data class OrphanReclaimed(val goal: AgentGoal) : LeaseAcquisitionResult()
+    object RetryRequired : LeaseAcquisitionResult()
+    object MissionTerminal : LeaseAcquisitionResult()
+    data class StorageFailure(val cause: Throwable) : LeaseAcquisitionResult()
+}
+
 class AgentStore private constructor(
     context: Context?,
     baseDir: File?,
@@ -125,7 +134,10 @@ class AgentStore private constructor(
         val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized RefreshLeaseResult.GoalMissing
         val lease = goal.executionLease ?: return@synchronized RefreshLeaseResult.LeaseLost
 
-        if (lease.workerId != workerId || lease.attemptId != attemptId || lease.generation != generation || lease.taskId != (taskId ?: "none")) {
+        val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
+        if (lease.workerId != workerId || lease.attemptId != attemptId || lease.generation != generation || 
+            lease.taskId != (taskId ?: "none") || lease.ownerProcessSessionId != currentSessionId
+        ) {
             return@synchronized RefreshLeaseResult.LeaseLost
         }
 
@@ -136,6 +148,125 @@ class AgentStore private constructor(
         )
         runCatching { writeGoalLocked(updatedGoal) }.onFailure { return@synchronized RefreshLeaseResult.StorageFailure(it) }
         RefreshLeaseResult.Refreshed
+    }
+
+    fun acquireLeaseAtomic(
+        goalId: String,
+        workerId: String,
+        taskId: String?,
+    ): LeaseAcquisitionResult = synchronized(STORE_LOCK) {
+        migrateLegacyIfNeededLocked()
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return@synchronized LeaseAcquisitionResult.RetryRequired
+        
+        if (goal.status.isFinalTerminalStatus() || goal.status == AgentGoalStatus.REJECTED || goal.status == AgentGoalStatus.BLOCKED) {
+            return@synchronized LeaseAcquisitionResult.MissionTerminal
+        }
+
+        val now = System.currentTimeMillis()
+        val existing = goal.executionLease
+        val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
+        
+        val isStale = AgentLeasePolicy.isStale(existing, now)
+        val isOrphan = existing != null && existing.ownerProcessSessionId != currentSessionId
+        val isMyOwn = existing != null && existing.workerId == workerId && existing.ownerProcessSessionId == currentSessionId
+
+        if (existing == null || isStale || isOrphan || isMyOwn) {
+            val attemptId = UUID.randomUUID().toString()
+            val newGeneration = maxOf(goal.leaseGeneration, existing?.generation ?: 0) + 1
+            
+            val newLease = AgentExecutionLease(
+                workerId = workerId,
+                ownerProcessSessionId = currentSessionId,
+                taskId = taskId ?: "none",
+                attemptId = attemptId,
+                generation = newGeneration,
+                acquiredAt = now,
+                heartbeatAt = now
+            )
+            
+            val reason = when {
+                isMyOwn -> "Re-acquired existing local lease."
+                existing == null -> "Acquired initial execution lease."
+                isStale -> "Recovered a stale execution lease (last heartbeat: ${existing.heartbeatAt})."
+                isOrphan -> "Reclaimed an orphaned lease from dead process session '${existing.ownerProcessSessionId}'."
+                else -> "Acquired lease."
+            }
+
+            val updatedGoal = goal.copy(
+                status = if (goal.status == AgentGoalStatus.QUEUED) AgentGoalStatus.RUNNING else goal.status,
+                leaseGeneration = newGeneration,
+                executionLease = newLease,
+                events = appendEvent(goal.events, reason),
+                updatedAt = now
+            )
+            
+            return try {
+                writeGoalLocked(updatedGoal)
+                if (isOrphan || (isStale && existing != null)) {
+                    diagnostics?.info(
+                        event = if (isOrphan) "lease_orphan_reclaimed" else "lease_stale_reclaimed",
+                        component = "lease",
+                        fields = mapOf(
+                            "goal_id" to goalId,
+                            "worker_id" to workerId,
+                            "old_session" to (existing?.ownerProcessSessionId ?: "none"),
+                            "new_session" to currentSessionId
+                        )
+                    )
+                    LeaseAcquisitionResult.OrphanReclaimed(updatedGoal)
+                } else {
+                    diagnostics?.info(
+                        event = "lease_acquired",
+                        component = "lease",
+                        fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "lease_gen" to newGeneration)
+                    )
+                    LeaseAcquisitionResult.Acquired(updatedGoal)
+                }
+            } catch (e: Throwable) {
+                LeaseAcquisitionResult.StorageFailure(e)
+                LeaseAcquisitionResult.RetryRequired
+            }
+        } else {
+            diagnostics?.info(
+                event = "lease_acquisition_contended",
+                component = "lease",
+                fields = mapOf(
+                    "goal_id" to goalId,
+                    "worker_id" to workerId,
+                    "owner_sid" to existing.ownerProcessSessionId,
+                    "owner_worker" to existing.workerId
+                )
+            )
+            return LeaseAcquisitionResult.LiveOwnerPresent
+        }
+    }
+
+    fun releaseLeaseAtomic(goalId: String, workerId: String): Boolean = synchronized(STORE_LOCK) {
+        val current = loadSnapshotFromFilesLocked()
+        val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized false
+        val lease = goal.executionLease ?: return@synchronized false
+        
+        if (lease.workerId != workerId || lease.ownerProcessSessionId != com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID) {
+            return@synchronized false
+        }
+
+        val updatedGoal = goal.copy(
+            executionLease = null,
+            events = appendEvent(goal.events, "Released execution lease for worker $workerId."),
+            updatedAt = System.currentTimeMillis()
+        )
+        return try {
+            writeGoalLocked(updatedGoal)
+            diagnostics?.info(
+                event = "lease_released",
+                component = "lease",
+                fields = mapOf("goal_id" to goalId, "worker_id" to workerId)
+            )
+            true
+        } catch (e: Throwable) {
+            false
+        }
     }
 
     internal interface GoalStateWriter {
@@ -325,8 +456,18 @@ class AgentStore private constructor(
         val current = loadSnapshotFromFilesLocked()
         val original = current.goals.firstOrNull { it.id == goalId } ?: return current
         val transformed = transform(original)
-        if (original.status != transformed.status) {
+        
+        val statusChanged = original.status != transformed.status
+        if (statusChanged) {
             AgentStateMachine.requireTransition(original.status, transformed.status)
+        }
+        
+        val checkpointAdded = transformed.checkpoints.size > original.checkpoints.size
+        
+        val updatedGoal = transformed.copy(updatedAt = System.currentTimeMillis())
+        writeGoalLocked(updatedGoal)
+        
+        if (statusChanged) {
             diagnostics?.info(
                 event = "mission_state_transition",
                 component = "mission",
@@ -338,8 +479,20 @@ class AgentStore private constructor(
                 )
             )
         }
-        val updatedGoal = transformed.copy(updatedAt = System.currentTimeMillis())
-        writeGoalLocked(updatedGoal)
+        
+        if (checkpointAdded) {
+            val last = transformed.checkpoints.lastOrNull()
+            diagnostics?.info(
+                event = "mission_checkpoint_committed",
+                component = "mission",
+                fields = mapOf(
+                    "goal_id" to goalId,
+                    "checkpoint_id" to (last?.id ?: "none"),
+                    "progress_score" to transformed.denseProgressScore
+                )
+            )
+        }
+
         writeSelectionAndSignalLocked(current.selectedGoalId ?: goalId)
         return loadSnapshotFromFilesLocked()
     }
@@ -1539,6 +1692,7 @@ class AgentStore private constructor(
 
     private fun encodeLease(lease: AgentExecutionLease): JSONObject = JSONObject()
         .put("worker_id", lease.workerId)
+        .put("owner_process_session_id", lease.ownerProcessSessionId)
         .put("task_id", lease.taskId)
         .put("attempt_id", lease.attemptId)
         .put("generation", lease.generation)
@@ -1547,6 +1701,7 @@ class AgentStore private constructor(
 
     private fun decodeLease(json: JSONObject): AgentExecutionLease = AgentExecutionLease(
         workerId = json.getString("worker_id"),
+        ownerProcessSessionId = json.optString("owner_process_session_id", "unknown"),
         taskId = json.getString("task_id"),
         attemptId = json.getString("attempt_id"),
         generation = json.getInt("generation"),

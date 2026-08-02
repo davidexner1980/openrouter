@@ -293,6 +293,7 @@ class AgentExecutionRecoveryTest {
             attempts = listOf(runningAttempt),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "test-session",
                 taskId = runningTask.id,
                 attemptId = "lease-attempt-1",
                 generation = 1,

@@ -74,7 +74,7 @@ class Slice1LifecycleTest {
         
         val prefs = createFakePrefs()
         val monitor = ResearchMonitor(prefs, monitorDir, tempFolder.newFolder("cache"))
-        diagnostics = RuntimeDiagnostics(diagDir, monitor)
+        diagnostics = RuntimeDiagnostics(null, diagDir, monitor)
 
         client = AgentOpenRouterClient(
             client = okHttpClient,
@@ -158,6 +158,7 @@ class Slice1LifecycleTest {
     ): AgentGoal {
         val lease = AgentExecutionLease(
             workerId = workerId,
+            ownerProcessSessionId = "session-1",
             taskId = taskId,
             attemptId = attemptId,
             generation = generation,
@@ -886,6 +887,7 @@ class Slice1LifecycleTest {
             current.copy(
                 executionLease = AgentExecutionLease(
                     workerId = workerId,
+                    ownerProcessSessionId = "session-1",
                     taskId = "none",
                     attemptId = leaseAttemptId,
                     generation = 1,
@@ -960,6 +962,7 @@ class Slice1LifecycleTest {
             status = AgentGoalStatus.RUNNING,
             executionLease = AgentExecutionLease(
                 workerId = workerId,
+                ownerProcessSessionId = "session-1",
                 taskId = goal.tasks.first().id,
                 attemptId = leaseAttemptId,
                 generation = 1,
@@ -1002,6 +1005,7 @@ class Slice1LifecycleTest {
             status = AgentGoalStatus.RUNNING,
             executionLease = AgentExecutionLease(
                 workerId = newWorker,
+                ownerProcessSessionId = "session-1",
                 taskId = goal.tasks.first().id,
                 attemptId = leaseAttemptId,
                 generation = 2,
@@ -1530,6 +1534,7 @@ class Slice1LifecycleTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "session-1",
                 taskId = "t1",
                 attemptId = "a1",
                 generation = 1,
@@ -1601,6 +1606,7 @@ class Slice1LifecycleTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "session-1",
                 taskId = "t1",
                 attemptId = "a1",
                 generation = 5,

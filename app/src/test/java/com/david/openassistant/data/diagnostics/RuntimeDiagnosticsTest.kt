@@ -44,7 +44,7 @@ class RuntimeDiagnosticsTest {
             }
         }
         
-        diagnostics = RuntimeDiagnostics(diagDir, monitor)
+        diagnostics = RuntimeDiagnostics(null, diagDir, monitor)
     }
 
     @Test
@@ -73,6 +73,25 @@ class RuntimeDiagnosticsTest {
         assertTrue(event.fields.containsKey("duration_ms"))
         val duration = event.fields["duration_ms"] as Long
         assertTrue(duration >= 10)
+    }
+
+    @Test
+    fun contentPreviewChunksLargeContent() {
+        val largeContent = "A".repeat(5000)
+        diagnostics.contentPreview("test_kind", largeContent, "goal-1", "task-1")
+        
+        // 5000 chars / 2000 per chunk = 3 chunks
+        assertEquals(3, capturedEvents.size)
+        
+        val chunk0 = capturedEvents[0]
+        assertEquals("test_kind_content", chunk0.event)
+        assertEquals(0, chunk0.fields["chunk_index"])
+        assertEquals(3, chunk0.fields["chunk_total"])
+        assertEquals("A".repeat(2000), chunk0.fields["preview"])
+        
+        val chunk2 = capturedEvents[2]
+        assertEquals(2, chunk2.fields["chunk_index"])
+        assertEquals("A".repeat(1000), chunk2.fields["preview"])
     }
 
     private fun createFakePrefs(): SharedPreferences {

@@ -40,6 +40,7 @@ data class ResearchMonitorStatus(
     val apiLevel: Int? = null,
     val detailedContentCaptureEnabled: Boolean = false,
     val detailedContentCaptureExpiry: Long? = null,
+    val captureSessionId: String? = null,
 )
 
 private data class ReportCapture(
@@ -116,6 +117,7 @@ open class ResearchMonitor internal constructor(
             apiLevel = preferences.getInt(KEY_API_LEVEL, -1).takeIf { it != -1 },
             detailedContentCaptureEnabled = isDetailedContentCaptureActiveLocked(),
             detailedContentCaptureExpiry = preferences.getLong(KEY_DETAILED_CAPTURE_EXPIRY, 0L).takeIf { it > 0L },
+            captureSessionId = preferences.getString(KEY_CAPTURE_SESSION_ID, null),
         )
     }
 
@@ -127,16 +129,22 @@ open class ResearchMonitor internal constructor(
 
     fun enableDetailedContentCapture(minutes: Int = 60): ResearchMonitorStatus = synchronized(FILE_LOCK) {
         val expiry = System.currentTimeMillis() + (minutes * 60 * 1000L)
+        val captureSessionId = UUID.randomUUID().toString().take(8)
         preferences.edit(commit = true) {
             putBoolean(KEY_DETAILED_CAPTURE_ENABLED, true)
             putLong(KEY_DETAILED_CAPTURE_EXPIRY, expiry)
+            putString(KEY_CAPTURE_SESSION_ID, captureSessionId)
         }
         recordLocked(
             category = "monitor",
             event = "detailed_content_capture_enabled",
             level = "INFO",
             correlationId = preferences.getString(KEY_SESSION_ID, null),
-            fields = mapOf("expiry_ms" to expiry, "duration_minutes" to minutes)
+            fields = mapOf(
+                "expiry_ms" to expiry,
+                "duration_minutes" to minutes,
+                "capture_session_id" to captureSessionId
+            )
         )
         status()
     }
@@ -145,6 +153,7 @@ open class ResearchMonitor internal constructor(
         preferences.edit(commit = true) {
             putBoolean(KEY_DETAILED_CAPTURE_ENABLED, false)
             putLong(KEY_DETAILED_CAPTURE_EXPIRY, 0L)
+            remove(KEY_CAPTURE_SESSION_ID)
         }
         recordLocked(
             category = "monitor",
@@ -762,6 +771,7 @@ open class ResearchMonitor internal constructor(
         const val KEY_API_LEVEL = "api_level"
         const val KEY_DETAILED_CAPTURE_ENABLED = "detailed_capture_enabled"
         const val KEY_DETAILED_CAPTURE_EXPIRY = "detailed_capture_expiry"
+        const val KEY_CAPTURE_SESSION_ID = "capture_session_id"
         const val KEY_LEGACY_PUBLIC_CLEANUP_ATTEMPTED = "legacy_public_cleanup_attempted_v1"
         const val MAX_FIELDS_PER_EVENT = 48
         const val MAX_FIELD_KEY_CHARS = 80

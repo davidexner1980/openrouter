@@ -87,6 +87,12 @@ class RuntimePacketExporter(private val context: Context) {
                 put("session_id", status.sessionId ?: JSONObject.NULL)
                 put("started_at", status.startedAt ?: JSONObject.NULL)
                 put("process_session_id", com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID)
+                put("boot_session_id", com.david.openassistant.data.diagnostics.DiagnosticEvent.BOOT_SESSION_ID)
+            })
+            put("snapshot_watermark", JSONObject().apply {
+                put("event_count", status.eventCount)
+                put("captured_at_utc", timestamp)
+                put("process_sequence_watermark", com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID + ":" + monitorData.parsedLines)
             })
         }
 
@@ -142,8 +148,11 @@ class RuntimePacketExporter(private val context: Context) {
         // 8. Redaction Report
         val redactionStats = com.david.openassistant.data.diagnostics.RuntimeDiagnostics.redactionStats()
         val redactionReport = JSONObject().apply {
-            put("approx_secrets_redacted", redactionStats["secrets_redacted"])
+            put("redaction_replacements_applied", redactionStats["redaction_replacements_applied"])
             put("forbidden_fields_dropped", redactionStats["forbidden_fields_dropped"])
+            put("pre_redacted_markers_observed", redactionStats["pre_redacted_markers_observed"])
+            put("events_dropped", redactionStats["events_dropped"])
+            put("sink_failures", redactionStats["sink_failures"])
             put("hidden_reasoning_removed", monitorData.reasoningRedacted)
         }
         addToZip(zos, "redaction-report.json", redactionReport.toString(2), filesToHash)

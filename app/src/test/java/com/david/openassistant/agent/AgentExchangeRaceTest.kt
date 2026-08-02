@@ -33,6 +33,7 @@ class AgentExchangeRaceTest {
                 tasks = listOf(AgentTask(id = taskId, order = 0, title = "t", instructions = "i", capability = AgentCapability.REASON, status = AgentTaskStatus.RUNNING)),
                 executionLease = AgentExecutionLease(
                     workerId = workerId,
+                    ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                     taskId = taskId,
                     attemptId = "attempt-1",
                     generation = generation,
@@ -76,6 +77,7 @@ class AgentExchangeRaceTest {
                     leaseGeneration = 2,
                     executionLease = AgentExecutionLease(
                         workerId = worker2Id,
+                        ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                         taskId = taskId,
                         attemptId = "attempt-2",
                         generation = 2,

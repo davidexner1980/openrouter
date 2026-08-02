@@ -99,6 +99,7 @@ class MissionUiStateTest {
         tasks = emptyList(),
         executionLease = if (hasActiveLease) AgentExecutionLease(
             workerId = "worker-1",
+            ownerProcessSessionId = "session-1",
             taskId = "task-1",
             attemptId = "attempt-1",
             generation = 1,

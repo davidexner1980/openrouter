@@ -252,33 +252,26 @@ class AgentGoalWorker(
                         return@coroutineScope Result.success()
                     }
 
-                    if (!tryAcquireLease(goalId, allocationSelection.taskId)) {
-                        goalDiagnostics.info("agent_worker_lease_acquisition_failed")
-                        researchMonitor.record(
-                            category = "mission",
-                            event = "worker_exit_lease_held",
-                            correlationId = goalId,
-                            fields = mapOf(
-                                "goal_id" to goalId,
-                                "worker_id" to workerId,
-                                "active_lease_worker" to (findGoal(goalId)?.executionLease?.workerId ?: "unknown")
-                            )
-                        )
-                        return@coroutineScope Result.success()
-                    }
-
-                    val leasedGoal = try {
-                        requireOwnedLeasedGoal(goalId, workerId)
-                    } catch (e: IllegalStateException) {
-                        goalDiagnostics.warning("agent_worker_owned_lease_validation_failed", mapOf("error" to e.message))
-                        researchMonitor.record(
-                            category = "mission",
-                            event = "worker_exit_lease_invalid",
-                            level = "ERROR",
-                            correlationId = goalId,
-                            fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "error" to e.message)
-                        )
-                        return@coroutineScope Result.failure()
+                    val acquisition = store.acquireLeaseAtomic(goalId, workerId, allocationSelection.taskId)
+                    val leasedGoal = when (acquisition) {
+                        is LeaseAcquisitionResult.Acquired -> acquisition.goal
+                        is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.goal
+                        is LeaseAcquisitionResult.LiveOwnerPresent -> {
+                            goalDiagnostics.info("agent_worker_exit_live_owner_present")
+                            return@coroutineScope Result.success()
+                        }
+                        is LeaseAcquisitionResult.RetryRequired -> {
+                            goalDiagnostics.warning("agent_worker_lease_retry_required")
+                            return@coroutineScope Result.retry()
+                        }
+                        is LeaseAcquisitionResult.MissionTerminal -> {
+                            goalDiagnostics.info("agent_worker_exit_mission_terminal")
+                            return@coroutineScope Result.success()
+                        }
+                        is LeaseAcquisitionResult.StorageFailure -> {
+                            goalDiagnostics.error("agent_worker_lease_storage_failure", acquisition.cause)
+                            return@coroutineScope Result.retry()
+                        }
                     }
 
                     val lease = leasedGoal.executionLease!!
@@ -383,10 +376,11 @@ class AgentGoalWorker(
                             planner.plan(apiKey, leasedGoal, models)
                         } else {
                             reconcileInterruptedWork(goalId)
-                            val goal = try {
-                                requireOwnedLeasedGoal(goalId, workerId)
-                            } catch (_: IllegalStateException) {
-                                return@coroutineScope Result.failure()
+                            val acquisition = store.acquireLeaseAtomic(goalId, workerId, null)
+                            val goal = when (acquisition) {
+                                is LeaseAcquisitionResult.Acquired -> acquisition.goal
+                                is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.goal
+                                else -> return@coroutineScope Result.success()
                             }
                             if (goal.status.isInactive()) return@coroutineScope Result.success()
                             val taskToExecute = AgentResearchAllocator.chooseNextTask(goal, allocationProfile, now).taskId?.let { id -> goal.tasks.firstOrNull { it.id == id } }
@@ -494,7 +488,7 @@ class AgentGoalWorker(
             ProviderRequestLedger.waitForSettlement()
             throw cancellation
         } finally {
-            releaseLease(cancellationGoalId)
+            store.releaseLeaseAtomic(cancellationGoalId, workerId)
             cancellationRegistration.close()
         }
     }
@@ -747,87 +741,6 @@ class AgentGoalWorker(
         
         // Cancel all generations for this goal ID using tag
         scheduler.cancelAllForGoal(goalId)
-    }
-
-    private fun requireOwnedLeasedGoal(goalId: String, workerId: String): AgentGoal {
-        val goal = findGoal(goalId) ?: error("Goal $goalId does not exist")
-        val lease = goal.executionLease ?: error("Goal $goalId has no active execution lease")
-        check(lease.workerId == workerId) {
-            "Goal $goalId lease worker ID '${lease.workerId}' does not match worker '$workerId'"
-        }
-        check(lease.generation == goal.leaseGeneration) {
-            "Goal $goalId lease generation '${lease.generation}' is stale (latest: ${goal.leaseGeneration})"
-        }
-        check(lease.attemptId.isNotBlank()) {
-            "Goal $goalId lease attempt ID is blank"
-        }
-        return goal
-    }
-
-    private fun tryAcquireLease(goalId: String, taskId: String? = null): Boolean {
-        var acquired = false
-        var generation = 0
-        store.updateGoal(goalId) { current ->
-            val now = System.currentTimeMillis()
-            val existing = current.executionLease
-            val isStale = AgentLeasePolicy.isStale(existing, now)
-            
-            if (existing == null || isStale || existing.workerId == workerId) {
-                val attemptId = UUID.randomUUID().toString()
-                generation = (current.leaseGeneration).coerceAtLeast(existing?.generation ?: 0) + 1
-                
-                acquired = true
-                current.copy(
-                    leaseGeneration = generation,
-                    executionLease = AgentExecutionLease(
-                        workerId = workerId,
-                        taskId = taskId ?: "none",
-                        attemptId = attemptId,
-                        generation = generation,
-                        acquiredAt = now,
-                        heartbeatAt = now
-                    ),
-                    events = appendEvent(
-                        current.events,
-                        if (isStale && existing != null) "Recovered a stale execution lease (last heartbeat: ${existing.heartbeatAt})." 
-                        else "Acquired execution lease for worker $workerId."
-                    )
-                )
-            } else {
-                acquired = false
-                current
-            }
-        }
-        if (acquired) {
-            diagnostics.info(
-                event = "lease_acquired",
-                component = "lease",
-                fields = mapOf("goal_id" to goalId, "worker_id" to workerId, "lease_gen" to generation)
-            )
-        }
-        return acquired
-    }
-
-    private fun releaseLease(goalId: String) {
-        var released = false
-        store.updateGoal(goalId) { current ->
-            if (current.executionLease?.workerId == workerId) {
-                released = true
-                current.copy(
-                    executionLease = null,
-                    events = appendEvent(current.events, "Released execution lease for worker $workerId.")
-                )
-            } else {
-                current
-            }
-        }
-        if (released) {
-            diagnostics.info(
-                event = "lease_released",
-                component = "lease",
-                fields = mapOf("goal_id" to goalId, "worker_id" to workerId)
-            )
-        }
     }
 
     companion object {
