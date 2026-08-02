@@ -355,7 +355,6 @@ class OpenRouterClient(
                                     "stream_capture_truncated" to (rawStream.length >= MAX_CAPTURED_STREAM_CHARS),
                                     "error_type" to error?.let { it::class.java.name },
                                     "error_message" to error?.message,
-                                    "stack_trace" to error?.stackTraceToString(),
                                 ),
                             )
                         }

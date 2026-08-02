@@ -4702,7 +4702,6 @@ class AgentOpenRouterClient internal constructor(
                             "duration_ms" to (System.currentTimeMillis() - startedAt),
                             "error_type" to error::class.java.name,
                             "error_message" to error.message.orEmpty(),
-                            "stack_trace" to error.stackTraceToString(),
                             "transport_stage" to tracker.stage.name,
                             "delivery_certainty" to tracker.certainty.name
                         ),

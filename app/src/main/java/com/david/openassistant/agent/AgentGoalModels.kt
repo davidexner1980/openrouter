@@ -5,7 +5,6 @@ import java.math.RoundingMode
 import java.util.UUID
 
 data class AgentGoal(
-    // Force rebuild
     val id: String = UUID.randomUUID().toString(),
     val conversationId: String,
     val submissionId: String? = null,
