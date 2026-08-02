@@ -11,6 +11,7 @@ data class ObjectiveContract(
     val temporalContext: String?,
     val expectedDeliverableKind: String?,
     val domainClassification: String = "GENERAL",
+    val contractHash: String? = null,
 )
 
 data class AgentGoal(

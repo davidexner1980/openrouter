@@ -825,11 +825,14 @@ class AgentOpenRouterClient internal constructor(
             strongAnchors = requestAnchorTokens(goal.userRequest, draft.tasks.map { it.instructions }),
             temporalContext = draft.tasks.firstOrNull { it.capability == AgentCapability.REASON }?.instructions?.take(500),
             expectedDeliverableKind = draft.finalOutputDescription.take(500),
-            domainClassification = "GENERAL" // Could be refined by a model call
-        )
+            domainClassification = "GENERAL" 
+        ).let { c ->
+            val hashInput = "${c.version}|${c.primarySubject}|${c.strongAnchors.joinToString(",")}|${c.temporalContext}|${c.expectedDeliverableKind}|${c.domainClassification}"
+            val hash = UUID.nameUUIDFromBytes(hashInput.toByteArray(Charsets.UTF_8)).toString()
+            c.copy(contractHash = hash)
+        }
 
         return (draft to accountedResponse.summary).let { (d, s) ->
-            // Note: contract is returned as part of the result in V41
             d.copy(objectiveContract = contract) to s
         }
     }
@@ -4768,8 +4771,8 @@ class AgentOpenRouterClient internal constructor(
                 // No automatic replay after body start or response headers.
                 val isRetryable = when {
                     isCancelled -> false
-                    error is OpenRouterException -> error.statusCode?.let { it == 429 || it >= 500 } == true
                     tracker.stage >= ProviderTransportStage.REQUEST_BODY_STARTED -> false
+                    error is OpenRouterException -> error.statusCode?.let { it == 429 || it >= 500 } == true
                     error is IOException -> true
                     else -> false
                 }

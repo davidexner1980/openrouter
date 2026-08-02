@@ -152,4 +152,74 @@ class AgentStoreMigrationTest {
         assertNull(decodedTask.progressFingerprint)
         assertTrue(decodedTask.queryFingerprints.isEmpty())
     }
+
+    @Test
+    fun versionV40GoalDecodesSafelyWithoutObjectiveContract() {
+        val v40Json = JSONObject()
+            .put("id", "goal-v40")
+            .put("conversation_id", "conv-v40")
+            .put("user_request", "V40 request")
+            .put("title", "V40 title")
+            .put("objective", "V40 objective")
+            .put("final_output_description", "V40 desc")
+            .put("status", "QUEUED")
+            .put("planner_model_id", "openrouter/auto-beta")
+            .put("execution_model_id", "openrouter/auto-beta")
+            .put("tasks", org.json.JSONArray())
+
+        val tempDir = java.nio.file.Files.createTempDirectory("agentstore_v40_mig").toFile()
+        val store = AgentStore(tempDir)
+        val decodeMethod = AgentStore::class.java.getDeclaredMethod("decodeGoal", JSONObject::class.java)
+        decodeMethod.isAccessible = true
+        val decodedGoal = decodeMethod.invoke(store, v40Json) as AgentGoal
+
+        assertNull(decodedGoal.objectiveContract)
+    }
+
+    @Test
+    fun goalWithObjectiveContractEncodesAndDecodesSymmetrically() {
+        val contract = ObjectiveContract(
+            version = 1,
+            primarySubject = "Subject",
+            strongAnchors = listOf("A", "B"),
+            temporalContext = "Now",
+            expectedDeliverableKind = "Report",
+            domainClassification = "TECH",
+            contractHash = "hash-123"
+        )
+        val goal = AgentGoal(
+            id = "goal-contract",
+            conversationId = "conv-1",
+            userRequest = "Request",
+            title = "Title",
+            objective = "Objective",
+            finalOutputDescription = "Desc",
+            status = AgentGoalStatus.QUEUED,
+            plannerModelId = "model",
+            executionModelId = "model",
+            tasks = emptyList(),
+            objectiveContract = contract
+        )
+
+        val tempDir = java.nio.file.Files.createTempDirectory("agentstore_contract").toFile()
+        val store = AgentStore(tempDir)
+        
+        val encodeMethod = AgentStore::class.java.getDeclaredMethod("encodeGoal", AgentGoal::class.java)
+        encodeMethod.isAccessible = true
+        val encodedJson = encodeMethod.invoke(store, goal) as JSONObject
+        
+        val decodeMethod = AgentStore::class.java.getDeclaredMethod("decodeGoal", JSONObject::class.java)
+        decodeMethod.isAccessible = true
+        val decodedGoal = decodeMethod.invoke(store, encodedJson) as AgentGoal
+        
+        assertNotNull(decodedGoal.objectiveContract)
+        val decodedContract = decodedGoal.objectiveContract!!
+        assertEquals(contract.version, decodedContract.version)
+        assertEquals(contract.primarySubject, decodedContract.primarySubject)
+        assertEquals(contract.strongAnchors, decodedContract.strongAnchors)
+        assertEquals(contract.temporalContext, decodedContract.temporalContext)
+        assertEquals(contract.expectedDeliverableKind, decodedContract.expectedDeliverableKind)
+        assertEquals(contract.domainClassification, decodedContract.domainClassification)
+        assertEquals(contract.contractHash, decodedContract.contractHash)
+    }
 }

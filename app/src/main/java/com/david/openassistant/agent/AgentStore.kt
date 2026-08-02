@@ -1302,6 +1302,7 @@ class AgentStore private constructor(
         .put("temporal_context", contract.temporalContext ?: JSONObject.NULL)
         .put("expected_deliverable_kind", contract.expectedDeliverableKind ?: JSONObject.NULL)
         .put("domain_classification", contract.domainClassification)
+        .put("contract_hash", contract.contractHash ?: JSONObject.NULL)
 
     private fun decodeObjectiveContract(json: JSONObject): ObjectiveContract = ObjectiveContract(
         version = json.optInt("version", 1),
@@ -1310,6 +1311,7 @@ class AgentStore private constructor(
         temporalContext = json.optNullableString("temporal_context"),
         expectedDeliverableKind = json.optNullableString("expected_deliverable_kind"),
         domainClassification = json.optString("domain_classification", "GENERAL"),
+        contractHash = json.optNullableString("contract_hash"),
     )
 
     private fun encodeTask(task: AgentTask): JSONObject = JSONObject()
