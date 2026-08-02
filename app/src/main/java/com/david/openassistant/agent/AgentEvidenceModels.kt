@@ -17,7 +17,6 @@ data class AgentEvidence(
     val content: String,
     val sources: List<AgentSourceCitation> = emptyList(),
     val createdAt: Long = System.currentTimeMillis(),
-    val cycleId: String? = null,
 )
 
 data class AgentClaim(

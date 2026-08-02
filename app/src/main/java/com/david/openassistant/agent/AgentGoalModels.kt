@@ -14,18 +14,6 @@ data class ObjectiveContract(
     val contractHash: String? = null,
 )
 
-data class ObjectiveRevision(
-    val id: String = UUID.randomUUID().toString(),
-    val ordinal: Int,
-    val parentRevisionId: String? = null,
-    val rootObjectiveFingerprint: String,
-    val operationalObjective: String,
-    val unresolvedGaps: List<String> = emptyList(),
-    val retainedConstraints: List<String> = emptyList(),
-    val revisionFingerprint: String,
-    val createdAt: Long = System.currentTimeMillis(),
-)
-
 data class AgentGoal(
     val id: String = UUID.randomUUID().toString(),
     val conversationId: String,
@@ -108,11 +96,6 @@ data class AgentGoal(
     val leaseGeneration: Int = 0,
     val lastResumeReason: ResumeReason? = null,
     val objectiveContract: ObjectiveContract? = null,
-    val researchCycles: List<ResearchCycle> = emptyList(),
-    val objectiveRevisions: List<ObjectiveRevision> = emptyList(),
-    val activeResearchCycleId: String? = null,
-    val recoveryPlans: List<RecoveryPlan> = emptyList(),
-    val activeRecoveryPlanId: String? = null,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)
@@ -136,17 +119,17 @@ data class AgentGoal(
         get() = totalCostUsdMicros.toDouble() / 1_000_000.0
 
     val completedTaskCount: Int
-        get() = activeTasks.count { it.status == AgentTaskStatus.COMPLETED }
+        get() = tasks.count { it.status == AgentTaskStatus.COMPLETED }
 
     val stepProgressFraction: Float
-        get() = if (activeTasks.isEmpty()) 0f else completedTaskCount.toFloat() / activeTasks.size.toFloat()
+        get() = if (tasks.isEmpty()) 0f else completedTaskCount.toFloat() / tasks.size.toFloat()
 
     val denseProgressScore: Double
         get() {
-            if (activeTasks.isEmpty()) return 0.0
-            val totalWeight = activeTasks.sumOf { it.weight.coerceAtLeast(0.1) }
+            if (tasks.isEmpty()) return 0.0
+            val totalWeight = tasks.sumOf { it.weight.coerceAtLeast(0.1) }
             if (totalWeight <= 0.0) return 0.0
-            return activeTasks.sumOf { it.weight.coerceAtLeast(0.1) * it.effectiveProgressScore }
+            return tasks.sumOf { it.weight.coerceAtLeast(0.1) * it.effectiveProgressScore }
                 .div(totalWeight)
                 .coerceIn(0.0, 1.0)
         }
@@ -155,7 +138,7 @@ data class AgentGoal(
         get() = denseProgressScore.toFloat()
 
     val isReadyForVerification: Boolean
-        get() = activeTasks.isNotEmpty() && activeTasks.all { it.status == AgentTaskStatus.COMPLETED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
+        get() = tasks.isNotEmpty() && tasks.all { it.status == AgentTaskStatus.COMPLETED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
 
     val acceptanceScore: Double
         get() {
@@ -212,7 +195,7 @@ data class AgentGoal(
             .mapTo(mutableSetOf()) { it.id }
         
         // Find tasks that are not blocked by dependencies
-        val dependencySatisfiedTasks = activeTasks
+        val dependencySatisfiedTasks = tasks
             .filter { it.status != AgentTaskStatus.COMPLETED && it.status != AgentTaskStatus.CANCELLED && it.status != AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
             .filter { it.branchExhaustionReason == null }
             .filter { it.dependsOn.all(completedIds::contains) }
@@ -225,14 +208,6 @@ data class AgentGoal(
             !readyTime && !networkWait
         }
     }
-
-    val activeTasks: List<AgentTask>
-        get() = if (activeResearchCycleId != null) {
-            tasks.filter { it.cycleId == activeResearchCycleId }
-        } else {
-            // Fallback for legacy missions or non-research tasks
-            tasks
-        }
 
     val totalWebSearches: Int
         get() = attempts.groupBy { it.taskId }.values.sumOf { taskAttempts ->

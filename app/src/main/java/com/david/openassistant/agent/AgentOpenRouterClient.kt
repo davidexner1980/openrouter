@@ -1283,6 +1283,7 @@ class AgentOpenRouterClient internal constructor(
                 )
             }
         } catch (error: Throwable) {
+            // println("DEBUG: executeTask caught error: $error (type=${error.javaClass.name})")
             buildResearchBootstrapFailureCheckpoint(error, researchBootstrap)
                 ?: throw error.withAgentUsage(researchBootstrap.summary)
         }
@@ -2992,7 +2993,6 @@ class AgentOpenRouterClient internal constructor(
         freeOnly: Boolean = false,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
-        recoveryPlan: RecoveryPlan? = null,
     ): Pair<AdaptiveResearchStrategy, RawAgentResponse> {
         val role = researchPassRole(task)
         val durableContext = priorEvidence
@@ -4391,6 +4391,7 @@ class AgentOpenRouterClient internal constructor(
                 }
             }
             is TransitionOutcomeResult.StorageFailure -> {
+                println("DEBUG: handleTerminalTransition throwing StorageFailure for exchange $exchangeId: ${result.cause}")
                 throw TerminalPersistenceException(
                     goalId = requestContext.goalId,
                     taskId = requestContext.taskId,
@@ -4767,14 +4768,12 @@ class AgentOpenRouterClient internal constructor(
                 }
 
                 // Selective internal retry: deterministic matrix
+                // No automatic replay after body start or response headers.
                 val isRetryable = when {
                     isCancelled -> false
-                    error is OpenRouterException -> {
-                        val retryableCode = error.statusCode?.let { it == 429 || it >= 500 } == true
-                        // Allow retry for 500/429 even if body was sent, but not if we started parsing model output
-                        retryableCode && tracker.stage < ProviderTransportStage.PARSING
-                    }
-                    error is IOException -> tracker.stage < ProviderTransportStage.REQUEST_BODY_STARTED
+                    tracker.stage >= ProviderTransportStage.REQUEST_BODY_STARTED -> false
+                    error is OpenRouterException -> error.statusCode?.let { it == 429 || it >= 500 } == true
+                    error is IOException -> true
                     else -> false
                 }
                 
@@ -5014,28 +5013,6 @@ class AgentOpenRouterClient internal constructor(
         if (goal.finalOutputDescription.isNotBlank()) {
             appendLine()
             appendLine("DESIRED DELIVERABLE: ${goal.finalOutputDescription}")
-        }
-        
-        val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId }
-        val activeRevision = goal.objectiveRevisions.firstOrNull { it.id == activeCycle?.objectiveRevisionId }
-        if (activeRevision != null) {
-            appendLine()
-            appendLine("CURRENT OPERATIONAL OBJECTIVE (Generation ${activeCycle?.ordinal}):")
-            appendLine(activeRevision.operationalObjective)
-        }
-        
-        if (activeCycle?.learningSummary != null) {
-            val summary = activeCycle.learningSummary
-            if (summary.establishedFindings.isNotEmpty()) {
-                appendLine()
-                appendLine("ESTABLISHED FINDINGS FROM PRIOR CYCLES:")
-                summary.establishedFindings.forEach { appendLine("- $it") }
-            }
-            if (summary.remainingUnresolvedGaps.isNotEmpty()) {
-                appendLine()
-                appendLine("REMAINING UNRESOLVED GAPS:")
-                summary.remainingUnresolvedGaps.forEach { appendLine("- $it") }
-            }
         }
     }
 
@@ -6381,130 +6358,10 @@ class AgentOpenRouterClient internal constructor(
 
         private val catalogLock = Mutex()
         private val catalogCache = CatalogCache()
-
-        private val RECOVERY_PLANNING_SYSTEM_PROMPT = """
-            You are the Recovery Coordinator for OpenAssistant. Your job is to diagnose research stalls and propose materially novel recovery plans.
-            
-            You must either:
-            1. (TACTIC_PIVOT) Propose a new research strategy and query portfolio that approaches the current cycle's objective from a materially different angle, OR
-            2. (CYCLE_ADVANCE) Propose a revised operational objective that incorporates prior learning to narrow the search, resolve ambiguities, or strengthen requirements.
-            
-            Never repeat queries, entities, or assumptions that have already been exhausted. Your proposal must be faithful to the original user request and constraints.
-        """.trim()
     }
+}
 
-    suspend fun createRecoveryProposal(
-        apiKey: String,
-        goal: AgentGoal,
-        plan: RecoveryPlan,
-        requestContext: ProviderRequestContext.Mission,
-    ): RecoveryProposal {
-        val modelId = goal.plannerModelId
-        val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId }
-        val activeRevision = goal.objectiveRevisions.firstOrNull { it.id == activeCycle?.objectiveRevisionId }
-        
-        val evidenceContext = buildVerificationEvidencePrompt(
-            goal.evidence.filter { it.kind != AgentEvidenceKind.SYSTEM_EVENT }
-        )
-        
-        val prompt = buildString {
-            appendLine("The research mission has stalled. You must generate a material recovery proposal using the selected tactic.")
-            appendLine("Stall Diagnosis: ${plan.diagnosis}")
-            appendLine("Selected Tactic: ${plan.tactic}")
-            appendLine()
-            appendLine("Tactic Instructions:")
-            appendLine(getTacticInstruction(plan.tactic))
-            appendLine()
-            appendLine("Mission context:")
-            appendLine("Original Request: ${goal.userRequest}")
-            appendLine("Current Operational Objective: ${activeRevision?.operationalObjective ?: goal.objective}")
-            appendLine()
-            appendLine("Earlier Evidence and Findings:")
-            appendLine(evidenceContext.take(15_000))
-            appendLine()
-            appendLine("PROPOSAL REQUIREMENTS:")
-            if (plan.kind == RecoveryKind.CYCLE_ADVANCE) {
-                appendLine("- Revise the operational objective to incorporate what was learned.")
-                appendLine("- Strengthen evidence requirements based on prior gaps.")
-                appendLine("- Clarify entities or terminology that proved ambiguous.")
-            } else {
-                appendLine("- Propose a materially novel research strategy and query portfolio for the current cycle.")
-                appendLine("- Focus on the diagnosed gap without repeating exhausted queries.")
-            }
-            appendLine("- Provide a rationale for why this change will unblock the mission.")
-        }
-
-        fun payload(responseFormat: JSONObject?): JSONObject = basePayload(
-            modelId = modelId,
-            systemPrompt = RECOVERY_PLANNING_SYSTEM_PROMPT,
-            userPrompt = prompt,
-            reasoningEffort = "medium",
-            role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "recovery_proposal",
-            freeOnly = goal.freeOnly
-        ).apply {
-            put("temperature", 0.15)
-            responseFormat?.let { put("response_format", it) }
-        }
-
-        val response = executeStructuredWithFallback(
-            apiKey = apiKey,
-            strictPayload = payload(jsonSchemaResponseFormat("recovery_proposal_v1", recoveryProposalSchema(plan.kind))),
-            jsonModePayload = payload(JSONObject().put("type", "json_object")),
-            plainPayload = payload(null),
-            generation = requestContext.executionGeneration,
-            requestContext = requestContext,
-        )
-
-        return parseRecoveryProposal(response.content, plan.tactic)
-    }
-
-    private fun getTacticInstruction(tactic: EscalationTactic): String = when (tactic) {
-        EscalationTactic.RESOLVE_ENTITIES -> "Exhaustively identify and define all named entities, versions, and aliases before continuing research."
-        EscalationTactic.SHIFT_SOURCE_FAMILY -> "Switch from general web results to a specific authoritative source class (e.g., regulatory, academic, official documentation)."
-        EscalationTactic.FOLLOW_CITATIONS -> "Deeply investigate specific citations, authors, or datasets mentioned in already accepted evidence."
-        EscalationTactic.DECOMPOSE_UNRESOLVED_GAP -> "Break down a complex unmet criterion into smaller, independently verifiable information needs."
-        EscalationTactic.SEARCH_CONTRADICTING_EVIDENCE -> "Actively search for evidence that falsifies or contradicts the leading claims and interpretations."
-        EscalationTactic.REBUILD_QUERY_PORTFOLIO -> "Discard current queries and build a new set that approaches the problem from a different angle."
-        EscalationTactic.REVISE_OPERATIONAL_OBJECTIVE -> "Produce a more precise operational interpretation of the root request based on current learning."
-        else -> "Perform request-specific recovery using your best reasoning to address the diagnosed stall."
-    }
-
-    private fun recoveryProposalSchema(kind: RecoveryKind): JSONObject = JSONObject().apply {
-        put("type", "object")
-        val properties = JSONObject()
-        properties.put("rationale", JSONObject().put("type", "string"))
-        properties.put("expected_evidence", JSONObject().put("type", "string"))
-        if (kind == RecoveryKind.CYCLE_ADVANCE) {
-            properties.put("revised_objective", JSONObject().put("type", "string"))
-        } else {
-            properties.put("strategy_json", JSONObject().put("type", "string"))
-            properties.put("query_portfolio", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
-        }
-        put("properties", properties)
-        put("required", JSONArray().apply {
-            put("rationale")
-            if (kind == RecoveryKind.CYCLE_ADVANCE) put("revised_objective")
-            else {
-                put("strategy_json")
-                put("query_portfolio")
-            }
-        })
-    }
-
-    private fun parseRecoveryProposal(content: String, tactic: EscalationTactic): RecoveryProposal {
-        val json = JSONObject(content)
-        return RecoveryProposal(
-            tactic = tactic,
-            revisedObjective = json.optNullableString("revised_objective"),
-            strategyJson = json.optNullableString("strategy_json"),
-            queryPortfolio = json.optJSONArray("query_portfolio").toStringList(),
-            rationale = json.getString("rationale"),
-            expectedEvidence = json.optNullableString("expected_evidence")
-        )
-    }
-
-    private class CatalogCache {
+private class CatalogCache {
     private var models: List<OpenRouterModel>? = null
     private var timestamp: Long = 0
 
@@ -6551,5 +6408,4 @@ private class OpenRouterLoggingInterceptor : okhttp3.Interceptor {
         
         return response
     }
-}
 }

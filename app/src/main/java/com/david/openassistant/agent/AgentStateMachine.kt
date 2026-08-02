@@ -13,7 +13,6 @@ object AgentStateMachine {
             AgentGoalStatus.FINALIZING,
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.QUEUED,
-            AgentGoalStatus.RUNNING,
             AgentGoalStatus.WAITING_FOR_CREDENTIAL,
             AgentGoalStatus.WAITING_FOR_NETWORK,
             AgentGoalStatus.PAUSED,
@@ -21,7 +20,6 @@ object AgentStateMachine {
             AgentGoalStatus.FAILED,
             AgentGoalStatus.BLOCKED,
             AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-            AgentGoalStatus.RECOVERING,
         ),
         AgentGoalStatus.QUEUED to setOf(
             AgentGoalStatus.RUNNING,
@@ -46,7 +44,6 @@ object AgentStateMachine {
             AgentGoalStatus.FINALIZING,
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
-            AgentGoalStatus.RECOVERING,
         ),
         AgentGoalStatus.VERIFYING to setOf(
             AgentGoalStatus.QUEUED,
@@ -137,17 +134,6 @@ object AgentStateMachine {
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
         ),
-        AgentGoalStatus.RECOVERING to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-            AgentGoalStatus.RUNNING,
-            AgentGoalStatus.FAILED,
-            AgentGoalStatus.CANCELLED,
-            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
-            AgentGoalStatus.FINALIZING,
-            AgentGoalStatus.CANCELLING,
-        ),
-        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED to emptySet(),
         AgentGoalStatus.CANCELLED to emptySet(),
         AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION to emptySet(),
     )

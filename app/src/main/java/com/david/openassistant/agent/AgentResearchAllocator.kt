@@ -151,12 +151,8 @@ object AgentResearchAllocator {
     }
 
     fun evaluateGaps(goal: AgentGoal, profile: ResearchAllocationProfile): ResearchAllocationGaps {
-        val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId }
-        val carriedForwardIds = activeCycle?.learningSummary?.carriedForwardEvidenceIds?.toSet() ?: emptySet()
-        
         val researchEvidence = goal.evidence.filter {
-            it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH) &&
-            (it.cycleId == goal.activeResearchCycleId || carriedForwardIds.contains(it.id))
+            it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH)
         }
         val sourceUrls = researchEvidence
             .flatMap { it.sources.map { s -> s.url.trim() } }
@@ -170,7 +166,7 @@ object AgentResearchAllocator {
         val remainingSourceGap = (profile.targetDistinctSources - sourceUrls.size).coerceAtLeast(0)
         val remainingDomainGap = (profile.targetDomains - domains.size).coerceAtLeast(0)
         
-        val researchTasks = goal.activeTasks.filter { 
+        val researchTasks = goal.tasks.filter { 
             it.capability in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH) 
         }
         val completedRoles = researchTasks
@@ -213,7 +209,7 @@ object AgentResearchAllocator {
             .filter { it.status == AgentTaskStatus.COMPLETED }
             .mapTo(mutableSetOf()) { it.id }
         
-        val dependencySatisfiedTasks = goal.activeTasks
+        val dependencySatisfiedTasks = goal.tasks
             .filter { it.status != AgentTaskStatus.COMPLETED && it.status != AgentTaskStatus.CANCELLED && it.status != AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
             .filter { it.branchExhaustionReason == null }
             .filter { it.dependsOn.all(completedIds::contains) }

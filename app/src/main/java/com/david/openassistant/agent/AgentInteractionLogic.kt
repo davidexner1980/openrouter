@@ -9,7 +9,6 @@ fun AgentGoalStatus.isFinalTerminalStatus(): Boolean = this in setOf(
     AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
     AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
     AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
-    AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
 )
 
 data class AgentApiSummary(
@@ -150,7 +149,6 @@ object MissionUiLogic {
             AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
             AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
             AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
-            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         )
 
         // A mission is stranded if its status is active but no worker is heartbeating

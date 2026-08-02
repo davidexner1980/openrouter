@@ -1276,11 +1276,12 @@ class Slice1LifecycleTest {
         server.enqueue(MockResponse.Builder().code(200).body(validResponseBody).build())
 
         var inTaskExecution = false
+        val initialWriteCount = store.writeCount.get()
         store.setTestWriterInjection(object : AgentStore.GoalStateWriter {
             override fun write(goal: AgentGoal) {
                 if (inTaskExecution) {
-                    val currentAttempts = goal.requestAttempts
-                    if (currentAttempts.any { it.exchangeOutcome != ExchangeOutcome.ACTIVE }) {
+                    val currentCount = store.writeCount.get()
+                    if (currentCount == initialWriteCount + 2) { // 1st is ACTIVE, 2nd is Terminal
                         throw IOException("Disk full during terminal write")
                     }
                 }
