@@ -96,6 +96,7 @@ enum class RecoveryPlanStatus {
     READY_TO_COMMIT,
     COMMITTED,
     REJECTED_NOT_NOVEL,
+    STRATEGY_EXHAUSTED,
     FAILED_RETRYABLE,
     FAILED_NEEDS_ACTION
 }
@@ -126,6 +127,8 @@ data class ResearchRecoveryPlan(
     val validationResult: String?,
     val failureClassification: String?,
     val failureMessage: String?,
+    val accountingSummary: AgentApiSummary? = null, // V42.4
+    val retryAuthorizedFingerprint: String? = null, // V42.4
     val createdAt: Long = System.currentTimeMillis(),
     val generatedAt: Long? = null,
     val committedAt: Long? = null

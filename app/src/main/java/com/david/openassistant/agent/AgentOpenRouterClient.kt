@@ -1496,7 +1496,7 @@ class AgentOpenRouterClient internal constructor(
             queryFingerprints = response.queryFingerprints,
             rejectedQueries = response.rejectedQueries,
             repairLineage = StructureRepairLineage(
-                originalResponseHash = response.content.hashCode().toString(16),
+                originalResponseHash = FingerprintUtils.hash("v1:response:" + response.content),
                 originalRequestFingerprint = task.progressFingerprint ?: "",
                 repairRequestFingerprint = "", // Since we failed to execute
                 repairAttemptCount = 1,
@@ -1537,9 +1537,9 @@ class AgentOpenRouterClient internal constructor(
                     result = repaired.copy(
                         structuredOutputRepaired = true,
                         repairLineage = StructureRepairLineage(
-                            originalResponseHash = response.content.hashCode().toString(16),
+                            originalResponseHash = FingerprintUtils.hash("v1:response:" + response.content),
                             originalRequestFingerprint = task.progressFingerprint ?: "",
-                            repairRequestFingerprint = repairResponse.content.hashCode().toString(16), // proxy for repair req
+                            repairRequestFingerprint = FingerprintUtils.hash("v1:response:" + repairResponse.content),
                             repairAttemptCount = 1,
                             repairReason = repairReason!!,
                             repairOutcome = outcome,

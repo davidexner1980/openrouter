@@ -1,7 +1,5 @@
 package com.david.openassistant.agent
 
-import java.security.MessageDigest
-
 /**
  * Pure deterministic engine for research recovery.
  * Responsible for diagnosing stalls, selecting tactics, and validating recovery novelty.
@@ -86,13 +84,10 @@ object ResearchRecoveryEngine {
         val withinCycleTactic = candidates.firstOrNull { it !in attemptedTactics }
         if (withinCycleTactic != null) return withinCycleTactic
 
-        // If within-cycle tactics are exhausted, consider cycle advancement.
-        val cycleCount = goal.researchCycles.size
-        return if (cycleCount < 3) {
-            EscalationTactic.CYCLE_ADVANCE
-        } else {
-            EscalationTactic.MARK_EXHAUSTED
-        }
+        // V42.4: Removed fixed cycleCount < 3 limit.
+        // If all within-cycle tactics are exhausted, we attempt cycle advancement.
+        // Exhaustion will be determined by the novelty and fidelity of the resulting proposal.
+        return EscalationTactic.CYCLE_ADVANCE
     }
 
     private fun ExecutionStallDiagnosis.toTactic(): EscalationTactic = when(this) {
@@ -110,10 +105,8 @@ object ResearchRecoveryEngine {
         diagnosis: ExecutionStallDiagnosis,
         tactic: EscalationTactic
     ): String {
-        val raw = "v1:$goalId:$taskId:$inputFingerprint:${diagnosis.name}:${tactic.name}"
-        return MessageDigest.getInstance("SHA-256")
-            .digest(raw.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        val raw = "v1:plan:$goalId:$taskId:$inputFingerprint:${diagnosis.name}:${tactic.name}"
+        return FingerprintUtils.hash(raw)
     }
 
     /**
@@ -123,7 +116,7 @@ object ResearchRecoveryEngine {
         proposal: RecoveryProposal,
         previousPlans: List<ResearchRecoveryPlan>
     ): Boolean {
-        val currentFingerprint = generateProposalFingerprint(proposal)
+        val currentFingerprint = FingerprintUtils.calculateProposalFingerprint(proposal)
         
         // Reject if fingerprint matches any committed or ready proposal
         val isDuplicate = previousPlans.any { plan ->
@@ -132,43 +125,38 @@ object ResearchRecoveryEngine {
         }
         if (isDuplicate) return false
 
-        // Deep semantic novelty check (simplified for V42.2)
-        // Reject cosmetic-only changes (whitespace, case, etc are handled by fingerprinting usually)
-        // But we explicitly check if query portfolio changed materially
-        val previousQueries = previousPlans
+        // V42.4: Material novelty evaluation
+        val committedProposals = previousPlans
             .filter { it.status == RecoveryPlanStatus.COMMITTED }
-            .flatMap { it.proposal?.newQueryPortfolio ?: emptyList() }
+            .mapNotNull { it.proposal }
+
+        val previousQueries = committedProposals
+            .flatMap { it.newQueryPortfolio }
             .map { it.lowercase().trim() }
             .toSet()
 
         val newQueries = proposal.newQueryPortfolio.map { it.lowercase().trim() }
-        val hasNewQuery = newQueries.any { it !in previousQueries }
+        val hasNovelQuery = newQueries.any { it !in previousQueries && it.length > 5 }
 
-        return hasNewQuery || proposal.selectedSourceFamilyShift != null
-    }
+        val previousGaps = committedProposals.map { it.specificUnresolvedGap.lowercase().trim() }.toSet()
+        val hasNovelGap = proposal.specificUnresolvedGap.lowercase().trim() !in previousGaps
 
-    fun generateProposalFingerprint(proposal: RecoveryProposal): String {
-        val queries = proposal.newQueryPortfolio.sorted().joinToString("|")
-        val targets = proposal.evidenceTargets.sorted().joinToString("|")
-        val raw = "v1:${proposal.revisedInvestigationInterpretation}:${proposal.specificUnresolvedGap}:" +
-                "${proposal.selectedSourceFamilyShift}:$queries:$targets:${proposal.rationale}"
-        
-        return MessageDigest.getInstance("SHA-256")
-            .digest(raw.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        val previousInterpretations = committedProposals.map { it.revisedInvestigationInterpretation.lowercase().trim() }.toSet()
+        val hasNovelInterpretation = proposal.revisedInvestigationInterpretation.lowercase().trim() !in previousInterpretations
+
+        val novelSourceShift = proposal.selectedSourceFamilyShift != null && 
+                committedProposals.none { it.selectedSourceFamilyShift == proposal.selectedSourceFamilyShift }
+
+        return hasNovelQuery || hasNovelGap || hasNovelInterpretation || novelSourceShift
     }
 
     fun generateCycleIdentity(goalId: String, ordinal: Int): String {
-        val raw = "cycle:$goalId:$ordinal"
-        return MessageDigest.getInstance("SHA-256")
-            .digest(raw.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        val raw = "v1:cycle:$goalId:$ordinal"
+        return FingerprintUtils.hash(raw)
     }
 
     fun generateRevisionIdentity(goalId: String, ordinal: Int): String {
-        val raw = "revision:$goalId:$ordinal"
-        return MessageDigest.getInstance("SHA-256")
-            .digest(raw.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        val raw = "v1:revision:$goalId:$ordinal"
+        return FingerprintUtils.hash(raw)
     }
 }

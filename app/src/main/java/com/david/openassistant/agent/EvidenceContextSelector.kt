@@ -46,7 +46,7 @@ object EvidenceContextSelector {
             .filter { it.kind != AgentEvidenceKind.SYSTEM_EVENT }
             .distinctBy { evidence ->
                 val sourceKey = evidence.sources.firstOrNull()?.url?.let { ResearchQualityGate.canonicalSourceUrl(it) }
-                sourceKey ?: evidence.content.hashCode().toString()
+                sourceKey ?: FingerprintUtils.hash("v1:content:${evidence.content}")
             }
         
         val deduplicatedCount = cycleEvidence.size - uniqueEvidence.size
@@ -98,7 +98,7 @@ object EvidenceContextSelector {
         val finalSelection = selected.distinctBy { it.id }.sortedBy { it.createdAt }
         val omittedCount = uniqueEvidence.size - finalSelection.size
         
-        val fingerprint = finalSelection.joinToString("|") { it.id }
+        val fingerprint = FingerprintUtils.hash("v1:context_selection:" + finalSelection.joinToString("|") { it.id })
         
         return SelectedContext(
             evidence = finalSelection,

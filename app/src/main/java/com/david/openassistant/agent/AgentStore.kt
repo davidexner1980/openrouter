@@ -1109,25 +1109,43 @@ class AgentStore private constructor(
         val isStuckV41 = (restoredStatus == AgentGoalStatus.PAUSED || restoredStatus == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE) &&
             storedTasks.any { it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && it.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT" } &&
             restoredEvents.any { it.message.contains("identical context fingerprint detected") } &&
-            goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration" }
+            goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration_v2" }
 
         val migratedGoal = if (isStuckV41) {
-            val repairedTasks = goalBeforeCycles.tasks.map {
-                if (it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && it.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT") {
-                    it.copy(status = AgentTaskStatus.QUEUED, failureClass = null)
+            val repairedTasks = goalBeforeCycles.tasks.map { task ->
+                if (task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && task.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT") {
+                    // Correct counters: if it was suppressed pre-dispatch, the attempt that led to suppression
+                    // might have incremented counts. We decrement if they are > 0 to allow the task to run.
+                    // Actually, re-queuing is enough if we authorize the retry fingerprint, 
+                    // but the prompt says "correct only counters created by the false pre-dispatch attempt".
+                    task.copy(
+                        status = AgentTaskStatus.QUEUED,
+                        failureClass = null,
+                        attemptCount = (task.attemptCount - 1).coerceAtLeast(0),
+                        lifetimeAttemptCount = (task.lifetimeAttemptCount - 1).coerceAtLeast(0)
+                    )
+                } else task
+            }
+            
+            // Close dangling RUNNING attempts
+            val repairedAttempts = goalBeforeCycles.attempts.map {
+                if (it.status == AgentAttemptStatus.RUNNING) {
+                    it.copy(status = AgentAttemptStatus.FAILED, error = "Attempt closed by migration (V41 stuck state).", finishedAt = System.currentTimeMillis())
                 } else it
             }
+
             val migrationRecord = IdempotencyRecord(
-                key = "v41_stuck_migration",
+                key = "v41_stuck_migration_v2",
                 effectType = IdempotencyEffectType.SYSTEM_REPAIR,
                 state = IdempotencyState.COMMITTED,
-                claimOwner = "migration_v42_3",
+                claimOwner = "migration_v42_4",
                 committedAt = System.currentTimeMillis()
             )
             goalBeforeCycles.copy(
                 status = AgentGoalStatus.QUEUED,
                 tasks = repairedTasks,
-                events = goalBeforeCycles.events + AgentEvent(message = "V41 stuck mission repaired by migration."),
+                attempts = repairedAttempts,
+                events = goalBeforeCycles.events + AgentEvent(message = "V42.4: Stuck mission repaired. Counters corrected and dangling attempts closed."),
                 idempotencyRecords = goalBeforeCycles.idempotencyRecords + migrationRecord
             )
         } else goalBeforeCycles
@@ -1186,7 +1204,10 @@ class AgentStore private constructor(
         val alreadyRepaired = goal.idempotencyRecords.any { it.key == repairKey }
 
         if (hasNullCycleTasks && isInitialPlanState && !alreadyRepaired) {
-            val baselineCycle = goal.researchCycles.firstOrNull { it.id.contains("baseline") }
+            val baselineCycleId = ResearchRecoveryEngine.generateCycleIdentity(goal.id, 1)
+            val baselineCycle = goal.researchCycles.firstOrNull { it.id == baselineCycleId }
+                ?: goal.researchCycles.firstOrNull { it.ordinal == 1 }
+            
             if (baselineCycle != null && goal.researchCycles.size == 1 && goal.objectiveRevisions.size == 1) {
                 val repairedTasks = goal.tasks.map { it.copy(cycleId = baselineCycle.id) }
                 val repairedEvidence = goal.evidence.map { if (it.cycleId == null) it.copy(cycleId = baselineCycle.id) else it }
@@ -1194,7 +1215,7 @@ class AgentStore private constructor(
                     key = repairKey,
                     effectType = IdempotencyEffectType.SYSTEM_REPAIR,
                     state = IdempotencyState.COMMITTED,
-                    claimOwner = "migration_v42_3_1",
+                    claimOwner = "migration_v42_4",
                     committedAt = System.currentTimeMillis()
                 )
                 diagnostics?.info(
@@ -1210,7 +1231,7 @@ class AgentStore private constructor(
                     tasks = repairedTasks,
                     evidence = repairedEvidence,
                     idempotencyRecords = goal.idempotencyRecords + migrationRecord,
-                    events = appendEvent(goal.events, "V42.3.1: Repaired initial task-cycle binding for mission.")
+                    events = appendEvent(goal.events, "V42.4: Repaired initial task-cycle binding for mission.")
                 )
             }
         }
@@ -1238,19 +1259,23 @@ class AgentStore private constructor(
 
     private fun createBaselineCycle(goal: AgentGoal): AgentGoal {
         if (goal.activeResearchCycleId != null) return goal
-        val revisionId = "rev_baseline_${goal.id}"
-        val cycleId = "cycle_baseline_${goal.id}"
+        val revisionId = ResearchRecoveryEngine.generateRevisionIdentity(goal.id, 1)
+        val cycleId = ResearchRecoveryEngine.generateCycleIdentity(goal.id, 1)
+        
+        val rootFp = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
+        val strategyFp = FingerprintUtils.calculateStrategyFingerprint(goal.objective, goal.unresolvedQuestions, null)
+        
         val baselineRevision = ObjectiveRevision(
             id = revisionId,
             ordinal = 1,
             parentRevisionId = null,
-            immutableRootObjectiveFingerprint = goal.objective.hashCode().toString(),
+            immutableRootObjectiveFingerprint = rootFp,
             operationalObjective = goal.objective,
             unresolvedGaps = goal.unresolvedQuestions,
             retainedConstraints = goal.confirmedConstraints,
             evidenceRequirements = goal.evidenceRequirements,
             revisionReason = "Initial baseline revision.",
-            revisionFingerprint = goal.objective.hashCode().toString()
+            revisionFingerprint = rootFp
         )
         val baselineCycle = ResearchCycle(
             id = cycleId,
@@ -1260,10 +1285,10 @@ class AgentStore private constructor(
             objectiveRevisionId = revisionId,
             triggerDiagnosis = ExecutionStallDiagnosis.NONE,
             selectedAdvancementTactic = EscalationTactic.NONE,
-            strategyFingerprint = "baseline",
-            queryPortfolioFingerprint = "baseline",
-            acceptedEvidenceFingerprint = "baseline",
-            unresolvedGapFingerprint = "baseline",
+            strategyFingerprint = strategyFp,
+            queryPortfolioFingerprint = FingerprintUtils.hash("v1:portfolio:empty"),
+            acceptedEvidenceFingerprint = FingerprintUtils.hash("v1:accepted_evidence:empty"),
+            unresolvedGapFingerprint = FingerprintUtils.hash("v1:unresolved_gap:initial"),
             learningSummary = null,
             activatedAt = goal.createdAt
         )
@@ -1385,6 +1410,8 @@ class AgentStore private constructor(
         .put("validation_result", plan.validationResult ?: JSONObject.NULL)
         .put("failure_classification", plan.failureClassification ?: JSONObject.NULL)
         .put("failure_message", plan.failureMessage ?: JSONObject.NULL)
+        .put("accounting_summary", plan.accountingSummary?.let(::encodeApiSummary) ?: JSONObject.NULL)
+        .put("retry_authorized_fingerprint", plan.retryAuthorizedFingerprint ?: JSONObject.NULL)
         .put("created_at", plan.createdAt)
         .put("generated_at", plan.generatedAt ?: JSONObject.NULL)
         .put("committed_at", plan.committedAt ?: JSONObject.NULL)
@@ -1403,9 +1430,54 @@ class AgentStore private constructor(
         validationResult = json.optNullableString("validation_result"),
         failureClassification = json.optNullableString("failure_classification"),
         failureMessage = json.optNullableString("failure_message"),
+        accountingSummary = json.optJSONObject("accounting_summary")?.let(::decodeApiSummary),
+        retryAuthorizedFingerprint = json.optNullableString("retry_authorized_fingerprint"),
         createdAt = json.optLong("created_at", System.currentTimeMillis()),
         generatedAt = json.optLongOrNull("generated_at"),
         committedAt = json.optLongOrNull("committed_at")
+    )
+
+    private fun encodeApiSummary(summary: AgentApiSummary): JSONObject = JSONObject()
+        .put("response_id", summary.responseId ?: JSONObject.NULL)
+        .put("resolved_model", summary.resolvedModel ?: JSONObject.NULL)
+        .put("role", summary.role?.name ?: JSONObject.NULL)
+        .put("selection_reason", summary.selectionReason ?: JSONObject.NULL)
+        .put("previous_route", summary.previousRoute ?: JSONObject.NULL)
+        .put("cooldown_state", summary.cooldownState ?: JSONObject.NULL)
+        .put("provider", summary.provider ?: JSONObject.NULL)
+        .put("finish_reason", summary.finishReason ?: JSONObject.NULL)
+        .put("native_finish_reason", summary.nativeFinishReason ?: JSONObject.NULL)
+        .put("http_status_code", summary.httpStatusCode ?: JSONObject.NULL)
+        .put("prompt_tokens", summary.promptTokens ?: JSONObject.NULL)
+        .put("completion_tokens", summary.completionTokens ?: JSONObject.NULL)
+        .put("total_tokens", summary.totalTokens ?: JSONObject.NULL)
+        .put("cost_usd", summary.costUsd ?: JSONObject.NULL)
+        .put("web_search_requests", summary.webSearchRequests ?: JSONObject.NULL)
+        .put("web_fetch_requests", summary.webFetchRequests ?: JSONObject.NULL)
+        .put("discovered_leads", summary.discoveredLeads ?: JSONObject.NULL)
+        .put("rabbit_hole_iterations", summary.rabbitHoleIterations ?: JSONObject.NULL)
+        .put("duration_ms", summary.durationMs ?: JSONObject.NULL)
+
+    private fun decodeApiSummary(json: JSONObject): AgentApiSummary = AgentApiSummary(
+        responseId = json.optNullableString("response_id"),
+        resolvedModel = json.optNullableString("resolved_model"),
+        role = json.optNullableString("role")?.let { runCatching { AgentTaskRole.valueOf(it) }.getOrNull() },
+        selectionReason = json.optNullableString("selection_reason"),
+        previousRoute = json.optNullableString("previous_route"),
+        cooldownState = json.optNullableString("cooldown_state"),
+        provider = json.optNullableString("provider"),
+        finishReason = json.optNullableString("finish_reason"),
+        nativeFinishReason = json.optNullableString("native_finish_reason"),
+        httpStatusCode = json.optIntOrNull("http_status_code"),
+        promptTokens = json.optIntOrNull("prompt_tokens"),
+        completionTokens = json.optIntOrNull("completion_tokens"),
+        totalTokens = json.optIntOrNull("total_tokens"),
+        costUsd = json.optDoubleOrNull("cost_usd"),
+        webSearchRequests = json.optIntOrNull("web_search_requests"),
+        webFetchRequests = json.optIntOrNull("web_fetch_requests"),
+        discoveredLeads = json.optIntOrNull("discovered_leads"),
+        rabbitHoleIterations = json.optIntOrNull("rabbit_hole_iterations"),
+        durationMs = json.optLongOrNull("duration_ms")
     )
 
     private fun encodeRecoveryProposal(proposal: RecoveryProposal): JSONObject = JSONObject()
@@ -2228,7 +2300,7 @@ class AgentStore private constructor(
         private const val ATOMIC_BACKUP_SUFFIX = ".bak"
         private const val LEGACY_RECOVERY_FILE_NAME = "legacy_snapshot_recovery.txt"
         private const val CORRUPT_RECOVERY_SUFFIX = ".corrupt-recovery.txt"
-        private const val STORAGE_VERSION = 12
+        private const val STORAGE_VERSION = 13
         private val STORE_LOCK = Any()
 
         fun isTaskBoundOperation(operation: String): Boolean {

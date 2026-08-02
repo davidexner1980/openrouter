@@ -23,6 +23,7 @@ import com.david.openassistant.agent.AgentRoutingPolicy
 import com.david.openassistant.agent.UsageSource
 import com.david.openassistant.data.openrouter.OpenRouterModel
 import com.david.openassistant.domain.model.AgentModelSelector
+import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -95,11 +96,12 @@ class AgentPlanner(
                 requestContext = missionContext,
             )
             currentCoroutineContext().ensureActive()
+            val cycleId = goal.activeResearchCycleId ?: ResearchRecoveryEngine.generateCycleIdentity(goal.id, 1)
             val tasks = plan.tasks.mapIndexed { index, draft ->
                 AgentCapabilityRegistry.requireAllowed(draft.capability)
                 AgentTask(
                     id = draft.id,
-                    cycleId = goal.activeResearchCycleId,
+                    cycleId = cycleId,
                     order = index,
                     title = draft.title,
                     instructions = draft.instructions,
@@ -115,7 +117,7 @@ class AgentPlanner(
             val planEvidence = AgentEvidence(
                 id = "plan_evidence_${UUID.randomUUID()}",
                 taskId = null,
-                cycleId = goal.activeResearchCycleId,
+                cycleId = cycleId,
                 kind = AgentEvidenceKind.PLAN,
                 title = "Validated durable plan",
                 summary = "${tasks.size} measurable milestones and ${filteredGoalCriteria.size} final checks were created.",
@@ -141,7 +143,48 @@ class AgentPlanner(
                     return@updateGoalAtomic current
                 }
 
-                val baseUpdated = current.withAdditionalUsage(summary.totalTokens, summary.costUsd)
+                var baseUpdated = current.withAdditionalUsage(summary.totalTokens, summary.costUsd)
+                
+                // V42.4: Establish explicit baseline cycle ownership during original plan commit
+                if (baseUpdated.activeResearchCycleId == null) {
+                    val revisionId = ResearchRecoveryEngine.generateRevisionIdentity(current.id, 1)
+                    val rootFp = FingerprintUtils.calculateRootObjectiveFingerprint(current)
+                    val strategyFp = FingerprintUtils.calculateStrategyFingerprint(plan.objective, emptyList(), null)
+                    
+                    val baselineRevision = ObjectiveRevision(
+                        id = revisionId,
+                        ordinal = 1,
+                        parentRevisionId = null,
+                        immutableRootObjectiveFingerprint = rootFp,
+                        operationalObjective = plan.objective,
+                        unresolvedGaps = emptyList(),
+                        retainedConstraints = current.confirmedConstraints,
+                        evidenceRequirements = current.evidenceRequirements,
+                        revisionReason = "Initial baseline revision.",
+                        revisionFingerprint = rootFp
+                    )
+                    val baselineCycle = ResearchCycle(
+                        id = cycleId,
+                        ordinal = 1,
+                        parentCycleId = null,
+                        status = ResearchCycleStatus.ACTIVE,
+                        objectiveRevisionId = revisionId,
+                        triggerDiagnosis = ExecutionStallDiagnosis.NONE,
+                        selectedAdvancementTactic = EscalationTactic.NONE,
+                        strategyFingerprint = strategyFp,
+                        queryPortfolioFingerprint = FingerprintUtils.hash("v1:portfolio:empty"),
+                        acceptedEvidenceFingerprint = FingerprintUtils.hash("v1:accepted_evidence:empty"),
+                        unresolvedGapFingerprint = FingerprintUtils.hash("v1:unresolved_gap:initial"),
+                        learningSummary = null,
+                        activatedAt = baseUpdated.createdAt
+                    )
+                    baseUpdated = baseUpdated.copy(
+                        researchCycles = baseUpdated.researchCycles + baselineCycle,
+                        objectiveRevisions = baseUpdated.objectiveRevisions + baselineRevision,
+                        activeResearchCycleId = cycleId
+                    )
+                }
+
                 val accountingRecord = IdempotencyRecord(
                     key = accountingKey,
                     effectType = IdempotencyEffectType.PROVIDER_ACCOUNTING,
@@ -159,7 +202,7 @@ class AgentPlanner(
                     status = AgentGoalStatus.QUEUED,
                     tasks = tasks,
                     acceptanceCriteria = filteredGoalCriteria,
-                    evidence = appendEvidence(current.evidence, planEvidence),
+                    evidence = appendEvidence(baseUpdated.evidence, planEvidence),
                     idempotencyRecords = baseUpdated.idempotencyRecords + accountingRecord,
                     attempts = current.attempts.map { existing ->
                         if (existing.id == attempt.id) {
@@ -231,129 +274,320 @@ class AgentPlanner(
         }
     }
 
-    suspend fun recoverCycle(
+    suspend fun generateRecoveryProposal(
         apiKey: String,
         goal: AgentGoal,
+        plan: ResearchRecoveryPlan,
         ticket: PlanningTicket,
     ): WorkerOutcome {
-        val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId } ?: return WorkerOutcome.FAIL
-        val learningSummary = activeCycle.learningSummary ?: return WorkerOutcome.FAIL
-        
-        val attempt = AgentAttempt(
-            taskId = null,
-            status = AgentAttemptStatus.RUNNING,
-            startedAt = System.currentTimeMillis(),
-            modelId = goal.plannerModelId,
-        )
-        store.updateGoalAtomic(goal.id, ticket) { current ->
-            current.copy(attempts = retainAttempts(current.attempts + attempt))
-        }
-
-        val parentOperationId = "op-cycle-advance-${UUID.randomUUID()}"
+        val parentOperationId = "op-recovery-${plan.id}"
         val missionContext = ProviderRequestContext.Mission(
             goalId = goal.id,
             workerId = ticket.workerId,
-            taskId = null,
+            taskId = plan.taskId,
             attemptId = ticket.attemptId,
             executionGeneration = ticket.generation,
             acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
-            operation = MissionOperation.CYCLE_ADVANCE,
+            operation = if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) MissionOperation.CYCLE_ADVANCE else MissionOperation.RECOVERY_PROPOSAL,
             parentOperationId = parentOperationId,
         )
 
         return try {
-            val (plan, summary) = client.createCycleAdvancementProposal(
-                apiKey = apiKey,
-                modelId = AgentRoutingPolicy.guardModel(goal, goal.plannerModelId),
-                goal = goal,
-                sourceCycle = activeCycle,
-                learningSummary = learningSummary,
-                freeOnly = goal.freeOnly,
-                requestContext = missionContext,
-            )
+            val (proposal, summary) = if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) {
+                val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId }
+                    ?: throw IllegalStateException("Active cycle missing for cycle advancement.")
+                val learningSummary = activeCycle.learningSummary
+                    ?: throw IllegalStateException("Learning summary missing for cycle advancement.")
+                
+                val (draft, s) = client.createCycleAdvancementProposal(
+                    apiKey = apiKey,
+                    modelId = AgentRoutingPolicy.guardModel(goal, goal.plannerModelId),
+                    goal = goal,
+                    sourceCycle = activeCycle,
+                    learningSummary = learningSummary,
+                    freeOnly = goal.freeOnly,
+                    requestContext = missionContext,
+                )
+                
+                val p = RecoveryProposal(
+                    revisedInvestigationInterpretation = draft.objective,
+                    specificUnresolvedGap = draft.tasks.joinToString("; ") { it.title },
+                    selectedSourceFamilyShift = null,
+                    evidenceTargets = draft.acceptanceCriteria.map { it.description },
+                    falsifiers = emptyList(),
+                    newQueryPortfolio = emptyList(),
+                    followUpRule = null,
+                    rationale = "Generated successor cycle proposal.",
+                    expectedNoveltyDimensions = listOf("objective", "tasks")
+                )
+                p to s
+            } else {
+                client.createResearchRecoveryProposal(
+                    apiKey = apiKey,
+                    modelId = AgentRoutingPolicy.guardModel(goal, goal.plannerModelId),
+                    goal = goal,
+                    plan = plan,
+                    evidence = goal.evidence,
+                    freeOnly = goal.freeOnly,
+                    requestContext = missionContext,
+                )
+            }
+
             currentCoroutineContext().ensureActive()
 
-            val nextCycleOrdinal = activeCycle.ordinal + 1
-            val nextRevisionOrdinal = (goal.objectiveRevisions.maxOfOrNull { it.ordinal } ?: 1) + 1
+            val proposalFingerprint = FingerprintUtils.calculateProposalFingerprint(proposal)
             
-            val nextRevisionId = ResearchRecoveryEngine.generateRevisionIdentity(goal.id, nextRevisionOrdinal)
-            val nextCycleId = ResearchRecoveryEngine.generateCycleIdentity(goal.id, nextCycleOrdinal)
-
-            val nextRevision = ObjectiveRevision(
-                id = nextRevisionId,
-                ordinal = nextRevisionOrdinal,
-                parentRevisionId = goal.objectiveRevisions.lastOrNull()?.id,
-                immutableRootObjectiveFingerprint = goal.objective.hashCode().toString(),
-                operationalObjective = plan.objective,
-                unresolvedGaps = plan.tasks.map { it.title },
-                retainedConstraints = goal.confirmedConstraints,
-                evidenceRequirements = goal.evidenceRequirements,
-                revisionReason = "Cycle advancement refinement.",
-                revisionFingerprint = plan.objective.hashCode().toString()
-            )
-
-            val tasks = plan.tasks.mapIndexed { index, draft ->
-                AgentTask(
-                    id = draft.id,
-                    cycleId = nextCycleId,
-                    order = index,
-                    title = draft.title,
-                    instructions = draft.instructions,
-                    capability = draft.capability,
-                    dependsOn = draft.dependsOn,
-                    status = AgentTaskStatus.QUEUED,
-                    weight = draft.weight,
-                    acceptanceCriteria = ConstraintValidator.filterGrounded(draft.acceptanceCriteria, goal.userRequest),
+            // Pre-calculate authorized retry fingerprint for tactic pivot
+            val retryFp = if (plan.selectedTactic != EscalationTactic.CYCLE_ADVANCE) {
+                val simulatedTask = (goal.tasks.firstOrNull { it.id == plan.taskId } ?: throw IllegalStateException("Task missing")).copy(
+                    lastRecoveryStrategy = proposal.revisedInvestigationInterpretation,
+                    recoveryStrategyFingerprint = FingerprintUtils.calculateStrategyFingerprint(
+                        proposal.revisedInvestigationInterpretation,
+                        proposal.evidenceTargets,
+                        proposal.selectedSourceFamilyShift
+                    ),
+                    resultSetFingerprint = FingerprintUtils.calculatePortfolioFingerprint(proposal.newQueryPortfolio)
                 )
-            }
+                FingerprintUtils.calculateExecutionFingerprint(goal, simulatedTask)
+            } else null
 
-            val nextCycle = ResearchCycle(
-                id = nextCycleId,
-                ordinal = nextCycleOrdinal,
-                parentCycleId = activeCycle.id,
-                status = ResearchCycleStatus.ACTIVE,
-                objectiveRevisionId = nextRevisionId,
-                triggerDiagnosis = activeCycle.triggerDiagnosis,
-                selectedAdvancementTactic = EscalationTactic.CYCLE_ADVANCE,
-                strategyFingerprint = "advanced",
-                queryPortfolioFingerprint = "advanced",
-                acceptedEvidenceFingerprint = "advanced",
-                unresolvedGapFingerprint = "advanced",
-                learningSummary = null,
-                activatedAt = System.currentTimeMillis()
-            )
+            // Novelty validation
+            if (!ResearchRecoveryEngine.validateNovelty(proposal, goal.recoveryPlans)) {
+                store.updateGoalAtomic(goal.id, ticket) { current ->
+                    current.copy(
+                        recoveryPlans = current.recoveryPlans.map { p ->
+                            if (p.id == plan.id) p.copy(
+                                status = RecoveryPlanStatus.REJECTED_NOT_NOVEL,
+                                proposal = proposal,
+                                proposalFingerprint = proposalFingerprint,
+                                generatedAt = System.currentTimeMillis()
+                            ) else p
+                        },
+                        events = appendEvent(current.events, "Recovery proposal rejected: not materially novel.")
+                    )
+                }
+                return WorkerOutcome.DONE
+            }
 
             store.updateGoalAtomic(goal.id, ticket) { current ->
-                if (current.activeResearchCycleId != activeCycle.id) return@updateGoalAtomic current
-                
-                val updatedCycles = current.researchCycles.map {
-                    if (it.id == activeCycle.id) it.copy(status = ResearchCycleStatus.SUPERSEDED, supersededAt = System.currentTimeMillis())
-                    else it
-                } + nextCycle
-
                 current.copy(
-                    researchCycles = updatedCycles,
-                    objectiveRevisions = current.objectiveRevisions + nextRevision,
-                    activeResearchCycleId = nextCycleId,
-                    tasks = tasks,
-                    attempts = current.attempts.map { existing ->
-                         if (existing.id == attempt.id) existing.copy(status = AgentAttemptStatus.SUCCEEDED, finishedAt = System.currentTimeMillis(), resolvedModel = summary.resolvedModel)
-                         else existing
-                    },
-                    events = appendEvent(current.events, "Advanced to research cycle $nextCycleOrdinal with refined objective: ${plan.objective}"),
-                    error = null
+                    recoveryPlans = current.recoveryPlans.map { p ->
+                        if (p.id == plan.id) p.copy(
+                            status = RecoveryPlanStatus.READY_TO_COMMIT,
+                            proposal = proposal,
+                            proposalFingerprint = proposalFingerprint,
+                            accountingSummary = summary,
+                            retryAuthorizedFingerprint = retryFp,
+                            generatedAt = System.currentTimeMillis()
+                        ) else p
+                    }
                 )
             }
-            diagnostics.info(
-                event = "cycle_advanced",
-                component = "mission",
-                fields = mapOf("goal_id" to goal.id, "cycle_ordinal" to nextCycleOrdinal)
-            )
             WorkerOutcome.CONTINUE
         } catch (error: Throwable) {
-             persistPlanningFailure(goal.id, attempt.id, error, ticket)
+            persistRecoveryFailure(goal.id, plan.id, error, ticket)
         }
+    }
+
+    fun commitRecoveryEffect(
+        goal: AgentGoal,
+        plan: ResearchRecoveryPlan,
+        ticket: PlanningTicket,
+    ): WorkerOutcome {
+        val proposal = plan.proposal ?: return WorkerOutcome.FAIL
+        
+        return if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) {
+            commitCycleAdvance(goal, plan, proposal, ticket)
+        } else {
+            commitTacticPivot(goal, plan, proposal, ticket)
+        }
+    }
+
+    private fun commitTacticPivot(
+        goal: AgentGoal,
+        plan: ResearchRecoveryPlan,
+        proposal: RecoveryProposal,
+        ticket: PlanningTicket,
+    ): WorkerOutcome {
+        val taskId = plan.taskId
+        
+        val strategyFp = FingerprintUtils.calculateStrategyFingerprint(
+            proposal.revisedInvestigationInterpretation,
+            proposal.evidenceTargets,
+            proposal.selectedSourceFamilyShift
+        )
+        val portfolioFp = FingerprintUtils.calculatePortfolioFingerprint(proposal.newQueryPortfolio)
+
+        store.updateGoalAtomic(goal.id, ticket) { current ->
+            val accountingKey = "recovery_accounting_${plan.id}"
+            if (current.idempotencyRecords.any { it.key == accountingKey && it.state == IdempotencyState.COMMITTED }) {
+                return@updateGoalAtomic current
+            }
+
+            val accountingRecord = IdempotencyRecord(
+                key = accountingKey,
+                effectType = IdempotencyEffectType.PROVIDER_ACCOUNTING,
+                state = IdempotencyState.COMMITTED,
+                claimOwner = ticket.workerId,
+                committedAt = System.currentTimeMillis(),
+                completedBy = ticket.workerId
+            )
+
+            current.copy(
+                tasks = current.tasks.map { task ->
+                    if (task.id == taskId) {
+                        task.copy(
+                            status = AgentTaskStatus.QUEUED,
+                            lastRecoveryStrategy = proposal.revisedInvestigationInterpretation,
+                            recoveryStrategyFingerprint = strategyFp,
+                            resultSetFingerprint = portfolioFp,
+                            retryAuthorizedFingerprint = plan.retryAuthorizedFingerprint,
+                            lastTactic = plan.selectedTactic.name,
+                            activeResearchStrategyJson = null,
+                            lastError = null,
+                            failureClass = null
+                        )
+                    } else task
+                },
+                recoveryPlans = current.recoveryPlans.map { p ->
+                    if (p.id == plan.id) p.copy(status = RecoveryPlanStatus.COMMITTED, committedAt = System.currentTimeMillis())
+                    else p
+                },
+                idempotencyRecords = current.idempotencyRecords + accountingRecord,
+                activeRecoveryPlanId = null,
+                events = appendEvent(current.events, "Tactic pivot committed: ${plan.selectedTactic.name}.")
+            ).withAdditionalUsage(plan.accountingSummary?.totalTokens, plan.accountingSummary?.costUsd)
+        }
+        return WorkerOutcome.CONTINUE
+    }
+
+    private fun commitCycleAdvance(
+        goal: AgentGoal,
+        plan: ResearchRecoveryPlan,
+        proposal: RecoveryProposal,
+        ticket: PlanningTicket,
+    ): WorkerOutcome {
+        val activeCycleId = goal.activeResearchCycleId ?: return WorkerOutcome.FAIL
+        val activeCycle = goal.researchCycles.firstOrNull { it.id == activeCycleId } ?: return WorkerOutcome.FAIL
+        
+        val nextCycleOrdinal = activeCycle.ordinal + 1
+        val nextRevisionOrdinal = (goal.objectiveRevisions.maxOfOrNull { it.ordinal } ?: 1) + 1
+        
+        val nextRevisionId = ResearchRecoveryEngine.generateRevisionIdentity(goal.id, nextRevisionOrdinal)
+        val nextCycleId = ResearchRecoveryEngine.generateCycleIdentity(goal.id, nextCycleOrdinal)
+
+        val rootFp = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
+        val strategyFp = FingerprintUtils.calculateStrategyFingerprint(proposal.revisedInvestigationInterpretation, proposal.evidenceTargets, null)
+        val portfolioFp = FingerprintUtils.calculatePortfolioFingerprint(proposal.newQueryPortfolio)
+
+        val nextRevision = ObjectiveRevision(
+            id = nextRevisionId,
+            ordinal = nextRevisionOrdinal,
+            parentRevisionId = goal.objectiveRevisions.lastOrNull()?.id,
+            immutableRootObjectiveFingerprint = rootFp,
+            operationalObjective = proposal.revisedInvestigationInterpretation,
+            unresolvedGaps = listOf(proposal.specificUnresolvedGap),
+            retainedConstraints = goal.confirmedConstraints,
+            evidenceRequirements = goal.evidenceRequirements,
+            revisionReason = "Cycle advancement recovery.",
+            revisionFingerprint = strategyFp
+        )
+
+        val carryForwardIds = activeCycle.learningSummary?.carryForwardEvidenceIds.orEmpty()
+        val nextCycle = ResearchCycle(
+            id = nextCycleId,
+            ordinal = nextCycleOrdinal,
+            parentCycleId = activeCycle.id,
+            status = ResearchCycleStatus.ACTIVE,
+            objectiveRevisionId = nextRevisionId,
+            triggerDiagnosis = activeCycle.triggerDiagnosis,
+            selectedAdvancementTactic = EscalationTactic.CYCLE_ADVANCE,
+            strategyFingerprint = strategyFp,
+            queryPortfolioFingerprint = portfolioFp,
+            acceptedEvidenceFingerprint = FingerprintUtils.hash("v1:accepted_evidence:" + carryForwardIds.sorted().joinToString("|")),
+            unresolvedGapFingerprint = FingerprintUtils.hash("v1:unresolved_gap:successor"),
+            learningSummary = null,
+            activatedAt = System.currentTimeMillis()
+        )
+
+        store.updateGoalAtomic(goal.id, ticket) { current ->
+            if (current.activeResearchCycleId != activeCycleId) return@updateGoalAtomic current
+            val accountingKey = "recovery_accounting_${plan.id}"
+            if (current.idempotencyRecords.any { it.key == accountingKey && it.state == IdempotencyState.COMMITTED }) {
+                return@updateGoalAtomic current
+            }
+
+            val accountingRecord = IdempotencyRecord(
+                key = accountingKey,
+                effectType = IdempotencyEffectType.PROVIDER_ACCOUNTING,
+                state = IdempotencyState.COMMITTED,
+                claimOwner = ticket.workerId,
+                committedAt = System.currentTimeMillis(),
+                completedBy = ticket.workerId
+            )
+            
+            val updatedCycles = current.researchCycles.map {
+                if (it.id == activeCycleId) it.copy(status = ResearchCycleStatus.SUPERSEDED, supersededAt = System.currentTimeMillis())
+                else it
+            } + nextCycle
+
+            val successorTasks = listOf(
+                AgentTask(
+                    id = "recovery_task_" + FingerprintUtils.hash("v1:recovery_task:" + plan.id).take(16),
+                    cycleId = nextCycleId,
+                    order = 0,
+                    title = "Successor Research Pass",
+                    instructions = proposal.specificUnresolvedGap,
+                    capability = AgentCapability.DEEP_RESEARCH,
+                    status = AgentTaskStatus.QUEUED,
+                    weight = 1.0,
+                    acceptanceCriteria = proposal.evidenceTargets.mapIndexed { i, desc -> 
+                        AgentAcceptanceCriterion("gap_$i", desc) 
+                    }.ifEmpty { listOf(AgentAcceptanceCriterion("gap_0", "Materially resolve the identified gap.")) }
+                )
+            )
+
+            current.copy(
+                researchCycles = updatedCycles,
+                objectiveRevisions = current.objectiveRevisions + nextRevision,
+                activeResearchCycleId = nextCycleId,
+                tasks = current.tasks.map { it.copy(status = AgentTaskStatus.CANCELLED) } + successorTasks,
+                recoveryPlans = current.recoveryPlans.map { p ->
+                    if (p.id == plan.id) p.copy(status = RecoveryPlanStatus.COMMITTED, committedAt = System.currentTimeMillis())
+                    else p
+                },
+                idempotencyRecords = current.idempotencyRecords + accountingRecord,
+                activeRecoveryPlanId = null,
+                events = appendEvent(current.events, "Cycle $nextCycleOrdinal advanced with refined objective."),
+                error = null
+            ).withAdditionalUsage(plan.accountingSummary?.totalTokens, plan.accountingSummary?.costUsd)
+        }
+        return WorkerOutcome.CONTINUE
+    }
+
+    private fun persistRecoveryFailure(
+        goalId: String,
+        planId: String,
+        error: Throwable,
+        ticket: PlanningTicket,
+    ): WorkerOutcome {
+        val statusCode = (error as? OpenRouterException)?.statusCode
+        val failureClass = if (error is IOException) "network_wait" else error::class.java.simpleName
+        
+        store.updateGoalAtomic(goalId, ticket) { current ->
+            current.copy(
+                recoveryPlans = current.recoveryPlans.map { p ->
+                    if (p.id == planId) p.copy(
+                        status = if (statusCode == 429 || error is IOException) RecoveryPlanStatus.FAILED_RETRYABLE else RecoveryPlanStatus.FAILED_NEEDS_ACTION,
+                        failureClassification = failureClass,
+                        failureMessage = error.message?.take(1000)
+                    ) else p
+                },
+                events = appendEvent(current.events, "Recovery generation failed: $failureClass. ${error.message?.take(200)}")
+            )
+        }
+        return if (statusCode == 429 || error is IOException) WorkerOutcome.RETRY else WorkerOutcome.FAIL
     }
 
     private fun persistPlanningFailure(
@@ -508,4 +742,3 @@ class AgentPlanner(
         }
     }
 }
-

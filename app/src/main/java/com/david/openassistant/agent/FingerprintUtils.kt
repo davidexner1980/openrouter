@@ -10,7 +10,6 @@ import java.text.Normalizer
  */
 object FingerprintUtils {
     fun calculateExecutionFingerprint(goal: AgentGoal, task: AgentTask): String {
-        val digest = MessageDigest.getInstance("SHA-256")
         val context = EvidenceContextSelector.select(goal, task)
         
         val encoder = CanonicalEncoder()
@@ -57,7 +56,60 @@ object FingerprintUtils {
                 encoder.append("claim_hash", claim.contentHash)
             }
 
-        val canonicalString = encoder.build()
+        return hash(encoder.build())
+    }
+
+    fun calculateRootObjectiveFingerprint(goal: AgentGoal): String {
+        val encoder = CanonicalEncoder()
+        encoder.append("user_request", goal.userRequest)
+        encoder.append("final_output_description", goal.finalOutputDescription)
+        goal.confirmedConstraints.sorted().forEach { encoder.append("constraint", it) }
+        
+        goal.objectiveContract?.let { contract ->
+            encoder.append("primary_subject", contract.primarySubject)
+            contract.strongAnchors.sorted().forEach { encoder.append("anchor", it) }
+            contract.temporalContext?.let { encoder.append("temporal", it) }
+            contract.expectedDeliverableKind?.let { encoder.append("deliverable_kind", it) }
+            encoder.append("domain", contract.domainClassification)
+        }
+        
+        return hash(encoder.build())
+    }
+
+    fun calculateStrategyFingerprint(
+        operationalObjective: String,
+        unresolvedGaps: List<String>,
+        sourceFamilyShift: String?
+    ): String {
+        val encoder = CanonicalEncoder()
+        encoder.append("op_objective", operationalObjective)
+        unresolvedGaps.sorted().forEach { encoder.append("gap", it) }
+        sourceFamilyShift?.let { encoder.append("source_shift", it) }
+        return hash(encoder.build())
+    }
+
+    fun calculatePortfolioFingerprint(queries: List<String>): String {
+        val encoder = CanonicalEncoder()
+        queries.map { it.lowercase().trim() }.sorted().forEach { encoder.append("query", it) }
+        return hash(encoder.build())
+    }
+
+    fun calculateProposalFingerprint(proposal: RecoveryProposal): String {
+        val encoder = CanonicalEncoder()
+        encoder.append("interpretation", proposal.revisedInvestigationInterpretation)
+        encoder.append("gap", proposal.specificUnresolvedGap)
+        proposal.selectedSourceFamilyShift?.let { encoder.append("source_shift", it) }
+        proposal.evidenceTargets.sorted().forEach { encoder.append("evidence_target", it) }
+        proposal.falsifiers.sorted().forEach { encoder.append("falsifier", it) }
+        proposal.newQueryPortfolio.map { it.lowercase().trim() }.sorted().forEach { encoder.append("query", it) }
+        proposal.followUpRule?.let { encoder.append("follow_up_rule", it) }
+        encoder.append("rationale", proposal.rationale)
+        proposal.expectedNoveltyDimensions.sorted().forEach { encoder.append("novelty_dim", it) }
+        return hash(encoder.build())
+    }
+
+    internal fun hash(canonicalString: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
         val hash = digest.digest(canonicalString.toByteArray(StandardCharsets.UTF_8))
         return "sha256:v1:${hash.toHexString()}"
     }

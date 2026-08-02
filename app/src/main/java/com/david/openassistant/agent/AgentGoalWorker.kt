@@ -207,7 +207,7 @@ class AgentGoalWorker(
                             }
                             NoTaskDecision.REPAIR_ONCE -> {
                                 diagnostics.info(event = "stranded_goal_repaired", component = "worker", fields = mapOf("goal_id" to goalId))
-                                repairBlockedWorkflow("", resumedGoal, null)
+                                repairBlockedWorkflow(resumedGoal, null)
                                 return@coroutineScope Result.success()
                             }
                             NoTaskDecision.ACTION_REQUIRED -> {
@@ -446,25 +446,9 @@ class AgentGoalWorker(
                                 notifier.updateNotification(goalId, leasedGoal.title, "Planning")
                                 planner.plan(apiKey, leasedGoal, ticket, models)
                             }
-                            leasedGoal.status == AgentGoalStatus.RECOVERING -> {
+                            leasedGoal.status == AgentGoalStatus.RECOVERING && ticket is PlanningTicket -> {
                                 notifier.updateNotification(goalId, leasedGoal.title, "Recovering Research")
-                                val activeRecoveryPlan = leasedGoal.recoveryPlans.firstOrNull { it.id == leasedGoal.activeRecoveryPlanId }
-                                if (activeRecoveryPlan?.selectedTactic == EscalationTactic.CYCLE_ADVANCE && ticket is PlanningTicket) {
-                                    val learningSummary = constructLearningSummary(leasedGoal, "Exhausted all within-cycle tactics.")
-                                    val updatedLeasedGoal = store.updateGoalAtomic(goalId, ticket) { current ->
-                                        val activeCycle = current.researchCycles.firstOrNull { it.id == current.activeResearchCycleId }
-                                        if (activeCycle != null) {
-                                            current.copy(
-                                                researchCycles = current.researchCycles.map {
-                                                    if (it.id == activeCycle.id) it.copy(learningSummary = learningSummary) else it
-                                                }
-                                            )
-                                        } else current
-                                    }.goals.firstOrNull { it.id == goalId } ?: leasedGoal
-                                    planner.recoverCycle(apiKey, updatedLeasedGoal, ticket)
-                                } else {
-                                    repairBlockedWorkflow(apiKey, leasedGoal, ticket)
-                                }
+                                driveRecoveryProtocol(apiKey, leasedGoal, ticket)
                             }
                             else -> {
                                 reconcileInterruptedWork(goalId, ticket)
@@ -481,7 +465,7 @@ class AgentGoalWorker(
                                         verifier.verifyAndFinish(apiKey, leasedGoal, ticket, models)
                                     }
                                     else -> {
-                                        repairBlockedWorkflow(apiKey, leasedGoal, ticket)
+                                        repairBlockedWorkflow(leasedGoal, ticket)
                                     }
                                 }
                             }
@@ -624,14 +608,20 @@ class AgentGoalWorker(
     }
 
     private fun calculateContinuationFingerprint(goal: AgentGoal): String {
-        return buildString {
+        val raw = buildString {
             append(goal.status.name)
+            append(":")
             append(goal.activeResearchCycleId ?: "none")
+            append(":")
             append(goal.activeRecoveryPlanId ?: "none")
+            append(":")
             append(goal.tasks.count { it.status == AgentTaskStatus.COMPLETED })
+            append(":")
             append(goal.nextRunnableTask(skipCooldowns = true)?.id ?: "none")
+            append(":")
             append(goal.isReadyForVerification)
-        }.hashCode().toString()
+        }
+        return FingerprintUtils.hash(raw)
     }
 
     private enum class NoTaskDecision {
@@ -820,8 +810,60 @@ class AgentGoalWorker(
         }
     }
 
-    private suspend fun repairBlockedWorkflow(
+    private suspend fun driveRecoveryProtocol(
         apiKey: String,
+        goal: AgentGoal,
+        ticket: PlanningTicket,
+    ): WorkerOutcome {
+        val activePlanId = goal.activeRecoveryPlanId ?: return repairBlockedWorkflow(goal, ticket)
+        val plan = goal.recoveryPlans.firstOrNull { it.id == activePlanId } ?: return repairBlockedWorkflow(goal, ticket)
+        
+        return when (plan.status) {
+            RecoveryPlanStatus.PREPARED -> {
+                val logicalRequestId = "recovery-${plan.id}"
+                val snapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
+                    current.copy(
+                        recoveryPlans = current.recoveryPlans.map { p ->
+                            if (p.id == plan.id) p.copy(
+                                status = RecoveryPlanStatus.GENERATING,
+                                logicalProviderRequestId = logicalRequestId
+                            ) else p
+                        }
+                    )
+                }
+                val nextGoal = snapshot.goals.firstOrNull { it.id == goal.id } ?: return WorkerOutcome.FAIL
+                val nextPlan = nextGoal.recoveryPlans.firstOrNull { it.id == plan.id } ?: return WorkerOutcome.FAIL
+                planner.generateRecoveryProposal(apiKey, nextGoal, nextPlan, ticket)
+            }
+            RecoveryPlanStatus.GENERATING,
+            RecoveryPlanStatus.FAILED_RETRYABLE -> {
+                planner.generateRecoveryProposal(apiKey, goal, plan, ticket)
+            }
+            RecoveryPlanStatus.READY_TO_COMMIT -> {
+                planner.commitRecoveryEffect(goal, plan, ticket)
+            }
+            RecoveryPlanStatus.COMMITTED -> WorkerOutcome.CONTINUE
+            RecoveryPlanStatus.REJECTED_NOT_NOVEL,
+            RecoveryPlanStatus.STRATEGY_EXHAUSTED -> {
+                if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) {
+                    store.updateGoalAtomic(goal.id, ticket) { current ->
+                        current.copy(status = AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED, events = appendEvent(current.events, "Research cycles exhausted."))
+                    }
+                    WorkerOutcome.DONE
+                } else {
+                    repairBlockedWorkflow(goal, ticket)
+                }
+            }
+            RecoveryPlanStatus.FAILED_NEEDS_ACTION -> {
+                store.updateGoalAtomic(goal.id, ticket) { current ->
+                    current.copy(status = AgentGoalStatus.BLOCKED_NEEDS_ACTION, error = "Recovery failed: ${plan.failureMessage}")
+                }
+                WorkerOutcome.DONE
+            }
+        }
+    }
+
+    private fun repairBlockedWorkflow(
         goal: AgentGoal,
         ticket: AgentOwnershipTicket?
     ): WorkerOutcome {
@@ -832,28 +874,7 @@ class AgentGoalWorker(
             val diagnosis = ResearchRecoveryEngine.diagnoseStall(goal, stalledTask, goal.freeOnly, false)
             if (diagnosis != ExecutionStallDiagnosis.NONE) {
                 val tactic = ResearchRecoveryEngine.selectTactic(goal, stalledTask, diagnosis)
-                if (tactic == EscalationTactic.CYCLE_ADVANCE) {
-                    if (ticket is PlanningTicket) {
-                        val learningSummary = constructLearningSummary(goal, "Stall detected: ${diagnosis.name}. Tactics exhausted.")
-                        val updatedGoal = store.updateGoalAtomic(goal.id, ticket) { current ->
-                            val activeCycle = current.researchCycles.firstOrNull { it.id == current.activeResearchCycleId }
-                            if (activeCycle != null) {
-                                current.copy(
-                                    researchCycles = current.researchCycles.map {
-                                        if (it.id == activeCycle.id) it.copy(learningSummary = learningSummary) else it
-                                    }
-                                )
-                            } else current
-                        }.goals.firstOrNull { it.id == goal.id } ?: goal
-                        return planner.recoverCycle(apiKey, updatedGoal, ticket)
-                    } else {
-                        // Switch to planning status to acquire planning lease
-                        store.updateGoalAtomic(goal.id, ticket) { current ->
-                            current.copy(status = AgentGoalStatus.RECOVERING)
-                        }
-                        return WorkerOutcome.CONTINUE
-                    }
-                } else if (tactic == EscalationTactic.MARK_EXHAUSTED) {
+                if (tactic == EscalationTactic.MARK_EXHAUSTED) {
                     store.updateGoalAtomic(goal.id, ticket) { current ->
                         current.copy(
                             status = AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
@@ -861,6 +882,47 @@ class AgentGoalWorker(
                         )
                     }
                     return WorkerOutcome.DONE
+                } else if (tactic != EscalationTactic.NONE && tactic != EscalationTactic.ASK_USER) {
+                    val fingerprint = FingerprintUtils.calculateExecutionFingerprint(goal, stalledTask)
+                    val planId = ResearchRecoveryEngine.generatePlanIdentity(goal.id, stalledTask.id, fingerprint, diagnosis, tactic)
+                    
+                    val existingPlan = goal.recoveryPlans.firstOrNull { it.id == planId }
+                    if (existingPlan != null && existingPlan.status == RecoveryPlanStatus.COMMITTED) {
+                        // Already tried this one and it didn't help? This shouldn't happen if fingerprint changed.
+                    } else if (existingPlan == null || existingPlan.status == RecoveryPlanStatus.PREPARED) {
+                        val newPlan = existingPlan ?: ResearchRecoveryPlan(
+                            id = planId,
+                            goalId = goal.id,
+                            taskId = stalledTask.id,
+                            inputExecutionFingerprint = fingerprint,
+                            diagnosis = diagnosis,
+                            selectedTactic = tactic,
+                            status = RecoveryPlanStatus.PREPARED,
+                            logicalProviderRequestId = null,
+                            proposal = null,
+                            proposalFingerprint = null,
+                            validationResult = null,
+                            failureClassification = null,
+                            failureMessage = null
+                        )
+                        
+                        val learningSummary = if (tactic == EscalationTactic.CYCLE_ADVANCE) constructLearningSummary(goal, "Exhausting all tactics.") else null
+
+                        store.updateGoalAtomic(goal.id, ticket) { current ->
+                            val updatedCycles = if (learningSummary != null) {
+                                current.researchCycles.map { if (it.id == current.activeResearchCycleId) it.copy(learningSummary = learningSummary) else it }
+                            } else current.researchCycles
+                            
+                            current.copy(
+                                status = AgentGoalStatus.RECOVERING,
+                                activeRecoveryPlanId = planId,
+                                recoveryPlans = if (existingPlan == null) current.recoveryPlans + newPlan else current.recoveryPlans,
+                                researchCycles = updatedCycles,
+                                events = appendEvent(current.events, "Research stalled: ${diagnosis.name}. Prepared tactic pivot: ${tactic.name}.")
+                            )
+                        }
+                        return WorkerOutcome.CONTINUE
+                    }
                 }
             }
         }
@@ -954,8 +1016,17 @@ class AgentGoalWorker(
             .map { it.text }
             .take(20)
         
+        // V42.4: Refined accepted evidence classification.
+        // Discovery items (RESEARCH_HIT) and unverified research are not automatically accepted.
+        // We only carry forward evidence that is explicitly cited by a supported or partial claim.
+        val citedEvidenceIds = goal.claims
+            .asSequence()
+            .filter { it.support == AgentClaimSupport.SUPPORTED || it.support == AgentClaimSupport.PARTIAL }
+            .flatMap { it.supportingEvidenceIds }
+            .toSet()
+
         val acceptedEvidenceIds = goal.evidence
-            .filter { it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH, AgentEvidenceKind.RESEARCH_HIT) }
+            .filter { it.id in citedEvidenceIds }
             .map { it.id }
             
         val acceptedClaimIds = goal.claims
