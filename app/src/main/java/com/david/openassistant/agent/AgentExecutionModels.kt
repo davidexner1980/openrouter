@@ -213,6 +213,13 @@ data class AgentTask(
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
     val activeResearchStrategyJson: String? = null,
     val repairLineage: StructureRepairLineage? = null,
+    val cycleId: String? = null,
+    val rootObjectiveFingerprint: String? = null,
+    val operationalObjectiveFingerprint: String? = null,
+    val acceptedEvidenceFingerprint: String? = null,
+    val unresolvedGapFingerprint: String? = null,
+    val strategyFingerprint: String? = null,
+    val queryPortfolioFingerprint: String? = null,
 ) {
     val effectiveProgressScore: Double
         get() = when {
@@ -275,3 +282,68 @@ internal interface BeforeTaskResultCommitHook {
         ownership: ExecutionOwnership,
     )
 }
+
+data class ResearchCycle(
+    val id: String = UUID.randomUUID().toString(),
+    val ordinal: Int,
+    val status: ResearchCycleStatus,
+    val parentCycleId: String? = null,
+    val objectiveRevisionId: String? = null,
+    val triggerDiagnosis: ExecutionStallDiagnosis? = null,
+    val strategyFingerprint: String? = null,
+    val queryPortfolioFingerprint: String? = null,
+    val acceptedEvidenceFingerprint: String? = null,
+    val learningSummary: ResearchCycleLearningSummary? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val activatedAt: Long? = null,
+    val completedAt: Long? = null,
+    val supersededAt: Long? = null,
+)
+
+data class ResearchCycleLearningSummary(
+    val establishedFindings: List<String> = emptyList(),
+    val remainingUnresolvedGaps: List<String> = emptyList(),
+    val contradictions: List<String> = emptyList(),
+    val exploredSourceFamilies: List<String> = emptyList(),
+    val attemptedInformationNeeds: List<String> = emptyList(),
+    val attemptedTactics: List<EscalationTactic> = emptyList(),
+    val rejectedStrategyFingerprints: List<String> = emptyList(),
+    val exhaustionReason: String? = null,
+    val carriedForwardEvidenceIds: List<String> = emptyList(),
+)
+
+data class RecoveryPlan(
+    val id: String = UUID.randomUUID().toString(),
+    val kind: RecoveryKind,
+    val cycleId: String,
+    val taskId: String?,
+    val diagnosis: ExecutionStallDiagnosis,
+    val tactic: EscalationTactic,
+    val inputFingerprint: String,
+    val status: RecoveryPlanStatus,
+    val logicalRequestId: String? = null,
+    val durableProposal: RecoveryProposal? = null,
+    val proposalFingerprint: String? = null,
+    val validationResult: String? = null,
+    val responseId: String? = null,
+    val generationTimestamp: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = createdAt,
+    val failureExplanation: String? = null,
+)
+
+enum class RecoveryKind {
+    TACTIC_PIVOT,
+    CYCLE_ADVANCE
+}
+
+data class RecoveryProposal(
+    val id: String = UUID.randomUUID().toString(),
+    val tactic: EscalationTactic,
+    val revisedObjective: String? = null,
+    val newTasks: List<AgentTaskDraft> = emptyList(),
+    val strategyJson: String? = null,
+    val queryPortfolio: List<String> = emptyList(),
+    val rationale: String,
+    val expectedEvidence: String? = null,
+)

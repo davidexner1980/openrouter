@@ -33,6 +33,8 @@ class AgentPlanner(
     private val store: AgentStore,
     private val diagnostics: RuntimeDiagnostics
 ) {
+    private val cycleManager = ResearchCycleManager(store, client, diagnostics)
+
     suspend fun plan(
         apiKey: String,
         goal: AgentGoal,
@@ -215,6 +217,70 @@ class AgentPlanner(
         } catch (error: Throwable) {
             persistPlanningFailure(goal.id, attempt.id, error, ticket, models)
         }
+    }
+
+    suspend fun planRecovery(
+        apiKey: String,
+        goal: AgentGoal,
+        task: AgentTask,
+        decision: ResearchRecoveryEngine.RecoveryDecision,
+        inputFingerprint: String,
+        ticket: TaskExecutionTicket
+    ): WorkerOutcome {
+        val plan = cycleManager.prepareRecovery(goal, task, decision, inputFingerprint, ticket)
+        
+        if (plan.status == RecoveryPlanStatus.COMMITTED) {
+            return WorkerOutcome.CONTINUE
+        }
+
+        val proposal = try {
+            cycleManager.generateProposal(apiKey, goal, plan, ticket)
+        } catch (e: Exception) {
+            return WorkerOutcome.FAIL
+        }
+
+        // For CYCLE_ADVANCE, we need to generate a full new plan from the revised objective
+        if (plan.kind == RecoveryKind.CYCLE_ADVANCE && proposal.revisedObjective != null) {
+            val parentOperationId = "op-recovery-plan-${plan.id}"
+            val missionContext = ProviderRequestContext.Mission(
+                goalId = goal.id,
+                workerId = ticket.workerId,
+                taskId = null,
+                attemptId = ticket.attemptId,
+                executionGeneration = ticket.generation,
+                acquiredAt = ticket.acquiredAt,
+                role = AgentTaskRole.PRIMARY_REASONING,
+                operation = MissionOperation.CREATE_PLAN,
+                parentOperationId = parentOperationId,
+            )
+
+            val (newPlanDraft, summary) = client.createPlan(
+                apiKey = apiKey,
+                modelId = AgentRoutingPolicy.guardModel(goal, goal.plannerModelId),
+                goal = goal.copy(objective = proposal.revisedObjective),
+                freeOnly = goal.freeOnly,
+                requestContext = missionContext,
+            )
+            
+            // Enrich proposal with new tasks
+            val enrichedProposal = proposal.copy(
+                newTasks = newPlanDraft.tasks
+            )
+            
+            // Re-commit the proposal with tasks
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                current.copy(
+                    recoveryPlans = current.recoveryPlans.map { 
+                        if (it.id == plan.id) it.copy(durableProposal = enrichedProposal) else it 
+                    }
+                )
+            }
+            
+            val updatedPlan = plan.copy(durableProposal = enrichedProposal)
+            return cycleManager.commitRecovery(goal, updatedPlan, ticket)
+        }
+
+        return cycleManager.commitRecovery(goal, plan.copy(durableProposal = proposal), ticket)
     }
 
     private fun persistPlanningFailure(

@@ -58,4 +58,5 @@ sealed class TicketValidationResult {
     ) : TicketValidationResult()
     object LeaseMissing : TicketValidationResult()
     object LeaseExpired : TicketValidationResult()
+    object GoalMissing : TicketValidationResult()
 }

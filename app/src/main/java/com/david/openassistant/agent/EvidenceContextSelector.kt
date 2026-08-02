@@ -22,24 +22,36 @@ object EvidenceContextSelector {
         maxItems: Int = 16,
         maxCharacters: Int = 72_000,
     ): SelectedContext {
+        val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId }
+        val activeRevision = goal.objectiveRevisions.firstOrNull { it.id == activeCycle?.objectiveRevisionId }
+        
+        val effectiveObjective = activeRevision?.operationalObjective ?: goal.objective
+        val carriedForwardIds = activeCycle?.learningSummary?.carriedForwardEvidenceIds?.toSet() ?: emptySet()
+        
         if (goal.evidence.isEmpty() || maxItems <= 0 || maxCharacters <= 0) {
             return SelectedContext(emptyList(), 0, 0, 0, "")
         }
         
         val queryTerms = tokenize(
-            listOf(goal.userRequest, goal.objective, task.title, task.instructions)
+            listOf(goal.userRequest, effectiveObjective, task.title, task.instructions)
                 .joinToString(" "),
         )
         
+        // Filter evidence: must be from active cycle OR carried forward
+        val eligibleEvidence = goal.evidence
+            .filter { ev ->
+                ev.kind != AgentEvidenceKind.SYSTEM_EVENT &&
+                (ev.cycleId == goal.activeResearchCycleId || carriedForwardIds.contains(ev.id))
+            }
+
         // Deduplicate evidence by canonical source URL or content hash
-        val uniqueEvidence = goal.evidence
-            .filter { it.kind != AgentEvidenceKind.SYSTEM_EVENT }
+        val uniqueEvidence = eligibleEvidence
             .distinctBy { evidence ->
                 val sourceKey = evidence.sources.firstOrNull()?.url?.let { ResearchQualityGate.canonicalSourceUrl(it) }
                 sourceKey ?: evidence.content.hashCode().toString()
             }
         
-        val deduplicatedCount = goal.evidence.size - uniqueEvidence.size
+        val deduplicatedCount = eligibleEvidence.size - uniqueEvidence.size
 
         val ranked = uniqueEvidence
             .mapIndexed { index, evidence ->
@@ -68,6 +80,7 @@ object EvidenceContextSelector {
         // A dependent task must see the durable outputs that made it runnable.
         val dependencyEvidence = goal.tasks
             .asSequence()
+            .filter { it.cycleId == goal.activeResearchCycleId || it.cycleId == null } // Include active cycle or legacy
             .filter { it.id in task.dependsOn }
             .sortedByDescending { it.order }
             .mapNotNull { dependency ->

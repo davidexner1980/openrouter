@@ -134,6 +134,21 @@ class AgentGoalWorker(
                     // Canonical controlled stale-exchange reconciliation under goal lease lock
                     ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
 
+                    // V42 Phase 8: V41 Stuck Migration
+                    if (V41Migration.isStuckV41(initialGoal)) {
+                        goalDiagnostics.warning("v41_stuck_mission_detected_migrating")
+                        store.updateGoalAtomic(goalId, null) { current ->
+                            if (V41Migration.isStuckV41(current)) {
+                                V41Migration.migrate(current)
+                            } else current
+                        }
+                        diagnostics.info(
+                            event = "v41_identical_context_migrated",
+                            component = "migration",
+                            fields = mapOf("goal_id" to goalId)
+                        )
+                    }
+
                     val now = System.currentTimeMillis()
                     val resumedGoal = if (initialGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
                         if (initialGoal.nextRetryAt == null || now >= initialGoal.nextRetryAt) {
@@ -317,6 +332,10 @@ class AgentGoalWorker(
                             goalDiagnostics.error("agent_worker_lease_storage_failure", acquisition.cause)
                             return@coroutineScope Result.retry()
                         }
+                        is LeaseAcquisitionResult.GoalMissing -> {
+                            goalDiagnostics.warning("agent_worker_goal_not_found")
+                            return@coroutineScope Result.failure()
+                        }
                     }
                     activeTicket = ticket
 
@@ -420,6 +439,21 @@ class AgentGoalWorker(
                         val outcome = if (leasedGoal.status == AgentGoalStatus.PLANNING && ticket is PlanningTicket) {
                             notifier.updateNotification(goalId, leasedGoal.title, "Planning")
                             planner.plan(apiKey, leasedGoal, ticket, models)
+                        } else if (leasedGoal.status == AgentGoalStatus.RECOVERING && ticket is TaskExecutionTicket) {
+                            notifier.updateNotification(goalId, leasedGoal.title, "Recovering")
+                            val plan = leasedGoal.recoveryPlans.firstOrNull { it.id == leasedGoal.activeRecoveryPlanId }
+                            val task = leasedGoal.tasks.firstOrNull { it.id == plan?.taskId }
+                            if (plan != null && task != null) {
+                                val decision = ResearchRecoveryEngine.RecoveryDecision(
+                                    diagnosis = plan.diagnosis,
+                                    tactic = plan.tactic,
+                                    kind = plan.kind,
+                                    explanation = "Recovering from ${plan.diagnosis} using ${plan.tactic}"
+                                )
+                                planner.planRecovery(apiKey, leasedGoal, task, decision, plan.inputFingerprint, ticket)
+                            } else {
+                                WorkerOutcome.FAIL
+                            }
                         } else {
                             reconcileInterruptedWork(goalId, ticket)
                             if (leasedGoal.status.isInactive()) return@coroutineScope Result.success()

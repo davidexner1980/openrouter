@@ -56,6 +56,7 @@ sealed class LeaseAcquisitionResult {
     data class OrphanReclaimed(val ticket: AgentOwnershipTicket, val goal: AgentGoal) : LeaseAcquisitionResult()
     object RetryRequired : LeaseAcquisitionResult()
     object MissionTerminal : LeaseAcquisitionResult()
+    object GoalMissing : LeaseAcquisitionResult()
     data class Rejected(val reason: String) : LeaseAcquisitionResult()
     data class StorageFailure(val cause: Throwable) : LeaseAcquisitionResult()
 }
@@ -1100,6 +1101,11 @@ class AgentStore private constructor(
         json.put("classified_failures", JSONArray(goal.classifiedFailures))
         json.put("lease_generation", goal.leaseGeneration)
         json.put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
+        json.put("research_cycles", JSONArray().apply { goal.researchCycles.forEach { put(encodeResearchCycle(it)) } })
+        json.put("objective_revisions", JSONArray().apply { goal.objectiveRevisions.forEach { put(encodeObjectiveRevision(it)) } })
+        json.put("active_research_cycle_id", goal.activeResearchCycleId ?: JSONObject.NULL)
+        json.put("recovery_plans", JSONArray().apply { goal.recoveryPlans.forEach { put(encodeRecoveryPlan(it)) } })
+        json.put("active_recovery_plan_id", goal.activeRecoveryPlanId ?: JSONObject.NULL)
         return json
     }
 
@@ -1145,7 +1151,7 @@ class AgentStore private constructor(
         val storedStatus = json.optEnum("status", AgentGoalStatus.QUEUED)
         val storedError = json.optNullableString("error")
         val normalizedStoredError = storedError?.let { normalizeAgentFailureMessage(it, it) }
-        val storedTasks = json.optJSONArray("tasks").decodeList(::decodeTask)
+        var finalTasks = json.optJSONArray("tasks").decodeList(::decodeTask)
         val storedConversationId = json.optString("conversation_id")
         val storedUserRequest = json.optString("user_request")
         val storedTitle = json.optString("title")
@@ -1163,7 +1169,7 @@ class AgentStore private constructor(
         val restoredStatus = when {
             integrityFailure != null -> AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION
             legacyCredentialWait -> AgentGoalStatus.WAITING_FOR_CREDENTIAL
-            recoverLegacyFailure && storedTasks.isEmpty() -> AgentGoalStatus.PLANNING
+            recoverLegacyFailure && finalTasks.isEmpty() -> AgentGoalStatus.PLANNING
             recoverLegacyFailure -> AgentGoalStatus.QUEUED
             else -> storedStatus
         }
@@ -1191,6 +1197,39 @@ class AgentStore private constructor(
             } else events
         }
 
+        val storedLeaseGeneration = json.optInt("lease_generation", 0)
+        val storedLastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() }
+        
+        var researchCycles = json.optJSONArray("research_cycles").decodeList { decodeResearchCycle(it) }
+        var objectiveRevisions = json.optJSONArray("objective_revisions").decodeList { decodeObjectiveRevision(it) }
+        var activeCycleId = json.optNullableString("active_research_cycle_id")
+        val recoveryPlans = json.optJSONArray("recovery_plans").decodeList { decodeRecoveryPlan(it) }
+        val activeRecoveryPlanId = json.optNullableString("active_recovery_plan_id")
+
+        // V42 General Baseline Cycle Migration for legacy missions
+        if (researchCycles.isEmpty() && storedConversationId.isNotBlank()) {
+            val baselineCycleId = "baseline-${json.getString("id").take(8)}"
+            val baselineRevisionId = "root-revision-${json.getString("id").take(8)}"
+            
+            objectiveRevisions = listOf(ObjectiveRevision(
+                id = baselineRevisionId,
+                ordinal = 0,
+                rootObjectiveFingerprint = "legacy-v41",
+                operationalObjective = storedObjective,
+                revisionFingerprint = "baseline"
+            ))
+            researchCycles = listOf(ResearchCycle(
+                id = baselineCycleId,
+                ordinal = 0,
+                status = ResearchCycleStatus.ACTIVE,
+                objectiveRevisionId = baselineRevisionId,
+                activatedAt = json.optLong("created_at", System.currentTimeMillis())
+            ))
+            activeCycleId = baselineCycleId
+            // Ensure all legacy tasks are associated with the baseline cycle
+            finalTasks = finalTasks.map { it.copy(cycleId = baselineCycleId) }
+        }
+
         return AgentGoal(
             id = json.getString("id"),
             conversationId = storedConversationId,
@@ -1215,7 +1254,7 @@ class AgentStore private constructor(
             requestedModelProfileName = finalProfile,
             routingPolicyProvenance = finalProvenance,
             freeOnly = finalFreeOnly,
-            tasks = storedTasks,
+            tasks = finalTasks,
             acceptanceCriteria = json.optJSONArray("acceptance_criteria").decodeList(::decodeCriterion),
             acceptanceChecks = json.optJSONArray("acceptance_checks").decodeList(::decodeCheck),
             attempts = json.optJSONArray("attempts").decodeList(::decodeAttempt),
@@ -1290,8 +1329,13 @@ class AgentStore private constructor(
             attemptedStrategies = json.optJSONArray("attempted_strategies").toStringList(),
             operationFingerprints = json.optJSONArray("operation_fingerprints").toStringList(),
             classifiedFailures = json.optJSONArray("classified_failures").toStringList(),
-            leaseGeneration = json.optInt("lease_generation", 0),
-            lastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() },
+            leaseGeneration = storedLeaseGeneration,
+            lastResumeReason = storedLastResumeReason,
+            researchCycles = researchCycles,
+            objectiveRevisions = objectiveRevisions,
+            activeResearchCycleId = activeCycleId,
+            recoveryPlans = recoveryPlans,
+            activeRecoveryPlanId = activeRecoveryPlanId,
         )
     }
 
@@ -2058,6 +2102,164 @@ class AgentStore private constructor(
         generation = json.optInt("generation"),
     )
 
+    private fun encodeResearchCycle(cycle: ResearchCycle): JSONObject = JSONObject()
+        .put("id", cycle.id)
+        .put("ordinal", cycle.ordinal)
+        .put("status", cycle.status.name)
+        .put("parent_cycle_id", cycle.parentCycleId ?: JSONObject.NULL)
+        .put("objective_revision_id", cycle.objectiveRevisionId ?: JSONObject.NULL)
+        .put("trigger_diagnosis", cycle.triggerDiagnosis?.name ?: JSONObject.NULL)
+        .put("strategy_fingerprint", cycle.strategyFingerprint ?: JSONObject.NULL)
+        .put("query_portfolio_fingerprint", cycle.queryPortfolioFingerprint ?: JSONObject.NULL)
+        .put("accepted_evidence_fingerprint", cycle.acceptedEvidenceFingerprint ?: JSONObject.NULL)
+        .put("learning_summary", cycle.learningSummary?.let(::encodeLearningSummary) ?: JSONObject.NULL)
+        .put("created_at", cycle.createdAt)
+        .put("activated_at", cycle.activatedAt ?: JSONObject.NULL)
+        .put("completed_at", cycle.completedAt ?: JSONObject.NULL)
+        .put("superseded_at", cycle.supersededAt ?: JSONObject.NULL)
+
+    private fun decodeResearchCycle(json: JSONObject): ResearchCycle = ResearchCycle(
+        id = json.getString("id"),
+        ordinal = json.getInt("ordinal"),
+        status = ResearchCycleStatus.valueOf(json.getString("status")),
+        parentCycleId = json.optNullableString("parent_cycle_id"),
+        objectiveRevisionId = json.optNullableString("objective_revision_id"),
+        triggerDiagnosis = json.optNullableString("trigger_diagnosis")?.let { runCatching { ExecutionStallDiagnosis.valueOf(it) }.getOrNull() },
+        strategyFingerprint = json.optNullableString("strategy_fingerprint"),
+        queryPortfolioFingerprint = json.optNullableString("query_portfolio_fingerprint"),
+        acceptedEvidenceFingerprint = json.optNullableString("accepted_evidence_fingerprint"),
+        learningSummary = json.optJSONObject("learning_summary")?.let(::decodeLearningSummary),
+        createdAt = json.getLong("created_at"),
+        activatedAt = json.optLongOrNull("activated_at"),
+        completedAt = json.optLongOrNull("completed_at"),
+        supersededAt = json.optLongOrNull("superseded_at"),
+    )
+
+    private fun encodeLearningSummary(summary: ResearchCycleLearningSummary): JSONObject = JSONObject()
+        .put("established_findings", JSONArray(summary.establishedFindings))
+        .put("remaining_unresolved_gaps", JSONArray(summary.remainingUnresolvedGaps))
+        .put("contradictions", JSONArray(summary.contradictions))
+        .put("explored_source_families", JSONArray(summary.exploredSourceFamilies))
+        .put("attempted_information_needs", JSONArray(summary.attemptedInformationNeeds))
+        .put("attempted_tactics", JSONArray(summary.attemptedTactics.map { it.name }))
+        .put("rejected_strategy_fingerprints", JSONArray(summary.rejectedStrategyFingerprints))
+        .put("exhaustion_reason", summary.exhaustionReason ?: JSONObject.NULL)
+        .put("carried_forward_evidence_ids", JSONArray(summary.carriedForwardEvidenceIds))
+
+    private fun decodeLearningSummary(json: JSONObject): ResearchCycleLearningSummary = ResearchCycleLearningSummary(
+        establishedFindings = json.optJSONArray("established_findings").toStringList(),
+        remainingUnresolvedGaps = json.optJSONArray("remaining_unresolved_gaps").toStringList(),
+        contradictions = json.optJSONArray("contradictions").toStringList(),
+        exploredSourceFamilies = json.optJSONArray("explored_source_families").toStringList(),
+        attemptedInformationNeeds = json.optJSONArray("attempted_information_needs").toStringList(),
+        attemptedTactics = json.optJSONArray("attempted_tactics").toStringList().mapNotNull { runCatching { EscalationTactic.valueOf(it) }.getOrNull() },
+        rejectedStrategyFingerprints = json.optJSONArray("rejected_strategy_fingerprints").toStringList(),
+        exhaustionReason = json.optNullableString("exhaustion_reason"),
+        carriedForwardEvidenceIds = json.optJSONArray("carried_forward_evidence_ids").toStringList(),
+    )
+
+    private fun encodeObjectiveRevision(revision: ObjectiveRevision): JSONObject = JSONObject()
+        .put("id", revision.id)
+        .put("ordinal", revision.ordinal)
+        .put("parent_revision_id", revision.parentRevisionId ?: JSONObject.NULL)
+        .put("root_objective_fingerprint", revision.rootObjectiveFingerprint)
+        .put("operational_objective", revision.operationalObjective)
+        .put("unresolved_gaps", JSONArray(revision.unresolvedGaps))
+        .put("retained_constraints", JSONArray(revision.retainedConstraints))
+        .put("revision_fingerprint", revision.revisionFingerprint)
+        .put("created_at", revision.createdAt)
+
+    private fun decodeObjectiveRevision(json: JSONObject): ObjectiveRevision = ObjectiveRevision(
+        id = json.getString("id"),
+        ordinal = json.getInt("ordinal"),
+        parentRevisionId = json.optNullableString("parent_revision_id"),
+        rootObjectiveFingerprint = json.getString("root_objective_fingerprint"),
+        operationalObjective = json.getString("operational_objective"),
+        unresolvedGaps = json.optJSONArray("unresolved_gaps").toStringList(),
+        retainedConstraints = json.optJSONArray("retained_constraints").toStringList(),
+        revisionFingerprint = json.getString("revision_fingerprint"),
+        createdAt = json.getLong("created_at"),
+    )
+
+    private fun encodeRecoveryPlan(plan: RecoveryPlan): JSONObject = JSONObject()
+        .put("id", plan.id)
+        .put("kind", plan.kind.name)
+        .put("cycle_id", plan.cycleId)
+        .put("task_id", plan.taskId ?: JSONObject.NULL)
+        .put("diagnosis", plan.diagnosis.name)
+        .put("tactic", plan.tactic.name)
+        .put("input_fingerprint", plan.inputFingerprint)
+        .put("status", plan.status.name)
+        .put("logical_request_id", plan.logicalRequestId ?: JSONObject.NULL)
+        .put("durable_proposal", plan.durableProposal?.let(::encodeRecoveryProposal) ?: JSONObject.NULL)
+        .put("proposal_fingerprint", plan.proposalFingerprint ?: JSONObject.NULL)
+        .put("validation_result", plan.validationResult ?: JSONObject.NULL)
+        .put("response_id", plan.responseId ?: JSONObject.NULL)
+        .put("generation_timestamp", plan.generationTimestamp ?: JSONObject.NULL)
+        .put("created_at", plan.createdAt)
+        .put("updated_at", plan.updatedAt)
+        .put("failure_explanation", plan.failureExplanation ?: JSONObject.NULL)
+
+    private fun decodeRecoveryPlan(json: JSONObject): RecoveryPlan = RecoveryPlan(
+        id = json.getString("id"),
+        kind = RecoveryKind.valueOf(json.getString("kind")),
+        cycleId = json.getString("cycle_id"),
+        taskId = json.optNullableString("task_id"),
+        diagnosis = ExecutionStallDiagnosis.valueOf(json.getString("diagnosis")),
+        tactic = EscalationTactic.valueOf(json.getString("tactic")),
+        inputFingerprint = json.getString("input_fingerprint"),
+        status = RecoveryPlanStatus.valueOf(json.getString("status")),
+        logicalRequestId = json.optNullableString("logical_request_id"),
+        durableProposal = json.optJSONObject("durable_proposal")?.let(::decodeRecoveryProposal),
+        proposalFingerprint = json.optNullableString("proposal_fingerprint"),
+        validationResult = json.optNullableString("validation_result"),
+        responseId = json.optNullableString("response_id"),
+        generationTimestamp = json.optLongOrNull("generation_timestamp"),
+        createdAt = json.getLong("created_at"),
+        updatedAt = json.getLong("updated_at"),
+        failureExplanation = json.optNullableString("failure_explanation"),
+    )
+
+    private fun encodeRecoveryProposal(proposal: RecoveryProposal): JSONObject = JSONObject()
+        .put("id", proposal.id)
+        .put("tactic", proposal.tactic.name)
+        .put("revised_objective", proposal.revisedObjective ?: JSONObject.NULL)
+        .put("new_tasks", JSONArray().apply { proposal.newTasks.forEach { put(encodeTaskDraft(it)) } })
+        .put("strategy_json", proposal.strategyJson ?: JSONObject.NULL)
+        .put("query_portfolio", JSONArray(proposal.queryPortfolio))
+        .put("rationale", proposal.rationale)
+        .put("expected_evidence", proposal.expectedEvidence ?: JSONObject.NULL)
+
+    private fun decodeRecoveryProposal(json: JSONObject): RecoveryProposal = RecoveryProposal(
+        id = json.getString("id"),
+        tactic = EscalationTactic.valueOf(json.getString("tactic")),
+        revisedObjective = json.optNullableString("revised_objective"),
+        newTasks = json.optJSONArray("new_tasks").decodeList(::decodeTaskDraft),
+        strategyJson = json.optNullableString("strategy_json"),
+        queryPortfolio = json.optJSONArray("query_portfolio").toStringList(),
+        rationale = json.getString("rationale"),
+        expectedEvidence = json.optNullableString("expected_evidence"),
+    )
+
+    private fun encodeTaskDraft(draft: AgentTaskDraft): JSONObject = JSONObject()
+        .put("id", draft.id)
+        .put("title", draft.title)
+        .put("instructions", draft.instructions)
+        .put("capability", draft.capability.name)
+        .put("depends_on", JSONArray(draft.dependsOn))
+        .put("weight", draft.weight)
+        .put("acceptance_criteria", JSONArray().apply { draft.acceptanceCriteria.forEach { put(encodeCriterion(it)) } })
+
+    private fun decodeTaskDraft(json: JSONObject): AgentTaskDraft = AgentTaskDraft(
+        id = json.getString("id"),
+        title = json.getString("title"),
+        instructions = json.getString("instructions"),
+        capability = AgentCapability.valueOf(json.getString("capability")),
+        dependsOn = json.optJSONArray("depends_on").toStringList(),
+        weight = json.optDouble("weight", 1.0),
+        acceptanceCriteria = json.optJSONArray("acceptance_criteria").decodeList(::decodeCriterion),
+    )
+
     private inline fun <reified T : Enum<T>> JSONObject.optEnum(name: String, fallback: T): T =
         runCatching { enumValueOf<T>(optString(name)) }.getOrDefault(fallback)
 
@@ -2096,6 +2298,14 @@ class AgentStore private constructor(
         return "credential" in normalized && ("invalid" in normalized || "forbidden" in normalized || "unavailable" in normalized)
     }
 
+    private fun String?.isLegacyMissionBudgetStop(): Boolean {
+        val normalized = this.orEmpty().lowercase()
+        return "budget" in normalized && "exhausted" in normalized
+    }
+
+    private fun normalizeAgentFailureMessage(msg: String, fallback: String): String =
+        if (msg.isBlank()) fallback else msg
+
     companion object {
         val readCount = AtomicLong(0)
         val writeCount = AtomicLong(0)
@@ -2111,7 +2321,7 @@ class AgentStore private constructor(
         private const val ATOMIC_BACKUP_SUFFIX = ".bak"
         private const val LEGACY_RECOVERY_FILE_NAME = "legacy_snapshot_recovery.txt"
         private const val CORRUPT_RECOVERY_SUFFIX = ".corrupt-recovery.txt"
-        private const val STORAGE_VERSION = 11
+        private const val STORAGE_VERSION = 12
         private val STORE_LOCK = Any()
 
         fun isTaskBoundOperation(operation: String): Boolean {
