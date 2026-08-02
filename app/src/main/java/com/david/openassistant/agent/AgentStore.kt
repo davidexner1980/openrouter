@@ -81,7 +81,7 @@ class AgentStore private constructor(
     private data class CachedGoal(
         val goal: AgentGoal,
         val fileTimestamp: Long,
-        val fileLength: Long
+        val fileLength: Long,
     )
 
     fun loadSnapshot(): AgentSnapshot = synchronized(STORE_LOCK) {
@@ -222,12 +222,11 @@ class AgentStore private constructor(
                 isMyOwn -> "Re-acquired existing local lease."
                 existing == null -> "Acquired initial execution lease."
                 isStale -> "Recovered a stale execution lease (last heartbeat: ${existing.heartbeatAt})."
-                isOrphan -> "Reclaimed an orphaned lease from dead process session '${existing?.ownerProcessSessionId}'."
+                isOrphan -> "Reclaimed an orphaned lease from dead process session '${existing.ownerProcessSessionId}'."
                 else -> "Acquired lease."
             }
 
             val updatedGoal = goal.copy(
-                // Forced rebuild of copy method call
                 status = if (goal.status == AgentGoalStatus.QUEUED) AgentGoalStatus.RUNNING else goal.status,
                 leaseGeneration = newGeneration,
                 executionLease = newLease,
@@ -239,7 +238,7 @@ class AgentStore private constructor(
                 writeGoalLocked(updatedGoal)
                 
                 val reloaded = readGoalLocked(goalFileLocked(goalId))
-                val reloadedLease = reloaded.executionLease ?: throw IllegalStateException("executionLease is null in reloaded goal: ${goalFileLocked(goalId).readText()}")
+                val reloadedLease = reloaded.executionLease ?: throw IllegalStateException("executionLease is lost in durable storage.")
                 val ticket = if (taskId != null) {
                     TaskExecutionTicket(
                         goalId = goalId,
@@ -283,7 +282,6 @@ class AgentStore private constructor(
                     LeaseAcquisitionResult.Acquired(ticket, updatedGoal)
                 }
             } catch (error: Throwable) {
-                error.printStackTrace()
                 throw error
             }
         } else {
@@ -348,7 +346,7 @@ class AgentStore private constructor(
                 fields = mapOf("goal_id" to ticket.goalId, "worker_id" to ticket.workerId, "task_id" to (ticket.taskId ?: "none"))
             )
             true
-        } catch (e: Throwable) {
+        } catch (_: Throwable) {
             false
         }
     }
@@ -567,7 +565,6 @@ class AgentStore private constructor(
         accountingKey: String,
         tokenDelta: Int?,
         costUsd: Double?,
-        usageSource: UsageSource,
     ): AgentSnapshot = synchronized(STORE_LOCK) {
         if (validateTicketInternalLocked(ticket) !is TicketValidationResult.Valid) {
             return@synchronized loadSnapshotFromFilesLocked()
@@ -877,8 +874,6 @@ class AgentStore private constructor(
             stream.write(encodeGoal(goal).toString().toByteArray(StandardCharsets.UTF_8))
             atomicFile.finishWrite(stream)
         } catch (error: Throwable) {
-            println("NPE DETAILS: ")
-            error.printStackTrace()
             atomicFile.failWrite(stream)
             throw error
         }
@@ -969,11 +964,6 @@ class AgentStore private constructor(
         updatedAt = json.optLong("updated_at", System.currentTimeMillis()),
     )
 
-    private fun encodeSnapshot(snapshot: AgentSnapshot): JSONObject = JSONObject()
-        .put("version", STORAGE_VERSION)
-        .put("selected_goal_id", snapshot.selectedGoalId ?: JSONObject.NULL)
-        .put("goals", JSONArray().apply { snapshot.goals.forEach { put(encodeGoal(it)) } })
-
     private fun decodeSnapshot(root: JSONObject): AgentSnapshot {
         val goalsArray = root.optJSONArray("goals") ?: JSONArray()
         val goals = buildList {
@@ -1034,6 +1024,7 @@ class AgentStore private constructor(
         .put("concept_candidates", JSONArray().apply { goal.conceptCandidates.forEach { put(encodeConcept(it)) } })
         .put("refinements", JSONArray().apply { goal.refinements.forEach { put(it) } })
         .put("events", JSONArray().apply { goal.events.forEach { put(encodeEvent(it)) } })
+        .put("model_cooldowns", JSONObject(goal.modelCooldowns))
         .put("execution_lease", goal.executionLease?.let(::encodeLease) ?: JSONObject.NULL)
         .put("created_at", goal.createdAt)
         .put("updated_at", goal.updatedAt)
@@ -1104,7 +1095,7 @@ class AgentStore private constructor(
                 Triple(storedFreeOnly, storedRequestedProfile, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
             
             storedFreeOnly != null ->
-                Triple(storedFreeOnly, storedRequestedProfile, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
+                Triple(storedFreeOnly, null, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
 
             storedRoutingStage == AgentRoutingStage.AUTO_BETA ->
                 Triple(false, "AUTO", RoutingPolicyProvenance.LEGACY_EXPLICIT)
@@ -1203,6 +1194,13 @@ class AgentStore private constructor(
             conceptCandidates = json.optJSONArray("concept_candidates").decodeList(::decodeConcept),
             refinements = json.optJSONArray("refinements").toStringList(),
             events = finalEvents,
+            modelCooldowns = json.optJSONObject("model_cooldowns")?.let { cooldownsJson ->
+                buildMap {
+                    cooldownsJson.keys().forEach { key ->
+                        put(key, cooldownsJson.getLong(key))
+                    }
+                }
+            } ?: emptyMap(),
             executionLease = json.optJSONObject("execution_lease")?.let(::decodeLease),
             createdAt = json.optLong("created_at", System.currentTimeMillis()),
             updatedAt = json.optLong("updated_at", System.currentTimeMillis()),
@@ -1655,6 +1653,10 @@ class AgentStore private constructor(
         .put("finished_at", attempt.finishedAt ?: JSONObject.NULL)
         .put("model_id", attempt.modelId)
         .put("council_role", attempt.councilRole?.name ?: JSONObject.NULL)
+        .put("role", attempt.role?.name ?: JSONObject.NULL)
+        .put("selection_reason", attempt.selectionReason ?: JSONObject.NULL)
+        .put("previous_route", attempt.previousRoute ?: JSONObject.NULL)
+        .put("cooldown_state", attempt.cooldownState ?: JSONObject.NULL)
         .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
         .put("response_id", attempt.responseId ?: JSONObject.NULL)
         .put("provider", attempt.provider ?: JSONObject.NULL)
@@ -1678,6 +1680,10 @@ class AgentStore private constructor(
         finishedAt = json.optLongOrNull("finished_at"),
         modelId = json.optString("model_id"),
         councilRole = json.optNullableString("council_role")?.let { runCatching { CouncilRole.valueOf(it) }.getOrNull() },
+        role = json.optNullableString("role")?.let { runCatching { AgentTaskRole.valueOf(it) }.getOrNull() },
+        selectionReason = json.optNullableString("selection_reason"),
+        previousRoute = json.optNullableString("previous_route"),
+        cooldownState = json.optNullableString("cooldown_state"),
         resolvedModel = json.optNullableString("resolved_model"),
         responseId = json.optNullableString("response_id"),
         provider = json.optNullableString("provider"),
