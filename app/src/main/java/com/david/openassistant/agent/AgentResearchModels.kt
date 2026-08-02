@@ -89,3 +89,44 @@ data class RejectedResearchQuery(
     val createdAt: Long = System.currentTimeMillis(),
     val generation: Int,
 )
+
+enum class RecoveryPlanStatus {
+    PREPARED,
+    GENERATING,
+    READY_TO_COMMIT,
+    COMMITTED,
+    REJECTED_NOT_NOVEL,
+    FAILED_RETRYABLE,
+    FAILED_NEEDS_ACTION
+}
+
+data class RecoveryProposal(
+    val revisedInvestigationInterpretation: String,
+    val specificUnresolvedGap: String,
+    val selectedSourceFamilyShift: String?,
+    val evidenceTargets: List<String>,
+    val falsifiers: List<String>,
+    val newQueryPortfolio: List<String>,
+    val followUpRule: String?,
+    val rationale: String,
+    val expectedNoveltyDimensions: List<String>
+)
+
+data class ResearchRecoveryPlan(
+    val id: String, // Deterministic SHA-256
+    val goalId: String,
+    val taskId: String,
+    val inputExecutionFingerprint: String,
+    val diagnosis: ExecutionStallDiagnosis,
+    val selectedTactic: EscalationTactic,
+    val status: RecoveryPlanStatus,
+    val logicalProviderRequestId: String?,
+    val proposal: RecoveryProposal?,
+    val proposalFingerprint: String?,
+    val validationResult: String?,
+    val failureClassification: String?,
+    val failureMessage: String?,
+    val createdAt: Long = System.currentTimeMillis(),
+    val generatedAt: Long? = null,
+    val committedAt: Long? = null
+)

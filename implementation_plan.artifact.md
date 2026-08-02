@@ -1,99 +1,84 @@
-# Pass 4 Implementation Plan: Location Privacy Containment (Narrow Repair)
+# V42.2: Durable Within-Cycle Research Recovery and Material Strategy Pivots
 
-Implement a narrow privacy containment to eliminate proactive permission requests and disable direct coordinate access, ensuring zero-provider-call integrity.
+This plan replaces the temporary duplicate-context pause with a durable recovery mechanism for within-cycle tactic pivots.
 
-## Architecture Feasibility Conclusion
-> [!CAUTION]
-> **BLOCKED:** Exact-invocation resumption is NOT supported by the current architecture. Tool-call IDs are transient, generated per-request by OpenRouter, and not persisted in a rehydratable format. Resuming an interrupted mission reruns the entire model turn, which generates new tool-call IDs.
->
-> Binding human consent to a specific tool-call ID across process restarts or model turns is therefore impossible without major data-model changes.
->
-> **Decision:** Implement narrow containment as requested. Defer contextual location support.
+## User Review Required
 
-## Objective
-Remove all location-related proactive prompting and disable direct device-location provider access, replacing it with a structured, recoverable "unavailable" result.
+> [!IMPORTANT]
+> This slice implements **within-cycle tactic pivots only**. Objective-level research-cycle advancement is reserved for V42.3.
 
----
+## Proposed Changes
 
-## 1. Proposed Changes
-
-### [Component] Android Manifest
-#### [MODIFY] [AndroidManifest.xml](file:///D:/my_programs/OpenAssistant_1.8.23/OpenAssistant_1.8.33_V29/OpenAssistant/app/src/main/AndroidManifest.xml)
-- **REMOVE** `android.permission.ACCESS_FINE_LOCATION`.
-- **REMOVE** `android.permission.ACCESS_COARSE_LOCATION`.
-- **INVARIANT:** No location permissions will be requested by the application.
-
----
-
-### [Component] MainActivity
-#### [MODIFY] [MainActivity.kt](file:///D:/my_programs/OpenAssistant_1.8.23/OpenAssistant_1.8.33_V29/OpenAssistant/app/src/main/MainActivity.kt)
-- **DELETE** `locationPermissionLauncher` (launcher, callback, and all associated logic).
-- **DELETE** the startup `locationPermissionLauncher.launch(...)` call in `onCreate`.
-- **DELETE** `onLocationPermissionGranted()` and related ViewModel/state imports.
-
----
-
-### [Component] Device Location Tool
-#### [MODIFY] [DeviceTools.kt](file:///D:/my_programs/OpenAssistant_1.8.23/OpenAssistant_1.8.33_V29/OpenAssistant/app/src/main/java/com/david/openassistant/domain/tools/DeviceTools.kt)
-- **REMOVE** `LocationServices`, `FusedLocationProviderClient`, and `Manifest.permission` imports.
-- **DISABLE** provider construction and access in `DeviceToolRuntime`.
-- **REFACTOR** `getCurrentLocation()` to immediately return:
-  ```json
-  {
-    "status": "unavailable",
-    "reason": "Direct device location access is disabled for privacy. Research can continue using a specific city or region name supplied by the user if geographic context is required."
-  }
-  ```
-- **INVARIANT:** No calls to Android location providers will be made. The result is structured and recoverable (the AI model is informed and can ask for a city).
+### [Component] Core Enums
+#### [MODIFY] [AgentCoreEnums.kt](file:///C:/Users/david/Documents/GitHub/openrouter/app/src/main/java/com/david/openassistant/agent/AgentCoreEnums.kt)
+- Extend `ExecutionStallDiagnosis` with:
+    - `REPEATED_CONTEXT`
+    - `DUPLICATE_QUERY_PORTFOLIO`
+    - `SOURCE_HOMOGENEITY`
+    - `NO_NEW_ACCEPTED_EVIDENCE`
+    - `STALE_RESEARCH_STRATEGY`
+    - `UNRESOLVED_GAP_STAGNATION`
+    - `ENTITY_AMBIGUITY`
+    - `TEMPORAL_SCOPE_MISMATCH`
+- Extend `EscalationTactic` with:
+    - `RESOLVE_ENTITIES`
+    - `SHIFT_SOURCE_FAMILY`
+    - `FOLLOW_CITATIONS`
+    - `DECOMPOSE_UNRESOLVED_GAP`
+    - `SEARCH_CONTRADICTING_EVIDENCE`
+    - `CHANGE_TEMPORAL_SCOPE`
+    - `CHANGE_GEOGRAPHIC_SCOPE`
+    - `SEARCH_PRIMARY_RECORDS`
+    - `REBUILD_QUERY_PORTFOLIO`
+    - `REVISE_OPERATIONAL_OBJECTIVE`
 
 ---
 
-### [Component] Privacy and Redaction
-#### [MODIFY] [ResearchMonitorReport.kt](file:///D:/my_programs/OpenAssistant_1.8.23/OpenAssistant_1.8.33_V29/OpenAssistant/app/src/main/java/com/david/openassistant/data/diagnostics/ResearchMonitorReport.kt)
-- **ADD** `latitude` and `longitude` keys to `MONITOR_SECRET_PATTERNS`.
-- **ENHANCE** `redactResearchMonitorText` to redact numeric values associated with these specific keys (e.g., `"latitude": 41.8781` -> `"latitude": "[REDACTED]"`).
-- **INVARIANT:** Does not use a broad number-pair regex to avoid corrupting legitimate measurements (e.g., "1.8.33").
+### [Component] Models
+#### [MODIFY] [AgentResearchModels.kt](file:///C:/Users/david/Documents/GitHub/openrouter/app/src/main/java/com/david/openassistant/agent/AgentResearchModels.kt)
+- Add `ResearchRecoveryPlan`, `RecoveryPlanStatus`, and `RecoveryProposal` data classes.
+- Ensure all models are serializable to JSON (standard project practice).
+
+#### [MODIFY] [AgentGoalModels.kt](file:///C:/Users/david/Documents/GitHub/openrouter/app/src/main/java/com/david/openassistant/agent/AgentGoalModels.kt)
+- Add `recoveryPlans: List<ResearchRecoveryPlan>` and `activeRecoveryPlanId: String?` to `AgentGoal`.
 
 ---
 
-## 2. Regression Verification Plan
-
-### Automated Regression (Offline)
-- **[NEW] `LocationContainmentTest.kt`**:
-    - Prove `get_current_location` returns the "unavailable" JSON.
-    - Prove provider imports/classes are unreachable/not invoked.
-    - Verify `redactResearchMonitorText` redacts `"latitude": 12.3456` but preserves `"version": "1.8.33"` and dates.
-- **Existing Tests:** Ensure all 478 unit tests (including `ResearchMonitorReportTest` and `SafeToolsTest`) remain passing.
-
-### Desktop Verification
-- **Assemble:** `.\gradlew.bat :app:assembleDebug`
-- **Lint:** `.\gradlew.bat :app:lintDebug` (Verify 0 fatal issues).
-- **Merged Manifest:** Inspect `app/build/intermediates/merged_manifest/debug/AndroidManifest.xml` to ensure neither permission exists.
-
-### Device Verification (Physical SM-G998U)
-- **Installation:** `adb install -r -t` (Retain existing data).
-- **Cold Start:** 3 cycles. Verify **ZERO** permission prompts.
-- **UI Check:** Main screen and Settings render correctly. Stored missions are preserved.
-- **No-Provider Proof:** Search Logcat for `LocationManager` or `FusedLocationProviderClient` during tool execution (if triggers occur).
+### [Component] Persistence
+#### [MODIFY] [AgentStore.kt](file:///C:/Users/david/Documents/GitHub/openrouter/app/src/main/java/com/david/openassistant/agent/AgentStore.kt)
+- Update JSON serialization/deserialization for `AgentGoal` to include the new recovery fields.
+- Implement symmetric encode/decode.
 
 ---
 
-## 3. Rollback Plan
+### [Component] Logic
+#### [NEW] [ResearchRecoveryEngine.kt](file:///C:/Users/david/Documents/GitHub/openrouter/app/src/main/java/com/david/openassistant/agent/ResearchRecoveryEngine.kt)
+- Implement a pure deterministic recovery engine:
+    - `diagnoseStall()`: Logic to detect new stall types.
+    - `selectTactic()`: Logic to pick the next applicable, unused tactic.
+    - `generatePlanIdentity()`: SHA-256 derivation from goal/task/context.
+    - `validateNovelty()`: Gate to reject cosmetic-only strategy changes.
 
-### Reversion Instructions:
-1.  **AndroidManifest.xml**: Restore `<uses-permission>` tags for `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION`.
-2.  **MainActivity.kt**: Restore `locationPermissionLauncher` and the startup `launch()` call.
-3.  **DeviceTools.kt**: Restore `LocationServices` imports and the `getCurrentLocation()` implementation using `fusedLocationClient`.
-4.  **ResearchMonitorReport.kt**: Remove the new coordinate redaction patterns.
-
-> [!WARNING]
-> Rolling back restores overbroad startup permission behavior and raw coordinate persistence.
+#### [MODIFY] [AgentTaskExecutor.kt](file:///C:/Users/david/Documents/GitHub/openrouter/app/src/main/java/com/david/openassistant/agent/AgentTaskExecutor.kt)
+- Integrate `ResearchRecoveryEngine` into the execution loop.
+- Implement the atomic commit of a tactic pivot.
+- Authorize exactly one retry with the new strategy.
 
 ---
 
-## 4. Evidence Report Correction
-The updated `ANDROID_STUDIO_AI_REPORT.md` will:
-- Fully redact the device serial (`R5CRC3JK8ME` -> `REDACTED`).
-- Remove the API-key suffix (`27a7` -> `REDACTED`).
-- Correct the tool source filename to `DeviceTools.kt`.
-- Properly categorize Pass 3 claims as `SUPPORTED INFERENCE`.
+### [Component] Infrastructure Integration
+#### [MODIFY] [AgentGoalWorker.kt](file:///C:/Users/david/Documents/GitHub/openrouter/app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt)
+- Ensure the worker correctly picks up tasks in `RECOVERING` status.
+
+---
+
+## Verification Plan
+
+### Automated Tests
+- `ResearchRecoveryEngineTest`: Test stall diagnosis, tactic selection, and novelty validation.
+- `AgentStoreRecoveryPersistenceTest`: Verify round-trip serialization of recovery plans.
+- `AgentTaskExecutorRecoveryTest`: End-to-end test of recovery flow (diagnose -> prepare -> commit -> retry).
+- Run existing V41 and V42.1 tests.
+
+### Manual Verification
+- None required; all logic is backend-driven and covered by unit tests.

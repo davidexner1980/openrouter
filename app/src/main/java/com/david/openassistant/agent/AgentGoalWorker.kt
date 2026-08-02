@@ -417,25 +417,35 @@ class AgentGoalWorker(
 
                         val models = runCatching { client.fetchModels(apiKey) }.getOrDefault(emptyList())
 
-                        val outcome = if (leasedGoal.status == AgentGoalStatus.PLANNING && ticket is PlanningTicket) {
-                            notifier.updateNotification(goalId, leasedGoal.title, "Planning")
-                            planner.plan(apiKey, leasedGoal, ticket, models)
-                        } else {
-                            reconcileInterruptedWork(goalId, ticket)
-                            if (leasedGoal.status.isInactive()) return@coroutineScope Result.success()
-                            
-                            val taskToExecute = AgentResearchAllocator.chooseNextTask(leasedGoal, allocationProfile, now).taskId?.let { id -> leasedGoal.tasks.firstOrNull { it.id == id } }
-                            when {
-                                taskToExecute != null && ticket is TaskExecutionTicket -> {
-                                    notifier.updateNotification(goalId, leasedGoal.title, taskToExecute.title)
-                                    taskExecutor.executeOneTask(apiKey, leasedGoal, taskToExecute, ticket, models)
-                                }
-                                leasedGoal.isReadyForVerification && ticket is PlanningTicket -> {
-                                    notifier.updateNotification(goalId, leasedGoal.title, "Verifying")
-                                    verifier.verifyAndFinish(apiKey, leasedGoal, ticket, models)
-                                }
-                                else -> {
-                                    repairBlockedWorkflow(leasedGoal, ticket)
+                        val outcome = when {
+                            leasedGoal.status == AgentGoalStatus.PLANNING && ticket is PlanningTicket -> {
+                                notifier.updateNotification(goalId, leasedGoal.title, "Planning")
+                                planner.plan(apiKey, leasedGoal, ticket, models)
+                            }
+                            leasedGoal.status == AgentGoalStatus.RECOVERING -> {
+                                notifier.updateNotification(goalId, leasedGoal.title, "Recovering Research")
+                                // V42.2: Recovery engine should eventually be called here or in taskExecutor
+                                // For now, we continue to taskExecutor if RECOVERING task is selected
+                                val recoveryOutcome = repairBlockedWorkflow(leasedGoal, ticket)
+                                recoveryOutcome
+                            }
+                            else -> {
+                                reconcileInterruptedWork(goalId, ticket)
+                                if (leasedGoal.status.isInactive()) return@coroutineScope Result.success()
+                                
+                                val taskToExecute = AgentResearchAllocator.chooseNextTask(leasedGoal, allocationProfile, now).taskId?.let { id -> leasedGoal.tasks.firstOrNull { it.id == id } }
+                                when {
+                                    taskToExecute != null && ticket is TaskExecutionTicket -> {
+                                        notifier.updateNotification(goalId, leasedGoal.title, taskToExecute.title)
+                                        taskExecutor.executeOneTask(apiKey, leasedGoal, taskToExecute, ticket, models)
+                                    }
+                                    leasedGoal.isReadyForVerification && ticket is PlanningTicket -> {
+                                        notifier.updateNotification(goalId, leasedGoal.title, "Verifying")
+                                        verifier.verifyAndFinish(apiKey, leasedGoal, ticket, models)
+                                    }
+                                    else -> {
+                                        repairBlockedWorkflow(leasedGoal, ticket)
+                                    }
                                 }
                             }
                         }

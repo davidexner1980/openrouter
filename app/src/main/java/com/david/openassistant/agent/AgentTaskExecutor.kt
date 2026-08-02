@@ -266,7 +266,10 @@ class AgentTaskExecutor internal constructor(
             (current.verificationCorrectionStreak >= 3) &&
             (current.plannerModelId.isFreeRoute())
 
+        val engineDiagnosis = ResearchRecoveryEngine.diagnoseStall(current, task, isFree, qualityAccepted)
+
         return when {
+            engineDiagnosis != ExecutionStallDiagnosis.NONE -> engineDiagnosis
             intelligenceWallReached -> ExecutionStallDiagnosis.INTELLIGENCE_WALL
             progressStall -> ExecutionStallDiagnosis.PROGRESS_STALL
             repetitiveSearchStall -> ExecutionStallDiagnosis.REPETITIVE_SEARCH_STALL
@@ -1043,7 +1046,34 @@ class AgentTaskExecutor internal constructor(
         val currentTask = current.tasks.firstOrNull { it.id == task.id } ?: return current
 
         val stallDiagnosis = detectExecutionStall(current, currentTask, result, quality.passed)
-        val decision = if (stallDiagnosis != ExecutionStallDiagnosis.NONE) {
+        
+        // V42.2: Within-cycle tactic recovery
+        val recoveryPlan = if (stallDiagnosis != ExecutionStallDiagnosis.NONE && 
+            stallDiagnosis != ExecutionStallDiagnosis.INTELLIGENCE_WALL &&
+            stallDiagnosis != ExecutionStallDiagnosis.VERIFICATION_CIRCULARITY
+        ) {
+            val tactic = ResearchRecoveryEngine.selectTactic(current, currentTask, stallDiagnosis)
+            if (tactic != EscalationTactic.ASK_USER && tactic != EscalationTactic.NONE) {
+                val planId = ResearchRecoveryEngine.generatePlanIdentity(current.id, currentTask.id, currentFingerprint, stallDiagnosis, tactic)
+                ResearchRecoveryPlan(
+                    id = planId,
+                    goalId = current.id,
+                    taskId = currentTask.id,
+                    inputExecutionFingerprint = currentFingerprint,
+                    diagnosis = stallDiagnosis,
+                    selectedTactic = tactic,
+                    status = RecoveryPlanStatus.PREPARED,
+                    logicalProviderRequestId = null,
+                    proposal = null,
+                    proposalFingerprint = null,
+                    validationResult = null,
+                    failureClassification = null,
+                    failureMessage = null
+                )
+            } else null
+        } else null
+
+        val decision = if (stallDiagnosis != ExecutionStallDiagnosis.NONE && recoveryPlan == null) {
             ProviderRecoveryPolicy.decide(
                 statusCode = null,
                 currentModelId = current.executionModelId,
@@ -1232,6 +1262,7 @@ class AgentTaskExecutor internal constructor(
         }
 
         val nextStatus = when {
+            recoveryPlan != null -> AgentGoalStatus.RECOVERING
             decision != null -> decision.nextGoalStatus(routedCurrent.status)
             synthesisRecoveryQueued -> AgentGoalStatus.QUEUED
             boundedSynthesisAccepted -> AgentGoalStatus.VERIFYING
@@ -1313,6 +1344,7 @@ class AgentTaskExecutor internal constructor(
             events = appendEvent(
                 routedCurrent.events,
                 when {
+                    recoveryPlan != null -> "Research stalled: ${stallDiagnosis.name}. Tactic pivot prepared: ${recoveryPlan.selectedTactic.name}."
                     decision != null -> "${decision.explanation} Milestone will retry with improved model intelligence."
                     synthesisRecoveryQueued -> "Synthesis exposed a concrete evidence gap. Recovery round queued before synthesis resumes."
                     boundedSynthesisAccepted -> boundedSynthesisEventMessage(currentTask, synthesisGapDecision)
@@ -1324,9 +1356,15 @@ class AgentTaskExecutor internal constructor(
                     else -> "Milestone ${task.order + 1} failed its quality gate: $qualityError"
                 },
             ),
-            error = if (decision != null || researchAttemptWindowExhausted || automaticCorrectionRecovery ||
+            error = if (recoveryPlan != null || decision != null || researchAttemptWindowExhausted || automaticCorrectionRecovery ||
                 automaticEvidenceBoundedRecovery || automaticSynthesisAnalysisFallback ||
                 synthesisRecoveryQueued || boundedSynthesisAccepted) null else localStopMessage,
+            recoveryPlans = if (recoveryPlan != null && routedCurrent.recoveryPlans.none { it.id == recoveryPlan.id }) {
+                routedCurrent.recoveryPlans + recoveryPlan
+            } else {
+                routedCurrent.recoveryPlans
+            },
+            activeRecoveryPlanId = recoveryPlan?.id ?: routedCurrent.activeRecoveryPlanId
         )
         
         val accountingKey = "task_accounting_$attemptId"

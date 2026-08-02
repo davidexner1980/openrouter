@@ -1100,8 +1100,39 @@ class AgentStore private constructor(
         json.put("classified_failures", JSONArray(goal.classifiedFailures))
         json.put("lease_generation", goal.leaseGeneration)
         json.put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
+        json.put("recovery_plans", JSONArray(goal.recoveryPlans.map(::encodeRecoveryPlan)))
+        json.put("active_recovery_plan_id", goal.activeRecoveryPlanId ?: JSONObject.NULL)
         return json
     }
+
+    private fun encodeRecoveryPlan(plan: ResearchRecoveryPlan): JSONObject = JSONObject()
+        .put("id", plan.id)
+        .put("goal_id", plan.goalId)
+        .put("task_id", plan.taskId)
+        .put("input_execution_fingerprint", plan.inputExecutionFingerprint)
+        .put("diagnosis", plan.diagnosis.name)
+        .put("selected_tactic", plan.selectedTactic.name)
+        .put("status", plan.status.name)
+        .put("logical_provider_request_id", plan.logicalProviderRequestId ?: JSONObject.NULL)
+        .put("proposal", plan.proposal?.let(::encodeRecoveryProposal) ?: JSONObject.NULL)
+        .put("proposal_fingerprint", plan.proposalFingerprint ?: JSONObject.NULL)
+        .put("validation_result", plan.validationResult ?: JSONObject.NULL)
+        .put("failure_classification", plan.failureClassification ?: JSONObject.NULL)
+        .put("failure_message", plan.failureMessage ?: JSONObject.NULL)
+        .put("created_at", plan.createdAt)
+        .put("generated_at", plan.generatedAt ?: JSONObject.NULL)
+        .put("committed_at", plan.committedAt ?: JSONObject.NULL)
+
+    private fun encodeRecoveryProposal(proposal: RecoveryProposal): JSONObject = JSONObject()
+        .put("revised_investigation_interpretation", proposal.revisedInvestigationInterpretation)
+        .put("specific_unresolved_gap", proposal.specificUnresolvedGap)
+        .put("selected_source_family_shift", proposal.selectedSourceFamilyShift ?: JSONObject.NULL)
+        .put("evidence_targets", JSONArray(proposal.evidenceTargets))
+        .put("falsifiers", JSONArray(proposal.falsifiers))
+        .put("new_query_portfolio", JSONArray(proposal.newQueryPortfolio))
+        .put("follow_up_rule", proposal.followUpRule ?: JSONObject.NULL)
+        .put("rationale", proposal.rationale)
+        .put("expected_novelty_dimensions", JSONArray(proposal.expectedNoveltyDimensions))
 
     private fun decodeGoal(json: JSONObject): AgentGoal {
         val legacyCostUsd = json.optDouble("total_cost_usd", 0.0)
@@ -1292,8 +1323,41 @@ class AgentStore private constructor(
             classifiedFailures = json.optJSONArray("classified_failures").toStringList(),
             leaseGeneration = json.optInt("lease_generation", 0),
             lastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() },
+            recoveryPlans = json.optJSONArray("recovery_plans").decodeList(::decodeRecoveryPlan),
+            activeRecoveryPlanId = json.optNullableString("active_recovery_plan_id"),
         )
     }
+
+    private fun decodeRecoveryPlan(json: JSONObject): ResearchRecoveryPlan = ResearchRecoveryPlan(
+        id = json.getString("id"),
+        goalId = json.getString("goal_id"),
+        taskId = json.getString("task_id"),
+        inputExecutionFingerprint = json.getString("input_execution_fingerprint"),
+        diagnosis = json.optEnum("diagnosis", ExecutionStallDiagnosis.NONE),
+        selectedTactic = json.optEnum("selected_tactic", EscalationTactic.NONE),
+        status = json.optEnum("status", RecoveryPlanStatus.PREPARED),
+        logicalProviderRequestId = json.optNullableString("logical_provider_request_id"),
+        proposal = json.optJSONObject("proposal")?.let(::decodeRecoveryProposal),
+        proposalFingerprint = json.optNullableString("proposal_fingerprint"),
+        validationResult = json.optNullableString("validation_result"),
+        failureClassification = json.optNullableString("failure_classification"),
+        failureMessage = json.optNullableString("failure_message"),
+        createdAt = json.optLong("created_at", System.currentTimeMillis()),
+        generatedAt = json.optLongOrNull("generated_at"),
+        committedAt = json.optLongOrNull("committed_at")
+    )
+
+    private fun decodeRecoveryProposal(json: JSONObject): RecoveryProposal = RecoveryProposal(
+        revisedInvestigationInterpretation = json.optString("revised_investigation_interpretation"),
+        specificUnresolvedGap = json.optString("specific_unresolved_gap"),
+        selectedSourceFamilyShift = json.optNullableString("selected_source_family_shift"),
+        evidenceTargets = json.optJSONArray("evidence_targets").toStringList(),
+        falsifiers = json.optJSONArray("falsifiers").toStringList(),
+        newQueryPortfolio = json.optJSONArray("new_query_portfolio").toStringList(),
+        followUpRule = json.optNullableString("follow_up_rule"),
+        rationale = json.optString("rationale"),
+        expectedNoveltyDimensions = json.optJSONArray("expected_novelty_dimensions").toStringList()
+    )
 
     private fun encodeObjectiveContract(contract: ObjectiveContract): JSONObject = JSONObject()
         .put("version", contract.version)

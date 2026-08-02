@@ -96,6 +96,8 @@ data class AgentGoal(
     val leaseGeneration: Int = 0,
     val lastResumeReason: ResumeReason? = null,
     val objectiveContract: ObjectiveContract? = null,
+    val recoveryPlans: List<ResearchRecoveryPlan> = emptyList(),
+    val activeRecoveryPlanId: String? = null,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)
