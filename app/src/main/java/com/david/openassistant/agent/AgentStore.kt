@@ -1132,10 +1132,111 @@ class AgentStore private constructor(
             )
         } else goalBeforeCycles
 
-        return ensureBaselineCycle(migratedGoal)
+        return validateAndRepairInvariants(migratedGoal)
     }
 
-    private fun ensureBaselineCycle(goal: AgentGoal): AgentGoal {
+    private fun validateAndRepairInvariants(goal: AgentGoal): AgentGoal {
+        val activeCycleId = goal.activeResearchCycleId
+        if (activeCycleId == null) {
+            return createBaselineCycle(goal)
+        }
+
+        // REQUIRED CHANGE 2: Store Invariant Validation
+        // 1. activeResearchCycleId references an existing cycle.
+        val activeCycle = goal.researchCycles.firstOrNull { it.id == activeCycleId }
+            ?: run {
+                diagnostics?.warning(
+                    event = "active_cycle_invariant_failed",
+                    component = "storage",
+                    fields = mapOf("goal_id" to goal.id, "reason" to "Active cycle $activeCycleId not found.")
+                )
+                return goal.copy(status = AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, isCorrupt = true, error = "Active cycle $activeCycleId not found.")
+            }
+
+        // 2. Exactly one cycle is ACTIVE.
+        val activeCycles = goal.researchCycles.filter { it.status == ResearchCycleStatus.ACTIVE }
+        if (activeCycles.size != 1) {
+            diagnostics?.warning(
+                event = "active_cycle_invariant_failed",
+                component = "storage",
+                fields = mapOf("goal_id" to goal.id, "reason" to "Exactly one active cycle required. Found ${activeCycles.size}.")
+            )
+            return goal.copy(status = AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, isCorrupt = true, error = "Exactly one active cycle required. Found ${activeCycles.size}.")
+        }
+
+        // 3. The referenced cycle is the active cycle.
+        if (activeCycle.id != activeCycleId || activeCycle.status != ResearchCycleStatus.ACTIVE) {
+            diagnostics?.warning(
+                event = "active_cycle_invariant_failed",
+                component = "storage",
+                fields = mapOf("goal_id" to goal.id, "reason" to "Referenced cycle $activeCycleId is not the ACTIVE cycle.")
+            )
+            return goal.copy(status = AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, isCorrupt = true, error = "Referenced cycle $activeCycleId is not the ACTIVE cycle.")
+        }
+
+        // REQUIRED CHANGE 3: EXACT REPAIR FOR THE REPRODUCED STATE
+        // Implement a deterministic, idempotent migration for missions created by the defective build.
+        val hasNullCycleTasks = goal.tasks.any { it.cycleId == null }
+        val isInitialPlanState = goal.status in setOf(AgentGoalStatus.QUEUED, AgentGoalStatus.RUNNING) && 
+            goal.tasks.isNotEmpty() && 
+            goal.requestAttempts.none { it.taskId != null } && // No task provider request was dispatched.
+            goal.attempts.none { it.taskId != null && it.status != AgentAttemptStatus.RUNNING } // No task execution attempt has started.
+        
+        val repairKey = "v42-plan-cycle-binding:${goal.id}"
+        val alreadyRepaired = goal.idempotencyRecords.any { it.key == repairKey }
+
+        if (hasNullCycleTasks && isInitialPlanState && !alreadyRepaired) {
+            val baselineCycle = goal.researchCycles.firstOrNull { it.id.contains("baseline") }
+            if (baselineCycle != null && goal.researchCycles.size == 1 && goal.objectiveRevisions.size == 1) {
+                val repairedTasks = goal.tasks.map { it.copy(cycleId = baselineCycle.id) }
+                val repairedEvidence = goal.evidence.map { if (it.cycleId == null) it.copy(cycleId = baselineCycle.id) else it }
+                val migrationRecord = IdempotencyRecord(
+                    key = repairKey,
+                    effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                    state = IdempotencyState.COMMITTED,
+                    claimOwner = "migration_v42_3_1",
+                    committedAt = System.currentTimeMillis()
+                )
+                diagnostics?.info(
+                    event = "initial_task_cycle_binding_repaired",
+                    component = "storage",
+                    fields = mapOf(
+                        "goal_id" to goal.id,
+                        "cycle_id" to baselineCycle.id,
+                        "task_count" to repairedTasks.size
+                    )
+                )
+                return goal.copy(
+                    tasks = repairedTasks,
+                    evidence = repairedEvidence,
+                    idempotencyRecords = goal.idempotencyRecords + migrationRecord,
+                    events = appendEvent(goal.events, "V42.3.1: Repaired initial task-cycle binding for mission.")
+                )
+            }
+        }
+
+        // 4. Every executable task has a non-null cycle ID.
+        // 5. Every current executable task belongs to the active cycle.
+        // 6. Every task’s cycle ID references an existing cycle.
+        val allCycleIds = goal.researchCycles.map { it.id }.toSet()
+        goal.tasks.forEach { task ->
+            if (task.status.isExecutable()) {
+                if (task.cycleId == null) {
+                    return goal.copy(status = AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, isCorrupt = true, error = "Executable task ${task.id} missing cycleId.")
+                }
+                if (task.cycleId != activeCycleId) {
+                    return goal.copy(status = AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, isCorrupt = true, error = "Executable task ${task.id} belongs to cycle ${task.cycleId}, but active cycle is $activeCycleId.")
+                }
+            }
+            if (task.cycleId != null && !allCycleIds.contains(task.cycleId)) {
+                return goal.copy(status = AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, isCorrupt = true, error = "Task ${task.id} references non-existent cycle ${task.cycleId}.")
+            }
+        }
+
+        return goal
+    }
+
+    private fun createBaselineCycle(goal: AgentGoal): AgentGoal {
         if (goal.activeResearchCycleId != null) return goal
         val revisionId = "rev_baseline_${goal.id}"
         val cycleId = "cycle_baseline_${goal.id}"

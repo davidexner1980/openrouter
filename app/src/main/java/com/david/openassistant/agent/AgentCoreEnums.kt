@@ -68,6 +68,12 @@ enum class AgentTaskStatus {
     BLOCKED_WITH_PARTIAL_EVIDENCE,
 }
 
+fun AgentTaskStatus.isExecutable(): Boolean = this in setOf(
+    AgentTaskStatus.PLANNED,
+    AgentTaskStatus.QUEUED,
+    AgentTaskStatus.RUNNING,
+)
+
 enum class AgentCapability(val wireName: String) {
     REASON("reason"),
     WEB_RESEARCH("web_research"),

@@ -99,6 +99,7 @@ class AgentPlanner(
                 AgentCapabilityRegistry.requireAllowed(draft.capability)
                 AgentTask(
                     id = draft.id,
+                    cycleId = goal.activeResearchCycleId,
                     order = index,
                     title = draft.title,
                     instructions = draft.instructions,
@@ -112,6 +113,9 @@ class AgentPlanner(
             val filteredGoalCriteria = ConstraintValidator.filterGrounded(plan.acceptanceCriteria, goal.userRequest)
             require(tasks.isNotEmpty()) { "The planner returned no executable milestones." }
             val planEvidence = AgentEvidence(
+                id = "plan_evidence_${UUID.randomUUID()}",
+                taskId = null,
+                cycleId = goal.activeResearchCycleId,
                 kind = AgentEvidenceKind.PLAN,
                 title = "Validated durable plan",
                 summary = "${tasks.size} measurable milestones and ${filteredGoalCriteria.size} final checks were created.",
@@ -187,6 +191,16 @@ class AgentPlanner(
                 )
             }
             
+            diagnostics.info(
+                event = "initial_cycle_binding_committed",
+                component = "mission",
+                fields = mapOf(
+                    "goal_id" to goal.id,
+                    "cycle_id" to (goal.activeResearchCycleId ?: "none"),
+                    "task_count" to tasks.size
+                )
+            )
+
             diagnostics.info(
                 event = "planning_completed",
                 component = "mission",

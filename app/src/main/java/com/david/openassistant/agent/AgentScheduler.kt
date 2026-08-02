@@ -146,17 +146,40 @@ class AgentScheduler(context: Context) {
         return finalResult
     }
 
-    fun enqueueContinuation(goalId: String, generation: Int = 0) {
+    fun enqueueContinuation(goalId: String, generation: Int = 0, fingerprint: String? = null) {
+        if (fingerprint != null && isDuplicateNoProgressContinuation(goalId, fingerprint)) {
+            diagnostics.info(
+                event = "no_op_continuation_rejected_by_scheduler",
+                component = "scheduler",
+                fields = mapOf("goal_id" to goalId, "fingerprint" to fingerprint)
+            )
+            return
+        }
+        
         workManager.enqueueUniqueWork(
             uniqueWorkName(goalId, generation),
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             createRequest(goalId),
         )
+        
+        if (fingerprint != null) {
+            recordProcessedFingerprint(goalId, fingerprint)
+        }
+    }
+
+    private fun isDuplicateNoProgressContinuation(goalId: String, fingerprint: String): Boolean {
+        val lastFingerprint = lastFingerprints[goalId]
+        return lastFingerprint == fingerprint
+    }
+
+    private fun recordProcessedFingerprint(goalId: String, fingerprint: String) {
+        lastFingerprints[goalId] = fingerprint
     }
 
     fun cancel(goalId: String, generation: Int = 0) {
         AgentCallCancellationRegistry.cancel(goalId)
         workManager.cancelUniqueWork(uniqueWorkName(goalId, generation))
+        lastFingerprints.remove(goalId)
     }
 
     fun cancelAndWait(goalId: String, generation: Int = 0) {
@@ -219,6 +242,8 @@ class AgentScheduler(context: Context) {
     companion object {
         private const val CANCELLATION_WAIT_SECONDS = 20L
         private const val OPERATION_WAIT_SECONDS = 10L
+        private val lastFingerprints = java.util.concurrent.ConcurrentHashMap<String, String>()
+
         fun uniqueWorkName(goalId: String, generation: Int = 0): String {
             return if (generation > 0) {
                 "openassistant_agent_goal_${goalId}_gen$generation"
