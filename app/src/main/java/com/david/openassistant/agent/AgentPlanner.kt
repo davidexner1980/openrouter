@@ -151,6 +151,7 @@ class AgentPlanner(
                     title = plan.title.ifBlank { current.title },
                     objective = plan.objective,
                     finalOutputDescription = plan.finalOutputDescription,
+                    objectiveContract = plan.objectiveContract,
                     status = AgentGoalStatus.QUEUED,
                     tasks = tasks,
                     acceptanceCriteria = filteredGoalCriteria,

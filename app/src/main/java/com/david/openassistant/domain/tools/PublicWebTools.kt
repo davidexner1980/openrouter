@@ -730,7 +730,6 @@ class PublicWebToolRuntime(
                             "duration_ms" to (System.currentTimeMillis() - startedAt),
                             "error_type" to error::class.java.name,
                             "error_message" to error.message.orEmpty(),
-                            "stack_trace" to error.stackTraceToString(),
                             "cancelled" to isCancelled
                         ),
                     )

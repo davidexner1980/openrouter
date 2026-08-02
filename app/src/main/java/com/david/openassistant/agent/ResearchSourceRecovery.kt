@@ -79,7 +79,7 @@ fun validateSourceRead(
         return SourceReadValidationResult(false, SourceReadRejectionReason.BOILERPLATE_ONLY)
     }
 
-    val authorityScore = computeDomainAuthorityScore(url, lowerContent)
+    val authorityScore = computeSourceAuthorityScore(url, lowerContent)
 
     if (requiredRole != null && requiredRole.equals("PRIMARY_SOURCE", ignoreCase = true) && authorityScore < 50) {
         return SourceReadValidationResult(false, SourceReadRejectionReason.WRONG_SOURCE_ROLE, authorityScore)
@@ -95,26 +95,6 @@ fun validateSourceRead(
     }
 
     return SourceReadValidationResult(true, null, authorityScore)
-}
-
-fun computeDomainAuthorityScore(url: String, content: String): Int {
-    var score = 50
-    val host = runCatching { URI(url).host?.lowercase(Locale.US) }.getOrNull().orEmpty()
-
-    if (host.endsWith(".gov") || host.contains(".gov.") || host.endsWith(".mil") || host.contains(".mil.")) {
-        score += 40
-    } else if (host.endsWith(".edu") || host.contains(".edu.")) {
-        score += 30
-    } else if (host.endsWith(".org") || host.contains("wikipedia.org")) {
-        score += 10
-    }
-
-    if (content.contains("official record") || content.contains("geodetic datasheet") || 
-        content.contains("u.s. geological survey") || content.contains("national park service")) {
-        score += 20
-    }
-
-    return score
 }
 
 internal fun recoverHttpsSourceCitations(vararg texts: String): List<AgentSourceCitation> {

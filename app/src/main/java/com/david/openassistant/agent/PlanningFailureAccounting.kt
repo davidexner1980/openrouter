@@ -25,6 +25,7 @@ internal fun Throwable.withAgentUsage(summary: AgentApiSummary): Throwable {
         userMessage = existing?.userMessage ?: message.orEmpty().ifBlank {
             "The provider operation failed after one or more completed subcalls."
         },
+        cause = this,
         role = existing?.role ?: summary.role,
         selectionReason = existing?.selectionReason ?: summary.selectionReason,
         previousRoute = existing?.previousRoute ?: summary.previousRoute,
@@ -37,7 +38,7 @@ internal fun Throwable.withAgentUsage(summary: AgentApiSummary): Throwable {
         totalTokens = nullableUsageSum(existing?.totalTokens, summary.totalTokens),
         costUsd = nullableUsageSum(existing?.costUsd, summary.costUsd),
         webSearchRequests = nullableUsageSum(existing?.webSearchRequests, summary.webSearchRequests),
-    ).also { wrapped -> wrapped.initCause(this) }
+    )
 }
 
 /**

@@ -53,7 +53,6 @@ internal object SearchQueryValidator {
         "instructions:",
         "role contract:",
         "epistemic role",
-        "modern ilf needs have document",
         "document primary-source verified",
         "acceptance criteria",
         "milestone instructions"

@@ -1345,7 +1345,7 @@ class AgentTaskExecutor internal constructor(
                     contentType = "text/html",
                     content = s.excerpt.orEmpty(),
                     sourceRole = researchPassRole(task).name,
-                    authorityScore = computeDomainAuthorityScore(s.url, s.excerpt.orEmpty()),
+                    authorityScore = computeSourceAuthorityScore(s.url, s.excerpt.orEmpty()),
                     provenance = provenance,
                 )
             } + result.sourceReads).distinctBy { it.url },

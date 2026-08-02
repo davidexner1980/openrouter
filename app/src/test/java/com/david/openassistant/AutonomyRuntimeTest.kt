@@ -252,6 +252,7 @@ class AutonomyRuntimeTest {
             adaptiveResearchStrategyAnchorsRequest(
                 namedEntityBranches,
                 "What is the best recurve bow for hunting you can buy?",
+                listOf("recurve", "hunting", "bow")
             ),
         )
 

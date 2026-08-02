@@ -26,8 +26,8 @@ class ResearchComponentTest {
         val govSource = AgentSourceCitation("USGS Denali Elevation", "https://www.usgs.gov/denali", "Official geodetic record.")
         val aggregatorSource = AgentSourceCitation("Mountain Guide", "https://www.mountains.com/denali", "Top 10 highest mountains.")
         
-        val govScore = computeDomainAuthorityScore(govSource.url, govSource.excerpt.orEmpty())
-        val aggScore = computeDomainAuthorityScore(aggregatorSource.url, aggregatorSource.excerpt.orEmpty())
+        val govScore = computeSourceAuthorityScore(govSource.url, govSource.excerpt.orEmpty())
+        val aggScore = computeSourceAuthorityScore(aggregatorSource.url, aggregatorSource.excerpt.orEmpty())
         
         assertTrue("Government source score ($govScore) should be higher than aggregator ($aggScore)", govScore > aggScore)
     }

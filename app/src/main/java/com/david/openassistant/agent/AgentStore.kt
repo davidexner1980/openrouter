@@ -36,7 +36,7 @@ sealed class CreateAttemptResult {
 sealed class TransitionOutcomeResult {
     data class Updated(val attempt: ProviderRequestAttempt) : TransitionOutcomeResult()
     object GoalMissing : TransitionOutcomeResult()
-    object ExchangeMissing : TransitionOutcomeResult()
+    data class ExchangeMissing(val message: String) : TransitionOutcomeResult()
     data class AlreadyTerminal(val outcome: ExchangeOutcome) : TransitionOutcomeResult()
     data class InvalidGeneration(val expected: Int, val actual: Int) : TransitionOutcomeResult()
     object InvalidLeaseOrGoalState : TransitionOutcomeResult()
@@ -180,6 +180,32 @@ class AgentStore private constructor(
         acquireLeaseInternalLocked(goalId, workerId, taskId)
     }
 
+    fun updateProviderTransportStage(
+        goalId: String,
+        exchangeId: String,
+        stage: ProviderTransportStage,
+        certainty: ProviderDeliveryCertainty? = null
+    ): Boolean = synchronized(STORE_LOCK) {
+        migrateLegacyIfNeededLocked()
+        updateGoalInternalLocked(goalId) { current ->
+            val attempt = current.requestAttempts.firstOrNull { it.exchangeId == exchangeId }
+                ?: return@updateGoalInternalLocked current
+            
+            // Enforce monotonicity
+            if (stage.ordinal <= attempt.transportStage.ordinal && stage != ProviderTransportStage.TERMINAL) {
+                return@updateGoalInternalLocked current
+            }
+            
+            val updatedAttempt = attempt.copy(
+                transportStage = stage,
+                deliveryCertainty = certainty ?: attempt.deliveryCertainty
+            )
+            current.copy(
+                requestAttempts = current.requestAttempts.map { if (it.exchangeId == exchangeId) updatedAttempt else it }
+            )
+        } != null
+    }
+
     private fun acquireLeaseInternalLocked(
         goalId: String,
         workerId: String,
@@ -235,10 +261,8 @@ class AgentStore private constructor(
             )
             
             return try {
-                writeGoalLocked(updatedGoal)
-                
-                val reloaded = readGoalLocked(goalFileLocked(goalId))
-                val reloadedLease = reloaded.executionLease ?: throw IllegalStateException("executionLease is lost in durable storage.")
+                val reloaded = writeGoalLocked(updatedGoal)
+                val reloadedLease = reloaded.executionLease ?: throw IllegalStateException("executionLease is lost in durable storage for goal ${reloaded.id}. Status: ${reloaded.status}, isCorrupt=${reloaded.isCorrupt}, attempts=${reloaded.requestAttempts.size}")
                 val ticket = if (taskId != null) {
                     TaskExecutionTicket(
                         goalId = goalId,
@@ -476,7 +500,8 @@ class AgentStore private constructor(
         migrateLegacyIfNeededLocked()
         val current = loadSnapshotFromFilesLocked()
         val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized TransitionOutcomeResult.GoalMissing
-        val existingAttempt = goal.requestAttempts.firstOrNull { it.exchangeId == exchangeId } ?: return@synchronized TransitionOutcomeResult.ExchangeMissing
+        val existingAttempt = goal.requestAttempts.firstOrNull { it.exchangeId == exchangeId } 
+            ?: return@synchronized TransitionOutcomeResult.ExchangeMissing("Exchange $exchangeId not found in goal $goalId (attempts: ${goal.requestAttempts.map { it.exchangeId }})")
 
         // 1. Check if already terminal first
         if (existingAttempt.exchangeOutcome != ExchangeOutcome.ACTIVE) {
@@ -535,7 +560,10 @@ class AgentStore private constructor(
             updatedAt = now,
         )
 
-        runCatching { writeGoalLocked(updatedGoal) }.onFailure { return@synchronized TransitionOutcomeResult.StorageFailure(it) }
+        val writeResult = runCatching { writeGoalLocked(updatedGoal) }
+        if (writeResult.isFailure) {
+            return@synchronized TransitionOutcomeResult.StorageFailure(writeResult.exceptionOrNull()!!)
+        }
         TransitionOutcomeResult.Updated(updatedAttempt)
     }
 
@@ -687,15 +715,8 @@ class AgentStore private constructor(
         val goals = discoverGoalFilesLocked()
             .asSequence()
             .mapNotNull { file ->
-                val cached = goalCache[file.name]
-                if (cached != null && cached.fileTimestamp == file.lastModified() && cached.fileLength == file.length()) {
-                    return@mapNotNull cached.goal
-                }
-
                 try {
-                    val goal = readGoalLocked(file)
-                    goalCache[file.name] = CachedGoal(goal, file.lastModified(), file.length())
-                    goal
+                    readGoalLocked(file)
                 } catch (error: Throwable) {
                     val recoveryArtifact = preserveCorruptGoalLocked(file, error)
                     quarantined += MissionQuarantineEntry(
@@ -800,8 +821,7 @@ class AgentStore private constructor(
                 appendLine("OpenAssistant legacy agent snapshot recovery")
                 appendLine("Migration parser: ${error::class.java.name}")
                 appendLine("Message: ${error.message.orEmpty()}")
-                appendLine("--- original preference value ---")
-                append(raw)
+                appendLine("--- original preference excluded for privacy ---")
             }
             stream.write(diagnostic.toByteArray(StandardCharsets.UTF_8))
             recoveryFile.finishWrite(stream)
@@ -826,13 +846,11 @@ class AgentStore private constructor(
                 appendLine("File: ${file.name}")
                 appendLine("Parser: ${error::class.java.name}")
                 appendLine("Message: ${error.message.orEmpty()}")
-                appendLine("--- base file ---")
-                append(runCatching { file.readText(StandardCharsets.UTF_8) }.getOrDefault("<unreadable>"))
+                appendLine("--- base file content excluded for privacy ---")
                 val backup = File(file.path + ATOMIC_BACKUP_SUFFIX)
                 if (backup.exists()) {
                     appendLine()
-                    appendLine("--- atomic backup ---")
-                    append(runCatching { backup.readText(StandardCharsets.UTF_8) }.getOrDefault("<unreadable>"))
+                    appendLine("--- atomic backup content excluded for privacy ---")
                 }
             }
             stream.write(diagnostic.toByteArray(StandardCharsets.UTF_8))
@@ -862,26 +880,40 @@ class AgentStore private constructor(
         ) { "Agent state revision could not be persisted." }
     }
 
-    private fun writeGoalLocked(goal: AgentGoal) {
+    private fun writeGoalLocked(goal: AgentGoal): AgentGoal {
         writeCount.incrementAndGet()
         testWriterInjection?.write(goal)
         validateGoalIdentityForWrite(goal)
         goalsDirectory.mkdirs()
         val target = goalFileLocked(goal.id)
-        val atomicFile = AtomicFile(target)
-        val stream = atomicFile.startWrite()
-        try {
-            stream.write(encodeGoal(goal).toString().toByteArray(StandardCharsets.UTF_8))
-            atomicFile.finishWrite(stream)
-        } catch (error: Throwable) {
-            atomicFile.failWrite(stream)
-            throw error
+        val encoded = encodeGoal(goal)
+        val encodedStr = encoded.toString()
+        val verifyEncoded = JSONObject(encodedStr)
+        if (goal.executionLease != null && verifyEncoded.isNull("execution_lease")) {
+            throw IllegalStateException("JSONObject.toString() lost executionLease for ${goal.id}. Raw: ${encodedStr.take(2000)}")
+        }
+        
+        val bytes = encodedStr.toByteArray(StandardCharsets.UTF_8)
+        val temp = File(target.parentFile, target.name + ".tmp")
+        temp.writeBytes(bytes)
+        if (!temp.renameTo(target)) {
+            target.writeBytes(bytes)
         }
 
         val readBack = readGoalLocked(target)
+        if (goal.executionLease != null && readBack.executionLease == null) {
+            val raw = target.readText(StandardCharsets.UTF_8)
+            throw IllegalStateException("readGoalLocked lost executionLease for ${goal.id} after successful write. Raw: ${raw.take(2000)}")
+        }
+        
         check(readBack.id == goal.id) { "Goal readback identity mismatch for ${goal.id}." }
         check(readBack.conversationId == goal.conversationId) { "Goal readback conversation mismatch for ${goal.id}." }
         check(readBack.userRequest == goal.userRequest) { "Goal readback request mismatch for ${goal.id}." }
+        
+        // V41: Explicitly update cache with re-read state and new file metadata
+        goalCache[target.name] = CachedGoal(readBack, target.lastModified(), target.length())
+        
+        return readBack
     }
 
     private fun validateGoalIdentityForWrite(goal: AgentGoal) {
@@ -984,88 +1016,92 @@ class AgentStore private constructor(
         return AgentSnapshot(goals, selectedId)
     }
 
-    private fun encodeGoal(goal: AgentGoal): JSONObject = JSONObject()
-        .put("storage_version", STORAGE_VERSION)
-        .put("id", goal.id)
-        .put("conversation_id", goal.conversationId)
-        .put("submission_id", goal.submissionId ?: JSONObject.NULL)
-        .put("user_request", goal.userRequest)
-        .put("title", goal.title)
-        .put("objective", goal.objective)
-        .put("final_output_description", goal.finalOutputDescription)
-        .put("confirmed_constraints", JSONArray(goal.confirmedConstraints))
-        .put("inferred_preferences", JSONArray(goal.inferredPreferences))
-        .put("unresolved_questions", JSONArray(goal.unresolvedQuestions))
-        .put("evidence_requirements", JSONArray(goal.evidenceRequirements))
-        .put("preferred_source_types", JSONArray(goal.preferredSourceTypes))
-        .put("freshness_requirement", goal.freshnessRequirement ?: JSONObject.NULL)
-        .put("exclusions", JSONArray(goal.exclusions))
-        .put("source_message_ids", JSONArray(goal.sourceMessageIds))
-        .put("grounded_constraints", JSONArray().apply { goal.groundedConstraints.forEach { put(it.toJson()) } })
-        .put("status", goal.status.name)
-        .put("planner_model_id", goal.plannerModelId)
-        .put("execution_model_id", goal.executionModelId)
-        .put("routing_stage", goal.routingStage.name)
-        .put("requested_model_profile_name", goal.requestedModelProfileName ?: JSONObject.NULL)
-        .put("routing_policy_provenance", goal.routingPolicyProvenance.name)
-        .put("free_only", goal.freeOnly)
-        .put("tasks", JSONArray().apply { goal.tasks.forEach { put(encodeTask(it)) } })
-        .put("acceptance_criteria", JSONArray().apply { goal.acceptanceCriteria.forEach { put(encodeCriterion(it)) } })
-        .put("acceptance_checks", JSONArray().apply { goal.acceptanceChecks.forEach { put(encodeCheck(it)) } })
-        .put("attempts", JSONArray().apply { goal.attempts.forEach { put(encodeAttempt(it)) } })
-        .put("evidence", JSONArray().apply { goal.evidence.forEach { put(encodeEvidence(it)) } })
-        .put("source_reads", JSONArray().apply { goal.sourceReads.forEach { put(encodeSourceRead(it)) } })
-        .put("evidence_candidates", JSONArray().apply { goal.evidenceCandidates.forEach { put(encodeEvidenceCandidate(it)) } })
-        .put("normalized_facts", JSONArray().apply { goal.normalizedFacts.forEach { put(encodeNormalizedFact(it)) } })
-        .put("accepted_claims", JSONArray().apply { goal.acceptedClaims.forEach { put(encodeAcceptedClaim(it)) } })
-        .put("claims", JSONArray().apply { goal.claims.forEach { put(encodeClaim(it)) } })
-        .put("evidence_links", JSONArray().apply { goal.evidenceLinks.forEach { put(encodeEvidenceLink(it)) } })
-        .put("checkpoints", JSONArray().apply { goal.checkpoints.forEach { put(encodeCheckpoint(it)) } })
-        .put("concept_candidates", JSONArray().apply { goal.conceptCandidates.forEach { put(encodeConcept(it)) } })
-        .put("refinements", JSONArray().apply { goal.refinements.forEach { put(it) } })
-        .put("events", JSONArray().apply { goal.events.forEach { put(encodeEvent(it)) } })
-        .put("model_cooldowns", JSONObject(goal.modelCooldowns))
-        .put("execution_lease", goal.executionLease?.let(::encodeLease) ?: JSONObject.NULL)
-        .put("created_at", goal.createdAt)
-        .put("updated_at", goal.updatedAt)
-        .put("total_tokens", goal.totalTokens)
-        .put("verification_round", goal.verificationRound)
-        .put("verification_correction_streak", goal.verificationCorrectionStreak)
-        .put("total_cost_usd_micros", goal.totalCostUsdMicros)
-        .put("result", goal.result ?: JSONObject.NULL)
-        .put("error", goal.error ?: JSONObject.NULL)
-        .put("blocked_reason", goal.blockedReason ?: JSONObject.NULL)
-        .put("terminal_result_delivered", goal.terminalResultDelivered)
-        .put("next_retry_at", goal.nextRetryAt ?: JSONObject.NULL)
-        .put("network_wait_started_at", goal.networkWaitStartedAt ?: JSONObject.NULL)
-        .put("network_retry_count", goal.networkRetryCount)
-        .put("network_wait_reason", goal.networkWaitReason ?: JSONObject.NULL)
-        .put("resume_status_after_network", goal.resumeStatusAfterNetwork?.name ?: JSONObject.NULL)
-        .put("request_attempts", JSONArray().apply { goal.requestAttempts.forEach { put(encodeRequestAttempt(it)) } })
-        .put("retry_authorizations", JSONArray().apply { goal.retryAuthorizations.forEach { put(encodeRetryAuthorization(it)) } })
-        .put("idempotency_records", JSONArray().apply { goal.idempotencyRecords.forEach { put(encodeIdempotencyRecord(it)) } })
-        .put("monitor_outbox", JSONArray().apply { goal.monitorOutbox.forEach { put(encodeMonitorOutbox(it)) } })
-        .put("route_fingerprints", JSONArray().apply { goal.routeFingerprints.forEach { put(encodeRouteFingerprint(it)) } })
-        .put("body_builder_claims", JSONArray().apply { goal.bodyBuilderClaims.forEach { put(encodeBodyBuilderClaim(it)) } })
-        .put("quarantined_records", JSONArray().apply { goal.quarantinedRecords.forEach { put(encodeQuarantinedRecord(it)) } })
-        .put("is_corrupt", goal.isCorrupt)
-        .put("resolved_research_request", goal.resolvedResearchRequest?.toJson() ?: JSONObject.NULL)
-        .put("requires_user_clarification", goal.requiresUserClarification)
-        .put("clarification_details", goal.clarificationDetails ?: JSONObject.NULL)
-        .put("blocked_sources", JSONArray().apply { goal.blockedSources.forEach { put(encodeBlockedSource(it)) } })
-        .put("allocation_profile_name", goal.allocationProfileName ?: JSONObject.NULL)
-        .put("allocation_summary", goal.allocationSummary ?: JSONObject.NULL)
-        .put("last_allocation_reason", goal.lastAllocationReason ?: JSONObject.NULL)
-        .put("plan_revision", goal.planRevision)
-        .put("last_meaningful_progress_at", goal.lastMeaningfulProgressAt ?: JSONObject.NULL)
-        .put("no_progress_count", goal.noProgressCount)
-        .put("blocker_recovery_condition", goal.blockerRecoveryCondition ?: JSONObject.NULL)
-        .put("final_validation_result", goal.finalValidationResult ?: JSONObject.NULL)
-        .put("attempted_strategies", JSONArray(goal.attemptedStrategies))
-        .put("operation_fingerprints", JSONArray(goal.operationFingerprints))
-        .put("classified_failures", JSONArray(goal.classifiedFailures))
-        .put("lease_generation", goal.leaseGeneration)
-        .put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
+    private fun encodeGoal(goal: AgentGoal): JSONObject {
+        val json = JSONObject()
+        json.put("storage_version", STORAGE_VERSION)
+        json.put("id", goal.id)
+        json.put("execution_lease", goal.executionLease?.let(::encodeLease) ?: JSONObject.NULL)
+        json.put("conversation_id", goal.conversationId)
+        json.put("submission_id", goal.submissionId ?: JSONObject.NULL)
+        json.put("user_request", goal.userRequest)
+        json.put("title", goal.title)
+        json.put("objective", goal.objective)
+        json.put("final_output_description", goal.finalOutputDescription)
+        json.put("confirmed_constraints", JSONArray(goal.confirmedConstraints))
+        json.put("inferred_preferences", JSONArray(goal.inferredPreferences))
+        json.put("unresolved_questions", JSONArray(goal.unresolvedQuestions))
+        json.put("evidence_requirements", JSONArray(goal.evidenceRequirements))
+        json.put("preferred_source_types", JSONArray(goal.preferredSourceTypes))
+        json.put("freshness_requirement", goal.freshnessRequirement ?: JSONObject.NULL)
+        json.put("exclusions", JSONArray(goal.exclusions))
+        json.put("source_message_ids", JSONArray(goal.sourceMessageIds))
+        json.put("grounded_constraints", JSONArray().apply { goal.groundedConstraints.forEach { put(it.toJson()) } })
+        json.put("status", goal.status.name)
+        json.put("planner_model_id", goal.plannerModelId)
+        json.put("execution_model_id", goal.executionModelId)
+        json.put("routing_stage", goal.routingStage.name)
+        json.put("requested_model_profile_name", goal.requestedModelProfileName ?: JSONObject.NULL)
+        json.put("routing_policy_provenance", goal.routingPolicyProvenance.name)
+        json.put("free_only", goal.freeOnly)
+        json.put("tasks", JSONArray().apply { goal.tasks.forEach { put(encodeTask(it)) } })
+        json.put("acceptance_criteria", JSONArray().apply { goal.acceptanceCriteria.forEach { put(encodeCriterion(it)) } })
+        json.put("acceptance_checks", JSONArray().apply { goal.acceptanceChecks.forEach { put(encodeCheck(it)) } })
+        json.put("attempts", JSONArray().apply { goal.attempts.forEach { put(encodeAttempt(it)) } })
+        json.put("evidence", JSONArray().apply { goal.evidence.forEach { put(encodeEvidence(it)) } })
+        json.put("source_reads", JSONArray().apply { goal.sourceReads.forEach { put(encodeSourceRead(it)) } })
+        json.put("evidence_candidates", JSONArray().apply { goal.evidenceCandidates.forEach { put(encodeEvidenceCandidate(it)) } })
+        json.put("normalized_facts", JSONArray().apply { goal.normalizedFacts.forEach { put(encodeNormalizedFact(it)) } })
+        json.put("accepted_claims", JSONArray().apply { goal.acceptedClaims.forEach { put(encodeAcceptedClaim(it)) } })
+        json.put("claims", JSONArray().apply { goal.claims.forEach { put(encodeClaim(it)) } })
+        json.put("evidence_links", JSONArray().apply { goal.evidenceLinks.forEach { put(encodeEvidenceLink(it)) } })
+        json.put("checkpoints", JSONArray().apply { goal.checkpoints.forEach { put(encodeCheckpoint(it)) } })
+        json.put("concept_candidates", JSONArray().apply { goal.conceptCandidates.forEach { put(encodeConcept(it)) } })
+        json.put("refinements", JSONArray().apply { goal.refinements.forEach { put(it) } })
+        json.put("events", JSONArray().apply { goal.events.forEach { put(encodeEvent(it)) } })
+        json.put("model_cooldowns", JSONObject(goal.modelCooldowns))
+        json.put("created_at", goal.createdAt)
+        json.put("updated_at", goal.updatedAt)
+        json.put("total_tokens", goal.totalTokens)
+        json.put("verification_round", goal.verificationRound)
+        json.put("verification_correction_streak", goal.verificationCorrectionStreak)
+        json.put("total_cost_usd_micros", goal.totalCostUsdMicros)
+        json.put("result", goal.result ?: JSONObject.NULL)
+        json.put("error", goal.error ?: JSONObject.NULL)
+        json.put("blocked_reason", goal.blockedReason ?: JSONObject.NULL)
+        json.put("terminal_result_delivered", goal.terminalResultDelivered)
+        json.put("next_retry_at", goal.nextRetryAt ?: JSONObject.NULL)
+        json.put("network_wait_started_at", goal.networkWaitStartedAt ?: JSONObject.NULL)
+        json.put("network_retry_count", goal.networkRetryCount)
+        json.put("network_wait_reason", goal.networkWaitReason ?: JSONObject.NULL)
+        json.put("resume_status_after_network", goal.resumeStatusAfterNetwork?.name ?: JSONObject.NULL)
+        json.put("request_attempts", JSONArray().apply { goal.requestAttempts.forEach { put(encodeRequestAttempt(it)) } })
+        json.put("retry_authorizations", JSONArray().apply { goal.retryAuthorizations.forEach { put(encodeRetryAuthorization(it)) } })
+        json.put("idempotency_records", JSONArray().apply { goal.idempotencyRecords.forEach { put(encodeIdempotencyRecord(it)) } })
+        json.put("monitor_outbox", JSONArray().apply { goal.monitorOutbox.forEach { put(encodeMonitorOutbox(it)) } })
+        json.put("route_fingerprints", JSONArray().apply { goal.routeFingerprints.forEach { put(encodeRouteFingerprint(it)) } })
+        json.put("body_builder_claims", JSONArray().apply { goal.bodyBuilderClaims.forEach { put(encodeBodyBuilderClaim(it)) } })
+        json.put("quarantined_records", JSONArray().apply { goal.quarantinedRecords.forEach { put(encodeQuarantinedRecord(it)) } })
+        json.put("is_corrupt", goal.isCorrupt)
+        json.put("objective_contract", goal.objectiveContract?.let(::encodeObjectiveContract) ?: JSONObject.NULL)
+        json.put("resolved_research_request", goal.resolvedResearchRequest?.toJson() ?: JSONObject.NULL)
+        json.put("requires_user_clarification", goal.requiresUserClarification)
+        json.put("clarification_details", goal.clarificationDetails ?: JSONObject.NULL)
+        json.put("blocked_sources", JSONArray().apply { goal.blockedSources.forEach { put(encodeBlockedSource(it)) } })
+        json.put("allocation_profile_name", goal.allocationProfileName ?: JSONObject.NULL)
+        json.put("allocation_summary", goal.allocationSummary ?: JSONObject.NULL)
+        json.put("last_allocation_reason", goal.lastAllocationReason ?: JSONObject.NULL)
+        json.put("plan_revision", goal.planRevision)
+        json.put("last_meaningful_progress_at", goal.lastMeaningfulProgressAt ?: JSONObject.NULL)
+        json.put("no_progress_count", goal.noProgressCount)
+        json.put("blocker_recovery_condition", goal.blockerRecoveryCondition ?: JSONObject.NULL)
+        json.put("final_validation_result", goal.finalValidationResult ?: JSONObject.NULL)
+        json.put("attempted_strategies", JSONArray(goal.attemptedStrategies))
+        json.put("operation_fingerprints", JSONArray(goal.operationFingerprints))
+        json.put("classified_failures", JSONArray(goal.classifiedFailures))
+        json.put("lease_generation", goal.leaseGeneration)
+        json.put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
+        return json
+    }
 
     private fun decodeGoal(json: JSONObject): AgentGoal {
         val legacyCostUsd = json.optDouble("total_cost_usd", 0.0)
@@ -1237,6 +1273,7 @@ class AgentStore private constructor(
             bodyBuilderClaims = json.optJSONArray("body_builder_claims").decodeList(::decodeBodyBuilderClaim),
             quarantinedRecords = json.optJSONArray("quarantined_records").decodeList(::decodeQuarantinedRecord),
             isCorrupt = json.optBoolean("is_corrupt", false) || integrityFailure != null,
+            objectiveContract = json.optJSONObject("objective_contract")?.let(::decodeObjectiveContract),
             resolvedResearchRequest = ResolvedResearchRequest.fromJson(json.optJSONObject("resolved_research_request"))
                 ?: ResolvedResearchRequest.createFallbackSingleRequest(storedUserRequest),
             requiresUserClarification = json.optBoolean("requires_user_clarification", false),
@@ -1257,6 +1294,23 @@ class AgentStore private constructor(
             lastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() },
         )
     }
+
+    private fun encodeObjectiveContract(contract: ObjectiveContract): JSONObject = JSONObject()
+        .put("version", contract.version)
+        .put("primary_subject", contract.primarySubject)
+        .put("strong_anchors", JSONArray(contract.strongAnchors))
+        .put("temporal_context", contract.temporalContext ?: JSONObject.NULL)
+        .put("expected_deliverable_kind", contract.expectedDeliverableKind ?: JSONObject.NULL)
+        .put("domain_classification", contract.domainClassification)
+
+    private fun decodeObjectiveContract(json: JSONObject): ObjectiveContract = ObjectiveContract(
+        version = json.optInt("version", 1),
+        primarySubject = json.optString("primary_subject", "unknown"),
+        strongAnchors = json.optJSONArray("strong_anchors").toStringList(),
+        temporalContext = json.optNullableString("temporal_context"),
+        expectedDeliverableKind = json.optNullableString("expected_deliverable_kind"),
+        domainClassification = json.optString("domain_classification", "GENERAL"),
+    )
 
     private fun encodeTask(task: AgentTask): JSONObject = JSONObject()
         .put("id", task.id)
@@ -1459,39 +1513,42 @@ class AgentStore private constructor(
         .put("reconciliation_claimed_at", attempt.reconciliationClaimedAt ?: JSONObject.NULL)
         .put("safe_diagnostic_summary", attempt.safeDiagnosticSummary ?: JSONObject.NULL)
 
-    private fun decodeRequestAttempt(json: JSONObject): ProviderRequestAttempt = ProviderRequestAttempt(
-        exchangeId = json.getString("exchange_id"),
-        logicalRequestId = json.optString("logical_request_id", json.getString("exchange_id")), // fallback for old records
-        wireAttemptOrdinal = json.optInt("wire_attempt_ordinal", 1),
-        previousExchangeId = json.optNullableString("previous_exchange_id"),
-        providerResponseId = json.optNullableString("provider_response_id"),
-        transportStage = json.optEnum("transport_stage", ProviderTransportStage.NOT_DISPATCHED),
-        deliveryCertainty = json.optEnum("delivery_certainty", ProviderDeliveryCertainty.NOT_SENT),
-        parentOperationId = json.optString("parent_operation_id"),
-        goalId = json.optString("goal_id"),
-        taskId = json.optNullableString("task_id"),
-        executionGeneration = json.optInt("execution_generation", 0),
-        requestedModel = json.optString("requested_model"),
-        resolvedModel = json.optNullableString("resolved_model"),
-        role = json.optNullableString("role")?.let { runCatching { AgentTaskRole.valueOf(it) }.getOrNull() },
-        payloadFingerprint = json.optString("payload_fingerprint"),
-        exchangeOutcome = json.optEnum("exchange_outcome", ExchangeOutcome.INTERRUPTED_OUTCOME_UNKNOWN),
-        providerAccountingOutcome = json.optEnum("provider_accounting_outcome", ProviderAccountingOutcome.NOT_AVAILABLE),
-        domainCommitOutcome = json.optEnum("domain_commit_outcome", MissionDomainCommitOutcome.NOT_APPLICABLE),
-        usageSource = json.optNullableString("usage_source")?.let { runCatching { UsageSource.valueOf(it) }.getOrNull() },
-        promptTokens = json.optIntOrNull("prompt_tokens"),
-        completionTokens = json.optIntOrNull("completion_tokens"),
-        totalTokens = json.optIntOrNull("total_tokens"),
-        costUsd = json.optDoubleOrNull("cost_usd") ?: json.optLongOrNull("cost_usd_micros")?.let { it / 1_000_000.0 },
-        pricingModelId = json.optNullableString("pricing_model_id"),
-        httpStatusCode = json.optIntOrNull("http_status_code"),
-        failureClass = json.optNullableString("failure_class"),
-        startedAt = json.optLong("started_at"),
-        finishedAt = json.optLongOrNull("finished_at"),
-        reconciliationClaimOwner = json.optNullableString("reconciliation_claim_owner"),
-        reconciliationClaimedAt = json.optLongOrNull("reconciliation_claimed_at"),
-        safeDiagnosticSummary = json.optNullableString("safe_diagnostic_summary"),
-    )
+    private fun decodeRequestAttempt(json: JSONObject): ProviderRequestAttempt? {
+        val exchangeId = json.optNullableString("exchange_id") ?: return null
+        return ProviderRequestAttempt(
+            exchangeId = exchangeId,
+            logicalRequestId = json.optNullableString("logical_request_id") ?: exchangeId,
+            wireAttemptOrdinal = json.optInt("wire_attempt_ordinal", 1),
+            previousExchangeId = json.optNullableString("previous_exchange_id"),
+            providerResponseId = json.optNullableString("provider_response_id"),
+            transportStage = json.optEnum("transport_stage", ProviderTransportStage.NOT_DISPATCHED),
+            deliveryCertainty = json.optEnum("delivery_certainty", ProviderDeliveryCertainty.NOT_SENT),
+            parentOperationId = json.optNullableString("parent_operation_id") ?: "unknown",
+            goalId = json.optNullableString("goal_id") ?: "unknown",
+            taskId = json.optNullableString("task_id"),
+            executionGeneration = json.optInt("execution_generation", 0),
+            requestedModel = json.optNullableString("requested_model") ?: "unknown",
+            resolvedModel = json.optNullableString("resolved_model"),
+            role = json.optNullableString("role")?.let { runCatching { AgentTaskRole.valueOf(it) }.getOrNull() },
+            payloadFingerprint = json.optNullableString("payload_fingerprint") ?: "",
+            exchangeOutcome = json.optEnum("exchange_outcome", ExchangeOutcome.INTERRUPTED_OUTCOME_UNKNOWN),
+            providerAccountingOutcome = json.optEnum("provider_accounting_outcome", ProviderAccountingOutcome.NOT_AVAILABLE),
+            domainCommitOutcome = json.optEnum("domain_commit_outcome", MissionDomainCommitOutcome.NOT_APPLICABLE),
+            usageSource = json.optNullableString("usage_source")?.let { runCatching { UsageSource.valueOf(it) }.getOrNull() },
+            promptTokens = json.optIntOrNull("prompt_tokens"),
+            completionTokens = json.optIntOrNull("completion_tokens"),
+            totalTokens = json.optIntOrNull("total_tokens"),
+            costUsd = json.optDoubleOrNull("cost_usd") ?: json.optLongOrNull("cost_usd_micros")?.let { it / 1_000_000.0 },
+            pricingModelId = json.optNullableString("pricing_model_id"),
+            httpStatusCode = json.optIntOrNull("http_status_code"),
+            failureClass = json.optNullableString("failure_class"),
+            startedAt = json.optLong("started_at", 0L),
+            finishedAt = json.optLongOrNull("finished_at"),
+            reconciliationClaimOwner = json.optNullableString("reconciliation_claim_owner"),
+            reconciliationClaimedAt = json.optLongOrNull("reconciliation_claimed_at"),
+            safeDiagnosticSummary = json.optNullableString("safe_diagnostic_summary"),
+        )
+    }
 
     private fun encodeRetryAuthorization(auth: ProviderRetryAuthorization): JSONObject = JSONObject()
         .put("logical_request_id", auth.logicalRequestId)
@@ -2023,7 +2080,7 @@ class AgentStore private constructor(
         }
     }
 
-    private fun <T> JSONArray?.decodeList(decoder: (JSONObject) -> T): List<T> {
+    private fun <T : Any> JSONArray?.decodeList(decoder: (JSONObject) -> T?): List<T> {
         if (this == null) return emptyList()
         return buildList {
             for (index in 0 until length()) {
@@ -2052,7 +2109,7 @@ class AgentStore private constructor(
         private const val ATOMIC_BACKUP_SUFFIX = ".bak"
         private const val LEGACY_RECOVERY_FILE_NAME = "legacy_snapshot_recovery.txt"
         private const val CORRUPT_RECOVERY_SUFFIX = ".corrupt-recovery.txt"
-        private const val STORAGE_VERSION = 10
+        private const val STORAGE_VERSION = 11
         private val STORE_LOCK = Any()
 
         fun isTaskBoundOperation(operation: String): Boolean {

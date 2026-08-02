@@ -100,6 +100,35 @@ internal val RETAILER_AGGREGATOR_PATTERN = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+private val TOPIC_RELEVANCE_PATTERN = Regex(
+    "\\b(related to|relevant|regarding|about|discusses|mentions|subject|topic|domain|context|anchor|entity)\\b",
+)
+
+/**
+ * Separates topic relevance from source authority.
+ */
+internal fun computeTopicRelevanceScore(text: String, anchors: List<String>): Double {
+    if (anchors.isEmpty()) return 1.0
+    val lowerText = text.lowercase(Locale.US)
+    val matches = anchors.count { anchor -> lowerText.contains(anchor.lowercase(Locale.US)) }
+    return (matches.toDouble() / anchors.size).coerceIn(0.0, 1.0)
+}
+
+internal fun computeSourceAuthorityScore(url: String, content: String): Int {
+    var score = 50
+    val lowerUrl = url.lowercase(Locale.US)
+    val lowerContent = content.lowercase(Locale.US)
+    
+    if (GOVERNMENT_SOURCE_PATTERN.containsMatchIn(lowerUrl)) score += 40
+    if (PRIMARY_EVIDENCE_PATTERN.containsMatchIn(lowerContent)) score += 20
+    if (RETAILER_AGGREGATOR_PATTERN.containsMatchIn(lowerUrl)) score -= 30
+    
+    if (lowerUrl.contains("wikipedia.org")) score += 10
+    if (lowerUrl.contains("archive.org")) score += 15
+    
+    return score.coerceIn(0, 100)
+}
+
 /**
  * Classifies only planner-owned identity fields. Research instructions contain
  * shared protocol language (including "counterevidence") and therefore must
@@ -275,6 +304,16 @@ object ResearchQualityGate {
             if (factualClaimCount < minimumFactClaims) {
                 add("$label '${task.title}' produced $factualClaimCount structured factual claim(s); at least $minimumFactClaims are required. A real researcher extracts specific details, versions, dates, and measurements.")
             }
+
+            // Goal 6: Separate topic relevance from source authority
+            val anchors = goal?.objectiveContract?.strongAnchors.orEmpty()
+            if (anchors.isNotEmpty()) {
+                val relevance = computeTopicRelevanceScore(normalizedContent, anchors)
+                if (relevance < 0.2) {
+                    add("$label '${task.title}' lacks sufficient relevance to the mission's strong anchors ($anchors).")
+                }
+            }
+
             if (result.acceptanceChecks.any { it.status == AgentAcceptanceCheckStatus.FAIL }) {
                 add("$label '${task.title}' contains a failed acceptance check.")
             }

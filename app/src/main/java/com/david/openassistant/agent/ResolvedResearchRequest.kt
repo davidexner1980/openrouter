@@ -279,30 +279,17 @@ data class ResolvedResearchRequest(
             )
         }
 
-        private fun generateStrongAnchors(subject: String, resolvedText: String): List<String> {
+        private fun generateStrongAnchors(subject: String, @Suppress("UNUSED_PARAMETER") resolvedText: String): List<String> {
             val anchors = mutableListOf<String>()
             if (subject.isNotBlank()) {
                 anchors.add(subject)
                 subject.split(" ").filter { it.length > 3 }.forEach { anchors.add(it) }
             }
             
-            val lowerResolved = resolvedText.lowercase(Locale.US)
-            val specificKeywords = listOf("ilf", "recurve", "hunting", "3d archery", "dark matter", "condensate")
-            specificKeywords.forEach { keyword ->
-                if (lowerResolved.contains(keyword)) anchors.add(keyword)
-            }
-            
             return anchors.map { it.lowercase(Locale.US) }.distinct()
         }
 
         private fun deriveFallbackSubject(request: String): String {
-            val lowerRequest = request.lowercase(Locale.US)
-            
-            // Priority subjects mentioned in regressions
-            if (lowerRequest.contains("dark matter")) return "dark matter"
-            if (lowerRequest.contains("recurve")) return "recurve bow"
-            if (lowerRequest.contains("ilf")) return "modern ilf"
-            
             val commandStopWords = setOf(
                 "tell", "me", "everything", "you", "can", "own", "develop", "include", "your", "think", "might", "about", "provide", "show", "what", "is", "are", "was", "were", "the", "a", "an", "i", "want", "to", "research", "help", "decide", "look", "buy", "best", "take", "down", "actually", "more", "needs"
             )

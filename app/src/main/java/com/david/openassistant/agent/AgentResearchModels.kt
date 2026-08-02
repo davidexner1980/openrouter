@@ -65,6 +65,7 @@ data class AgentPlanDraft(
     val finalOutputDescription: String,
     val acceptanceCriteria: List<AgentAcceptanceCriterion>,
     val tasks: List<AgentTaskDraft>,
+    val objectiveContract: ObjectiveContract? = null,
 )
 
 data class AgentTaskDraft(

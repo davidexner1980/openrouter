@@ -190,31 +190,24 @@ internal fun requestAnchorTokens(request: String): List<String> {
 internal fun requestAnchorTokens(request: String, taskInstructions: List<String>): List<String> {
     val entities = extractEntities(request)
     
-    // Add specific high-value keywords that might not be capitalized
-    val highValueKeywords = setOf("recurve", "takedown", "archery", "hunting", "elevation", "ground", "datum", "dem")
-    
     val tokens = (listOf(request) + taskInstructions).joinToString(" ")
         .split(Regex("[^\\p{L}\\p{N}+#.-]+"))
         .asSequence()
         .map(String::trim)
         .filter { token ->
             val low = token.lowercase(Locale.US)
-            (token.length >= 2 && low !in RESEARCH_QUERY_STOP_WORDS && low !in BOILERPLATE_WORDS) || 
-                (low in highValueKeywords)
+            (token.length >= 3 && low !in RESEARCH_QUERY_STOP_WORDS && low !in BOILERPLATE_WORDS)
         }
         .distinctBy { it.lowercase(Locale.US) }
         .toMutableList()
 
-    // Prioritize entities and high-value keywords in the anchor
     val result = mutableListOf<String>()
-    result.addAll(entities.take(5))
-    result.addAll(tokens.filter { it.lowercase(Locale.US) in highValueKeywords }.take(3))
+    result.addAll(entities)
     result.addAll(tokens.filterNot { t -> 
-        val low = t.lowercase(Locale.US)
-        entities.any { it.equals(t, ignoreCase = true) } || low in highValueKeywords 
-    }.take(4))
+        entities.any { it.equals(t, ignoreCase = true) } 
+    })
     
-    return result.distinctBy { it.lowercase(Locale.US) }
+    return result.distinctBy { it.lowercase(Locale.US) }.take(10)
 }
 
 internal fun requestSpecificMaterialAnchorsRequest(
@@ -232,15 +225,26 @@ internal fun requestSpecificMaterialAnchorsRequest(
 internal fun adaptiveResearchStrategyAnchorsRequest(
     strategy: AdaptiveResearchStrategy,
     request: String,
+    anchors: List<String> = emptyList()
 ): Boolean {
     val queryText = strategy.queries.joinToString(" ") { it.query }
     if (requestSpecificMaterialAnchorsRequest(request, queryText, minimumMatches = 1)) return true
-    val lowerRequest = request.lowercase(Locale.US)
-    return strategy.queries.any { q ->
-        val lq = q.query.lowercase(Locale.US)
-        (lq.contains("recurve") || lq.contains("hunting") || lq.contains("bow") || lq.contains("grizzly") || lq.contains("satori") || lq.contains("sage") || lq.contains("visited") || lq.contains("spot") || lq.contains("3dep")) &&
-            (lowerRequest.contains("recurve") || lowerRequest.contains("bow") || lowerRequest.contains("hunting") || lowerRequest.contains("visited") || lowerRequest.contains("spot") || lowerRequest.contains("elevation"))
+    
+    if (anchors.isNotEmpty()) {
+        val lowerQueryText = queryText.lowercase(Locale.US)
+        if (anchors.any { anchor -> lowerQueryText.contains(anchor.lowercase(Locale.US)) }) return true
     }
+    
+    // V41: Loosen anchoring for branches that are explicitly designated as candidate selection
+    // or narrow-depth investigations where specific named entities are expected to take over.
+    val lowerTarget = strategy.decisionTarget.lowercase(Locale.US)
+    val lowerInterp = strategy.interpretation.lowercase(Locale.US)
+    if (lowerTarget.contains("candidate") || lowerInterp.contains("candidate") || 
+        lowerTarget.contains("named") || lowerInterp.contains("named")) {
+        return true
+    }
+    
+    return false
 }
 
 internal fun extractCompactAnchor(request: String): String {

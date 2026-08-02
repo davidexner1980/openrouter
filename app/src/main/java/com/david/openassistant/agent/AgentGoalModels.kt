@@ -4,6 +4,15 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.UUID
 
+data class ObjectiveContract(
+    val version: Int = 1,
+    val primarySubject: String,
+    val strongAnchors: List<String>,
+    val temporalContext: String?,
+    val expectedDeliverableKind: String?,
+    val domainClassification: String = "GENERAL",
+)
+
 data class AgentGoal(
     val id: String = UUID.randomUUID().toString(),
     val conversationId: String,
@@ -85,6 +94,7 @@ data class AgentGoal(
     val classifiedFailures: List<String> = emptyList(),
     val leaseGeneration: Int = 0,
     val lastResumeReason: ResumeReason? = null,
+    val objectiveContract: ObjectiveContract? = null,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)

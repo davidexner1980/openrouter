@@ -23,7 +23,6 @@ object HandoffMain {
             System.exit(1)
         } catch (e: Exception) {
             println("ERROR: Unexpected failure: ${e.message}")
-            e.printStackTrace()
             System.exit(1)
         }
     }
@@ -497,7 +496,6 @@ object HandoffMain {
             publishBundle(root, bundleDir)
         } catch (e: Exception) {
             println("ERROR: Supplement generation failed: ${e.message}")
-            if (e !is HandoffException) e.printStackTrace()
             throw if (e is HandoffException) e else HandoffException("Supplement failed: ${e.message}")
         }
     }
@@ -652,7 +650,6 @@ object HandoffMain {
             publishBundle(root, bundleDir)
         } catch (e: Exception) {
             println("ERROR: Generation failed: ${e.message}")
-            if (e !is HandoffException) e.printStackTrace()
             throw if (e is HandoffException) e else HandoffException("Generation failed: ${e.message}")
         }
     }
@@ -701,7 +698,6 @@ object HandoffMain {
             throw e
         } catch (e: Exception) {
             println("ERROR: Verification failed: ${e.message}")
-            e.printStackTrace()
             throw HandoffException("Verification crashed: ${e.message}")
         }
     }

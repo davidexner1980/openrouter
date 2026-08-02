@@ -12,6 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.fail
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -640,7 +641,8 @@ class Slice1LifecycleTest {
         val goal = createTestGoal()
         store.upsertGoal(goal)
 
-        // Enqueue two responses because 500 triggers internal retry
+        // Enqueue three responses because 500 triggers internal retry
+        server.enqueue(MockResponse.Builder().code(500).body("Internal Server Error").build())
         server.enqueue(MockResponse.Builder().code(500).body("Internal Server Error").build())
         server.enqueue(MockResponse.Builder().code(500).body("Internal Server Error").build())
 
@@ -1274,12 +1276,12 @@ class Slice1LifecycleTest {
         server.enqueue(MockResponse.Builder().code(200).body(validResponseBody).build())
 
         var inTaskExecution = false
-        var writeCountInTask = 0
+        val initialWriteCount = store.writeCount.get()
         store.setTestWriterInjection(object : AgentStore.GoalStateWriter {
             override fun write(goal: AgentGoal) {
                 if (inTaskExecution) {
-                    writeCountInTask++
-                    if (writeCountInTask == 2) { // 1st is ACTIVE, 2nd is Terminal
+                    val currentCount = store.writeCount.get()
+                    if (currentCount == initialWriteCount + 2) { // 1st is ACTIVE, 2nd is Terminal
                         throw IOException("Disk full during terminal write")
                     }
                 }
@@ -1293,13 +1295,27 @@ class Slice1LifecycleTest {
                 modelId = "openrouter/auto-beta",
                 goal = goal,
                 task = goal.tasks.first(),
-                requestContext = ctx
+                requestContext = ctx,
+                maxAttempts = 1
             )
         }
 
-        assertTrue(thrown.isFailure)
-        val cause = thrown.exceptionOrNull()
-        assertTrue("Expected TerminalPersistenceException, got $cause", cause is TerminalPersistenceException)
+        if (thrown.isSuccess) {
+            val success = thrown.getOrNull()
+            fail("executeTask should have failed, but returned: $success (content=${success?.content})")
+        }
+        
+        val error = thrown.exceptionOrNull()
+        val cause = if (error is OpenRouterException) error.cause else error
+        
+        if (cause !is TerminalPersistenceException) {
+            println("FAILURE: Expected TerminalPersistenceException, but got ${cause?.javaClass?.name}: $cause")
+            if (cause is OpenRouterException) {
+                println("  OpenRouterException cause: ${cause.cause}")
+            }
+            fail("Expected TerminalPersistenceException, got $cause")
+        }
+        
         assertEquals("StorageFailure", (cause as TerminalPersistenceException).storeFailure)
 
         store.setTestWriterInjection(null)
@@ -1381,7 +1397,7 @@ class Slice1LifecycleTest {
             )).toString()
         server.enqueue(MockResponse.Builder().code(200).body(successBody).build())
         
-        runCatching {
+        val result = runCatching {
             client.executeTask(
                 apiKey = "sk-or-test",
                 modelId = "openrouter/auto-beta",
@@ -1390,6 +1406,12 @@ class Slice1LifecycleTest {
                 requestContext = ctx
             )
         }
+        
+        if (result.isFailure) {
+            fail("executeTask failed unexpectedly: ${result.exceptionOrNull()}. Server request count: ${server.requestCount}")
+        }
+
+        assertEquals("MockWebServer should have received 2 requests", 2, server.requestCount)
 
         val reloaded = store.loadSnapshot().goals.first { it.id == goal.id }
         val attempts = reloaded.requestAttempts.filter { it.parentOperationId == parentOpId }
@@ -1670,7 +1692,7 @@ class Slice1LifecycleTest {
 
         // Test missing exchange
         val missingExResult = store.transitionExchangeOutcome(goalId, "non-existent-ex", ExchangeOutcome.RESPONSE_SUCCESS, ctx)
-        assertEquals(TransitionOutcomeResult.ExchangeMissing, missingExResult)
+        assertTrue(missingExResult is TransitionOutcomeResult.ExchangeMissing)
 
         // Test missing goal
         val missingGoalResult = store.transitionExchangeOutcome("non-existent-goal", "ex-1", ExchangeOutcome.RESPONSE_SUCCESS, ctx)

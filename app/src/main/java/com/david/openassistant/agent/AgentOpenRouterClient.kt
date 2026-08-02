@@ -395,7 +395,7 @@ class AgentOpenRouterClient internal constructor(
 ) {
     private val missionClient: OkHttpClient = client.newBuilder()
         .retryOnConnectionFailure(false)
-        .eventListenerFactory { TransportEventListener() }
+        .eventListenerFactory { TransportEventListener(store) }
         .build()
 
     internal class TransportTracker {
@@ -403,29 +403,49 @@ class AgentOpenRouterClient internal constructor(
         @Volatile var certainty = ProviderDeliveryCertainty.NOT_SENT
     }
 
-    internal class TransportEventListener : okhttp3.EventListener() {
+    internal class TransportEventListener(private val store: AgentStore?) : okhttp3.EventListener() {
+        private fun update(call: okhttp3.Call, tracker: TransportTracker) {
+            val goalId = call.request().header("X-OA-Goal-ID") ?: return
+            val exchangeId = call.request().header("X-OA-Exchange-ID") ?: return
+            store?.updateProviderTransportStage(goalId, exchangeId, tracker.stage, tracker.certainty)
+        }
+
         override fun connectStart(call: okhttp3.Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy) {
-            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.CONNECTING
+            call.request().tag(TransportTracker::class.java)?.let {
+                it.stage = ProviderTransportStage.CONNECTING
+                update(call, it)
+            }
         }
         override fun requestHeadersStart(call: okhttp3.Call) {
-            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.REQUEST_HEADERS_SENT
+            call.request().tag(TransportTracker::class.java)?.let {
+                it.stage = ProviderTransportStage.REQUEST_HEADERS_SENT
+                update(call, it)
+            }
         }
         override fun requestBodyStart(call: okhttp3.Call) {
             call.request().tag(TransportTracker::class.java)?.let {
                 it.stage = ProviderTransportStage.REQUEST_BODY_STARTED
                 it.certainty = ProviderDeliveryCertainty.SENT_UNCONFIRMED
+                update(call, it)
             }
         }
         override fun requestBodyEnd(call: okhttp3.Call, byteCount: Long) {
-            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.REQUEST_BODY_COMPLETE
+            call.request().tag(TransportTracker::class.java)?.let {
+                it.stage = ProviderTransportStage.REQUEST_BODY_COMPLETE
+                update(call, it)
+            }
         }
         override fun responseHeadersStart(call: okhttp3.Call) {
-            call.request().tag(TransportTracker::class.java)?.stage = ProviderTransportStage.RESPONSE_HEADERS_RECEIVED
+            call.request().tag(TransportTracker::class.java)?.let {
+                it.stage = ProviderTransportStage.RESPONSE_HEADERS_RECEIVED
+                update(call, it)
+            }
         }
         override fun responseHeadersEnd(call: okhttp3.Call, response: okhttp3.Response) {
             call.request().tag(TransportTracker::class.java)?.let {
                 it.stage = ProviderTransportStage.RESPONSE_BODY_READING
                 it.certainty = ProviderDeliveryCertainty.RESPONSE_CONFIRMED
+                update(call, it)
             }
         }
     }
@@ -797,7 +817,21 @@ class AgentOpenRouterClient internal constructor(
             draft = boundEvidenceContingentPlanCriteria(parsedDraft),
             policy = researchPolicy,
         )
-        return draft to accountedResponse.summary
+        
+        // V41: Populate ObjectiveContract during planning
+        val contract = ObjectiveContract(
+            version = 1,
+            primarySubject = draft.title,
+            strongAnchors = requestAnchorTokens(goal.userRequest, draft.tasks.map { it.instructions }),
+            temporalContext = draft.tasks.firstOrNull { it.capability == AgentCapability.REASON }?.instructions?.take(500),
+            expectedDeliverableKind = draft.finalOutputDescription.take(500),
+            domainClassification = "GENERAL" // Could be refined by a model call
+        )
+
+        return (draft to accountedResponse.summary).let { (d, s) ->
+            // Note: contract is returned as part of the result in V41
+            d.copy(objectiveContract = contract) to s
+        }
     }
 
     private fun recordPlanTailRecovery(
@@ -922,6 +956,7 @@ class AgentOpenRouterClient internal constructor(
         requestContext: ProviderRequestContext.Mission,
         onProgress: (AgentSourceCitation) -> Unit = {},
         models: List<com.david.openassistant.data.openrouter.OpenRouterModel> = emptyList(),
+        maxAttempts: Int = 3,
     ): AgentStepResult {
         val generation = requestContext.executionGeneration
         val contextLimit = models.firstOrNull { it.id == modelId }?.contextLength ?: 128_000
@@ -1230,7 +1265,8 @@ class AgentOpenRouterClient internal constructor(
                     generation = generation,
                     onProgress = onProgress,
                     requestContext = requestContext,
-                    goal = goal
+                    goal = goal,
+                    maxAttempts = maxAttempts
                 )
             } else {
                 executeStructuredWithFallback(
@@ -1240,13 +1276,11 @@ class AgentOpenRouterClient internal constructor(
                     plainPayload = configuredPayload(null),
                     generation = generation,
                     requestContext = requestContext,
+                    maxAttempts = maxAttempts
                 )
             }
         } catch (error: Throwable) {
-            // The deterministic bootstrap can include one or more successful
-            // provider strategy calls before the milestone continuation fails.
-            // Preserve real retrieved evidence as a checkpoint when possible;
-            // otherwise carry already-consumed usage on the thrown operation.
+            // println("DEBUG: executeTask caught error: $error (type=${error.javaClass.name})")
             buildResearchBootstrapFailureCheckpoint(error, researchBootstrap)
                 ?: throw error.withAgentUsage(researchBootstrap.summary)
         }
@@ -2375,7 +2409,7 @@ class AgentOpenRouterClient internal constructor(
                     requestAnchorTokens(goal.userRequest).count { anchor -> text.contains(anchor) } > 0
                 }.thenByDescending { source ->
                     val text = "${source.title} ${source.url} ${source.excerpt}".lowercase(Locale.US)
-                    computeDomainAuthorityScore(source.url, text)
+                    computeSourceAuthorityScore(source.url, text)
                 }.thenByDescending { source ->
                     val text = "${source.title} ${source.url} ${source.excerpt}".lowercase(Locale.US)
                     requestAnchorTokens(goal.userRequest).count { anchor -> text.contains(anchor) }
@@ -3025,7 +3059,7 @@ class AgentOpenRouterClient internal constructor(
         }.getOrNull()
         if (
             firstStrategy != null &&
-            adaptiveResearchStrategyAnchorsRequest(firstStrategy, goal.userRequest)
+            adaptiveResearchStrategyAnchorsRequest(firstStrategy, goal.userRequest, goal.objectiveContract?.strongAnchors.orEmpty())
         ) {
             return firstStrategy to firstResponse
         }
@@ -3064,7 +3098,7 @@ class AgentOpenRouterClient internal constructor(
             role = role,
             minimumQueries = queryCount,
         ) to repaired.copy(summary = combinedSummary)
-        if (!adaptiveResearchStrategyAnchorsRequest(strategy, goal.userRequest)) {
+        if (!adaptiveResearchStrategyAnchorsRequest(strategy, goal.userRequest, goal.objectiveContract?.strongAnchors.orEmpty())) {
             return buildRequestSpecificStrategyFallback(
                 goal = goal,
                 task = task,
@@ -3175,27 +3209,15 @@ class AgentOpenRouterClient internal constructor(
         val normalizedQuery = query.lowercase(Locale.US)
         val context = "${goal.userRequest} ${goal.title} ${goal.objective}".lowercase(Locale.US)
         
-        // Identify common ambiguous terms that often need disambiguation
-        val ambiguousTerms = mapOf(
-            "sage" to setOf("archery", "bow"),
-            "spyder" to setOf("archery", "bow"),
-            "hunter" to setOf("archery", "bow", "hunting"),
-            "takedown" to setOf("archery", "bow"),
-            "recurve" to setOf("archery", "bow"),
-            "compound" to setOf("archery", "bow"),
-            "mercury" to setOf("planet", "element", "outboard"),
-            "delta" to setOf("airline", "river", "math"),
-            "python" to setOf("programming", "language", "snake"),
-        )
+        val contract = goal.objectiveContract ?: return query
+        val requiredContext = contract.strongAnchors
         
-        val foundAmbiguousTerm = ambiguousTerms.keys.firstOrNull { it in normalizedQuery } ?: return query
-        val requiredContext = ambiguousTerms[foundAmbiguousTerm] ?: return query
+        if (requiredContext.isEmpty()) return query
         
-        val contextMissing = requiredContext.none { it in normalizedQuery }
-        val contextAvailable = requiredContext.any { it in context }
+        val contextMissing = requiredContext.none { it.lowercase(Locale.US) in normalizedQuery }
         
-        if (contextMissing && contextAvailable) {
-            val disambiguator = requiredContext.firstOrNull { it in context } ?: requiredContext.first()
+        if (contextMissing) {
+            val disambiguator = requiredContext.first()
             return "$query $disambiguator"
         }
         
@@ -3447,14 +3469,15 @@ class AgentOpenRouterClient internal constructor(
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
-    ): RawAgentResponse = runCatching { executeToolCompatibilityLadder(apiKey, strictPayload, generation, onProgress, requestContext, goal) }
+        maxAttempts: Int = 3,
+    ): RawAgentResponse = runCatching { executeToolCompatibilityLadder(apiKey, strictPayload, generation, onProgress, requestContext, goal, maxAttempts) }
         .recoverCatching { strictError ->
             if (!strictError.isStructuredOutputUnsupported()) throw strictError
-            executeToolCompatibilityLadder(apiKey, jsonModePayload, generation, onProgress, requestContext, goal)
+            executeToolCompatibilityLadder(apiKey, jsonModePayload, generation, onProgress, requestContext, goal, maxAttempts)
         }
         .recoverCatching { jsonModeError ->
             if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
-            executeToolCompatibilityLadder(apiKey, plainPayload, generation, onProgress, requestContext, goal)
+            executeToolCompatibilityLadder(apiKey, plainPayload, generation, onProgress, requestContext, goal, maxAttempts)
         }
         .getOrThrow()
 
@@ -3472,12 +3495,13 @@ class AgentOpenRouterClient internal constructor(
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
+        maxAttempts: Int = 3,
     ): RawAgentResponse {
         val candidates = originalPayload.researchToolCompatibilityCandidates()
         var lastError: Throwable? = null
         candidates.forEachIndexed { index, candidate ->
             try {
-                val response = executeToolAwareWithChoiceFallback(apiKey, candidate.payload, generation, onProgress, requestContext, goal)
+                val response = executeToolAwareWithChoiceFallback(apiKey, candidate.payload, generation, onProgress, requestContext, goal, maxAttempts)
                 if (index == 0) return response
                 return response.copy(
                     toolExecutions = listOf(
@@ -3511,7 +3535,8 @@ class AgentOpenRouterClient internal constructor(
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
-    ): RawAgentResponse = runCatching { executeToolAwareJsonRequest(apiKey, payload, generation, onProgress, requestContext, goal) }
+        maxAttempts: Int = 3,
+    ): RawAgentResponse = runCatching { executeToolAwareJsonRequest(apiKey, payload, generation, onProgress, requestContext, goal, maxAttempts) }
         .recoverCatching { error ->
             if (!payload.has("tool_choice") || !error.isToolChoiceCompatibilityError()) throw error
             executeToolAwareJsonRequest(
@@ -3520,7 +3545,8 @@ class AgentOpenRouterClient internal constructor(
                 generation,
                 onProgress,
                 requestContext,
-                goal
+                goal,
+                maxAttempts
             )
         }
         .getOrThrow()
@@ -3593,8 +3619,9 @@ class AgentOpenRouterClient internal constructor(
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
+        maxAttempts: Int = 3,
     ): RawAgentResponse {
-        val runtime = toolRuntime ?: return executeJsonRequest(apiKey, originalPayload, generation, requestContext)
+        val runtime = toolRuntime ?: return executeJsonRequest(apiKey, originalPayload, generation, requestContext, maxAttempts)
         val guardedModelId = goal?.let { AgentRoutingPolicy.guardModel(it, originalPayload.optString("model")) }
             ?: originalPayload.optString("model")
         
@@ -4075,6 +4102,7 @@ class AgentOpenRouterClient internal constructor(
         error: Throwable,
         bootstrap: ResearchBootstrap,
     ): RawAgentResponse? {
+        if (error is TerminalPersistenceException || error is CancellationException) return null
         val hasRetrievedWebEvidence = bootstrap.sources.size >= 2 && bootstrap.executions.any {
             it.succeeded && it.toolName in RESEARCH_AUDIT_TOOL_NAMES
         }
@@ -4225,25 +4253,88 @@ class AgentOpenRouterClient internal constructor(
         plainPayload: JSONObject,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
-    ): RawAgentResponse = runCatching { executeJsonRequest(apiKey, strictPayload, generation, requestContext) }
-        .recoverCatching { strictError ->
-            if (!strictError.isStructuredOutputUnsupported()) throw strictError
-            executeJsonRequest(apiKey, jsonModePayload, generation, requestContext)
+        maxAttempts: Int = 3,
+    ): RawAgentResponse {
+        var response = runCatching { executeJsonRequest(apiKey, strictPayload, generation, requestContext, maxAttempts) }
+            .recoverCatching { strictError ->
+                if (strictError is TerminalPersistenceException || strictError is CancellationException) throw strictError
+                if (!strictError.isStructuredOutputUnsupported()) throw strictError
+                executeJsonRequest(apiKey, jsonModePayload, generation, requestContext, maxAttempts)
+            }
+            .recoverCatching { jsonModeError ->
+                if (jsonModeError is TerminalPersistenceException || jsonModeError is CancellationException) throw jsonModeError
+                if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
+                executeJsonRequest(apiKey, plainPayload, generation, requestContext, maxAttempts)
+            }
+            .getOrThrow()
+
+        if (response.summary.finishReason == "length") {
+            response = handleLengthFinishRecovery(apiKey, response, generation, requestContext)
         }
-        .recoverCatching { jsonModeError ->
-            if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
-            executeJsonRequest(apiKey, plainPayload, generation, requestContext)
+        return response
+    }
+
+    private suspend fun handleLengthFinishRecovery(
+        apiKey: String,
+        original: RawAgentResponse,
+        generation: Int,
+        requestContext: ProviderRequestContext.Mission,
+    ): RawAgentResponse {
+        val isPotentiallyUsable = original.content.trim().endsWith("}") || original.content.contains("\"work_product\":")
+        if (isPotentiallyUsable) {
+            val root = runCatching { JSONObject(original.content) }.getOrNull()
+            if (root != null && root.has("work_product") && root.has("claims")) {
+                 return original
+            }
         }
-        .getOrThrow()
+
+        val prompt = buildString {
+            appendLine("The previous response was truncated due to output length limits.")
+            appendLine("Continue the structured response EXACTLY where it left off. Do not repeat the preamble or already completed fields.")
+            appendLine("Ensure all remaining required fields (especially 'claims' and 'unresolved_questions') are complete and valid JSON.")
+            appendLine()
+            appendLine("TRUNCATED CONTENT:")
+            appendLine(original.content.takeLast(2000))
+        }
+        
+        val payload = basePayload(
+            modelId = original.summary.resolvedModel ?: AUTO_BETA_ROUTER_MODEL_ID,
+            systemPrompt = "You are continuing a truncated structured response.",
+            userPrompt = prompt,
+            role = requestContext.role,
+            selectionReason = "length_continuation",
+            freeOnly = false
+        )
+        
+        return try {
+            val continuation = executeJsonRequest(
+                apiKey = apiKey,
+                payload = payload,
+                generation = generation,
+                requestContext = requestContext.forChildOperation(
+                    MissionOperation.LENGTH_CONTINUATION,
+                    requestContext.role ?: AgentTaskRole.PRIMARY_REASONING,
+                    taskId = requestContext.taskId
+                )
+            )
+            original.copy(
+                content = original.content + continuation.content,
+                summary = original.summary.merge(continuation.summary)
+            )
+        } catch (e: Exception) {
+            original
+        }
+    }
 
     private suspend fun executeJsonRequest(
         apiKey: String,
         payload: JSONObject,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
+        maxAttempts: Int = 3,
     ): RawAgentResponse {
         val startedAt = System.currentTimeMillis()
-        val (body, statusCode, exchangeId) = executeCapturedOpenRouterBody(apiKey, payload, "agent_structured_chat", generation, requestContext)
+        val (body, statusCode, exchangeId) = executeCapturedOpenRouterBody(apiKey, payload, "agent_structured_chat", generation, requestContext, maxAttempts)
         return parseResponse(body, apiKey, payload, statusCode, System.currentTimeMillis() - startedAt, exchangeId)
     }
 
@@ -4297,6 +4388,7 @@ class AgentOpenRouterClient internal constructor(
                 }
             }
             is TransitionOutcomeResult.StorageFailure -> {
+                println("DEBUG: handleTerminalTransition throwing StorageFailure for exchange $exchangeId: ${result.cause}")
                 throw TerminalPersistenceException(
                     goalId = requestContext.goalId,
                     taskId = requestContext.taskId,
@@ -4329,7 +4421,7 @@ class AgentOpenRouterClient internal constructor(
                     operation = requestContext.operation.operationName,
                     intendedOutcome = resolution.outcome,
                     storeFailure = "ExchangeMissing",
-                    safeReason = "Exchange $exchangeId not found in goal",
+                    safeReason = result.message,
                 )
             }
             is TransitionOutcomeResult.InvalidGeneration -> {
@@ -4365,12 +4457,12 @@ class AgentOpenRouterClient internal constructor(
         operation: String,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
+        maxAttempts: Int = 3
     ): Triple<String, Int, String> {
         val parentOperationId = requestContext.parentOperationId
         val logicalRequestId = parentOperationId // For V39: stable logical request ID
         var payload = initialPayload
         var attempt = 0
-        val maxAttempts = 2
         var previousExchangeId: String? = null
 
         while (attempt < maxAttempts) {
@@ -4549,6 +4641,8 @@ class AgentOpenRouterClient internal constructor(
                     .header("Accept", "application/json")
                     .header("X-OpenRouter-Title", "OpenAssistant Android")
                     .header("X-OpenRouter-Metadata", "enabled")
+                    .header("X-OA-Goal-ID", requestContext.goalId)
+                    .header("X-OA-Exchange-ID", exchangeId)
                     .header("User-Agent", "OpenAssistant-Android/${BuildConfig.VERSION_NAME}")
                     .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
                     .tag(TransportTracker::class.java, tracker)
@@ -4619,7 +4713,8 @@ class AgentOpenRouterClient internal constructor(
                 
                 if (responseBody != null) return responseBody
             } catch (error: Throwable) {
-                if (error is TerminalPersistenceException) {
+                // println("DEBUG: executeCapturedOpenRouterBody caught error: $error")
+                if (error is TerminalPersistenceException || error is CancellationException) {
                     throw error
                 }
                 val targetSessionId = currentSessionId ?: researchMonitor?.status()?.sessionId
@@ -4669,11 +4764,13 @@ class AgentOpenRouterClient internal constructor(
                     throw error
                 }
 
-                // Selective internal retry: only on transport/socket errors or 429/5xx.
-                // Application-level 4xx (like 422) should throw to the fallback ladder.
-                val isRetryable = when (error) {
-                    is OpenRouterException -> error.statusCode?.let { it == 429 || it >= 500 } == true
-                    is IOException -> true
+                // Selective internal retry: deterministic matrix
+                // No automatic replay after body start or response headers.
+                val isRetryable = when {
+                    isCancelled -> false
+                    error is OpenRouterException -> error.statusCode?.let { it == 429 || it >= 500 } == true
+                    tracker.stage >= ProviderTransportStage.REQUEST_BODY_STARTED -> false
+                    error is IOException -> true
                     else -> false
                 }
                 

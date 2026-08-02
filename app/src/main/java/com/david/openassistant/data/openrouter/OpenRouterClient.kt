@@ -283,7 +283,6 @@ class OpenRouterClient(
                             "duration_ms" to (System.currentTimeMillis() - startedAt),
                             "error_type" to e::class.java.name,
                             "error_message" to e.message.orEmpty(),
-                            "stack_trace" to e.stackTraceToString(),
                         ),
                     )
                     listener.onError(
@@ -620,7 +619,6 @@ class OpenRouterClient(
                         "duration_ms" to (System.currentTimeMillis() - startedAt),
                         "error_type" to error::class.java.name,
                         "error_message" to error.message.orEmpty(),
-                        "stack_trace" to error.stackTraceToString(),
                     ),
                 )
             }
@@ -800,6 +798,7 @@ enum class OpenRouterFailureClass {
 class OpenRouterException(
     val statusCode: Int?,
     val userMessage: String,
+    cause: Throwable? = null,
     val role: com.david.openassistant.agent.AgentTaskRole? = null,
     val selectionReason: String? = null,
     val previousRoute: String? = null,
@@ -819,4 +818,4 @@ class OpenRouterException(
     val repairedPayloadFingerprint: String? = null,
     val repairApplied: String? = null,
     val repairRetryCount: Int? = null,
-) : IOException(userMessage)
+) : IOException(userMessage, cause)
