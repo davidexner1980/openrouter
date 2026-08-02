@@ -17,7 +17,7 @@ import com.david.openassistant.agent.hasExhaustedEvidenceBoundedAttemptWindow
 import com.david.openassistant.agent.hasExhaustedRequiredToolAttemptWindow
 import com.david.openassistant.agent.hasExhaustedResearchAttemptWindow
 import com.david.openassistant.agent.AgentExecutionLease
-import com.david.openassistant.agent.ExecutionOwnership
+import com.david.openassistant.agent.TaskExecutionTicket
 import com.david.openassistant.agent.canCommitMilestoneResult
 import com.david.openassistant.agent.localAttemptWindowLimit
 import com.david.openassistant.agent.milestoneBoundaryInstruction
@@ -293,6 +293,7 @@ class AgentExecutionRecoveryTest {
             attempts = listOf(runningAttempt),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "test-session",
                 taskId = runningTask.id,
                 attemptId = "lease-attempt-1",
                 generation = 1,
@@ -300,14 +301,17 @@ class AgentExecutionRecoveryTest {
                 heartbeatAt = 1L,
             )
         )
-        val defaultOwnership = ExecutionOwnership(
-            workerId = "w1",
-            leaseAttemptId = "lease-attempt-1",
-            executionGeneration = 1,
-            taskId = runningTask.id,
+        val ticket = TaskExecutionTicket(
+            activeGoal.id,
+            runningTask.id,
+            "w1",
+            "test-session",
+            1,
+            "lease-attempt-1",
+            1L
         )
 
-        assertTrue(canCommitMilestoneResult(activeGoal, runningTask.id, runningAttempt.id, defaultOwnership))
+        assertTrue(canCommitMilestoneResult(activeGoal, runningTask.id, runningAttempt.id, ticket))
         assertFalse(
             canCommitMilestoneResult(
                 activeGoal.copy(
@@ -315,7 +319,7 @@ class AgentExecutionRecoveryTest {
                 ),
                 runningTask.id,
                 runningAttempt.id,
-                defaultOwnership,
+                ticket,
             ),
         )
         assertFalse(
@@ -325,7 +329,7 @@ class AgentExecutionRecoveryTest {
                 ),
                 runningTask.id,
                 runningAttempt.id,
-                defaultOwnership,
+                ticket,
             ),
         )
         assertFalse(
@@ -333,7 +337,7 @@ class AgentExecutionRecoveryTest {
                 activeGoal.copy(status = AgentGoalStatus.CANCELLED),
                 runningTask.id,
                 runningAttempt.id,
-                defaultOwnership,
+                ticket,
             ),
         )
     }

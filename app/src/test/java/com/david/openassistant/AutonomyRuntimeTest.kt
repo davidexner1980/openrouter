@@ -461,7 +461,7 @@ class AutonomyRuntimeTest {
             claims = listOf(factClaim(task.id, "https://example.com/a")),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("at least 3") })
@@ -480,7 +480,7 @@ class AutonomyRuntimeTest {
             summary = AgentApiSummary(),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("too little publication-ready analysis") })
@@ -537,7 +537,7 @@ class AutonomyRuntimeTest {
             ),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertTrue(decision.reasons.joinToString(), decision.passed)
     }
@@ -572,7 +572,7 @@ class AutonomyRuntimeTest {
             ),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("must pass every acceptance criterion") })
@@ -596,7 +596,7 @@ class AutonomyRuntimeTest {
             ),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("too little publication-ready analysis") })
@@ -623,7 +623,7 @@ class AutonomyRuntimeTest {
             toolExecutions = fullSourceReadExecutions(),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertEquals(ResearchPassRole.DISCOVERY, researchPassRole(task))
         assertTrue(decision.reasons.joinToString(), decision.passed)
@@ -653,7 +653,7 @@ class AutonomyRuntimeTest {
             toolExecutions = fullSourceReadExecutions(),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertTrue(decision.reasons.joinToString(), decision.passed)
     }

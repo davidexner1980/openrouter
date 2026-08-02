@@ -24,7 +24,7 @@ internal fun recoverResearchAssessment(
     if (!providerOmittedAssessment && !metadataWasRepaired) return result
     if (task.acceptanceCriteria.any { !it.description.isRecoverableResearchCriterion() }) return result
 
-    val deterministicDecision = ResearchQualityGate.evaluateStep(task, result, policy)
+    val deterministicDecision = ResearchQualityGate.evaluateStep(task, result, null, policy)
     if (!deterministicDecision.passed) return result
 
     val sourceUrls = result.sources.map { it.url }.distinct()

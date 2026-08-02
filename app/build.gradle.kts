@@ -1,3 +1,7 @@
+import java.util.Date
+import java.util.TimeZone
+import java.text.SimpleDateFormat
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -17,13 +21,25 @@ android {
         versionName = "1.8.33"
 
         val gitSha = try {
-            val process = Runtime.getRuntime().exec("git rev-parse HEAD", null, projectDir)
-            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-            if (process.waitFor() == 0) output else "unknown"
+            val process = Runtime.getRuntime().exec("git rev-parse HEAD")
+            process.inputStream.bufferedReader().use { it.readText() }.trim()
         } catch (e: Exception) {
-            "unknown"
+            "UNKNOWN"
         }
+        val sourceDirty = try {
+            val process = Runtime.getRuntime().exec("git status --porcelain")
+            process.inputStream.bufferedReader().use { it.readText() }.trim().isNotBlank()
+        } catch (e: Exception) {
+            true
+        }
+        val df = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'")
+        df.timeZone = TimeZone.getTimeZone("UTC")
+        val buildTimestamp = df.format(Date())
+
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("boolean", "SOURCE_DIRTY", "$sourceDirty")
+        buildConfigField("String", "BUILD_TIMESTAMP_UTC", "\"$buildTimestamp\"")
+        buildConfigField("int", "DIAGNOSTIC_SCHEMA_VERSION", "37")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

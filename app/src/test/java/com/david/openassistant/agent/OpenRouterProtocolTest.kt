@@ -88,6 +88,7 @@ class OpenRouterProtocolTest {
             val now = System.currentTimeMillis()
             val lease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "session-1",
                 taskId = "none",
                 attemptId = "a1",
                 generation = 0,
@@ -114,6 +115,7 @@ class OpenRouterProtocolTest {
                 workerId = "w1",
                 attemptId = "a1",
                 executionGeneration = 0,
+                acquiredAt = System.currentTimeMillis(),
                 operation = MissionOperation.CREATE_PLAN,
                 parentOperationId = "op-test-1",
             )
@@ -218,6 +220,7 @@ class OpenRouterProtocolTest {
             val now = System.currentTimeMillis()
             val lease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "session-1",
                 taskId = "none",
                 attemptId = "a1",
                 generation = 0,
@@ -252,6 +255,7 @@ class OpenRouterProtocolTest {
                 workerId = "w1",
                 attemptId = "a1",
                 executionGeneration = 0,
+                acquiredAt = System.currentTimeMillis(),
                 operation = MissionOperation.CREATE_PLAN,
                 parentOperationId = "op-test-2",
             )

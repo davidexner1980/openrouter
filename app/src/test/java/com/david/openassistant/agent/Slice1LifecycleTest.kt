@@ -74,7 +74,7 @@ class Slice1LifecycleTest {
         
         val prefs = createFakePrefs()
         val monitor = ResearchMonitor(prefs, monitorDir, tempFolder.newFolder("cache"))
-        diagnostics = RuntimeDiagnostics(diagDir, monitor)
+        diagnostics = RuntimeDiagnostics(null, diagDir, monitor)
 
         client = AgentOpenRouterClient(
             client = okHttpClient,
@@ -158,6 +158,7 @@ class Slice1LifecycleTest {
     ): AgentGoal {
         val lease = AgentExecutionLease(
             workerId = workerId,
+            ownerProcessSessionId = "session-1",
             taskId = taskId,
             attemptId = attemptId,
             generation = generation,
@@ -201,6 +202,7 @@ class Slice1LifecycleTest {
             taskId = if (operation.taskBound) (lease?.taskId ?: "t1") else null,
             attemptId = lease?.attemptId ?: "default-attempt",
             executionGeneration = lease?.generation ?: 1,
+            acquiredAt = lease?.acquiredAt ?: System.currentTimeMillis(),
             role = role,
             operation = operation,
             parentOperationId = parentOpId,
@@ -886,6 +888,7 @@ class Slice1LifecycleTest {
             current.copy(
                 executionLease = AgentExecutionLease(
                     workerId = workerId,
+                    ownerProcessSessionId = "session-1",
                     taskId = "none",
                     attemptId = leaseAttemptId,
                     generation = 1,
@@ -895,12 +898,22 @@ class Slice1LifecycleTest {
             )
         }
 
-        val leasedGoal = store.loadSnapshot().goals.first { it.id == unleasedGoal.id }
-        assertEquals(workerId, leasedGoal.executionLease?.workerId)
+        val acquisition = store.acquirePlanningLeaseAtomic(unleasedGoal.id, workerId)
+        val ticket = when (acquisition) {
+            is LeaseAcquisitionResult.Acquired -> acquisition.ticket as PlanningTicket
+            is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.ticket as PlanningTicket
+            else -> throw AssertionError("Expected acquisition or reclamation, but got: $acquisition")
+        }
+        val leasedGoal = when (acquisition) {
+            is LeaseAcquisitionResult.Acquired -> acquisition.goal
+            is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.goal
+            else -> throw IllegalStateException()
+        }
 
         val outcome = planner.plan(
             apiKey = "sk-or-test-key",
             goal = leasedGoal,
+            ticket = ticket,
             models = emptyList(),
         )
 
@@ -924,9 +937,19 @@ class Slice1LifecycleTest {
         store.upsertGoal(goalNoLease)
 
         val planner = AgentPlanner(client, store, diagnostics)
+        val acquisition = store.acquirePlanningLeaseAtomic(goalNoLease.id, "worker-1")
+        // Manually break the lease to simulate the test case
+        store.updateGoal(goalNoLease.id) { it.copy(executionLease = null) }
+        
+        val ticket = when (acquisition) {
+            is LeaseAcquisitionResult.Acquired -> acquisition.ticket as PlanningTicket
+            is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.ticket as PlanningTicket
+            else -> throw AssertionError("Expected acquisition or reclamation, but got: $acquisition")
+        }
         val outcome = planner.plan(
             apiKey = "sk-or-test-key",
             goal = goalNoLease,
+            ticket = ticket
         )
 
         assertEquals(WorkerOutcome.FAIL, outcome)
@@ -960,6 +983,7 @@ class Slice1LifecycleTest {
             status = AgentGoalStatus.RUNNING,
             executionLease = AgentExecutionLease(
                 workerId = workerId,
+                ownerProcessSessionId = "session-1",
                 taskId = goal.tasks.first().id,
                 attemptId = leaseAttemptId,
                 generation = 1,
@@ -987,7 +1011,16 @@ class Slice1LifecycleTest {
         )
 
         val current = store.loadSnapshot().goals.first { it.id == goal.id }
-        val canCommit = canCommitMilestoneResult(current, task.id, attemptId, ownership)
+        val ticket = TaskExecutionTicket(
+            current.id,
+            task.id,
+            ownership.workerId,
+            "session-1",
+            ownership.executionGeneration,
+            ownership.leaseAttemptId,
+            System.currentTimeMillis()
+        )
+        val canCommit = canCommitMilestoneResult(current, task.id, attemptId, ticket)
         assertTrue(canCommit)
     }
 
@@ -1002,6 +1035,7 @@ class Slice1LifecycleTest {
             status = AgentGoalStatus.RUNNING,
             executionLease = AgentExecutionLease(
                 workerId = newWorker,
+                ownerProcessSessionId = "session-1",
                 taskId = goal.tasks.first().id,
                 attemptId = leaseAttemptId,
                 generation = 2,
@@ -1022,7 +1056,16 @@ class Slice1LifecycleTest {
         )
 
         val current = store.loadSnapshot().goals.first { it.id == goal.id }
-        val canCommit = canCommitMilestoneResult(current, task.id, attemptId, staleOwnership)
+        val staleTicket = TaskExecutionTicket(
+            current.id,
+            task.id,
+            staleOwnership.workerId,
+            "session-1",
+            staleOwnership.executionGeneration,
+            staleOwnership.leaseAttemptId,
+            System.currentTimeMillis()
+        )
+        val canCommit = canCommitMilestoneResult(current, task.id, attemptId, staleTicket)
         assertEquals(false, canCommit)
         
         // Goal state remains unchanged under newWorker
@@ -1388,11 +1431,17 @@ class Slice1LifecycleTest {
             }
         }
 
+        val acquisition = store.acquireTaskLeaseAtomic(goal.id, "worker-A", task.id)
+        val ticket = when (acquisition) {
+            is LeaseAcquisitionResult.Acquired -> acquisition.ticket as TaskExecutionTicket
+            is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.ticket as TaskExecutionTicket
+            else -> throw AssertionError("Expected acquisition or reclamation, but got: $acquisition")
+        }
         val outcome = executor.executeOneTask(
             apiKey = "sk-or-test",
             goal = goal,
             task = task,
-            workerId = "worker-A"
+            ticket = ticket
         )
 
         assertEquals(WorkerOutcome.DONE, outcome)
@@ -1419,11 +1468,17 @@ class Slice1LifecycleTest {
             }
         }
 
+        val acquisition = store.acquireTaskLeaseAtomic(goal.id, "worker-A", task.id)
+        val ticket = when (acquisition) {
+            is LeaseAcquisitionResult.Acquired -> acquisition.ticket as TaskExecutionTicket
+            is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.ticket as TaskExecutionTicket
+            else -> throw AssertionError("Expected acquisition or reclamation, but got: $acquisition")
+        }
         val outcome = executor.executeOneTask(
             apiKey = "sk-or-test",
             goal = goal,
             task = task,
-            workerId = "worker-A"
+            ticket = ticket
         )
 
         assertEquals(WorkerOutcome.DONE, outcome)
@@ -1530,6 +1585,7 @@ class Slice1LifecycleTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "session-1",
                 taskId = "t1",
                 attemptId = "a1",
                 generation = 1,
@@ -1601,6 +1657,7 @@ class Slice1LifecycleTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
+                ownerProcessSessionId = "session-1",
                 taskId = "t1",
                 attemptId = "a1",
                 generation = 5,

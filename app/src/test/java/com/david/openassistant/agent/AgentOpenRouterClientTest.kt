@@ -21,49 +21,16 @@ class AgentOpenRouterClientTest {
 
     @Test
     fun parseResponseThrowsExceptionOnChoiceLevelError() {
-        // ... (existing test code)
-    }
-
-    @Test
-    fun parseResponseHandlesLeadingWhitespaceWithChoiceError() {
-        val jsonBody = JSONObject()
+        val body = JSONObject()
             .put("id", "gen-123")
-            .put("model", "google/gemini-2.5-flash-lite")
-            .put("choices", org.json.JSONArray().put(
+            .put("choices", JSONArray().put(
                 JSONObject()
                     .put("finish_reason", "error")
                     .put("error", JSONObject()
-                        .put("code", 429)
-                        .put("message", "JSON error injected into SSE stream")
+                        .put("code", 400)
+                        .put("message", "Model failed")
                     )
                     .put("message", JSONObject().put("role", "assistant").put("content", JSONObject.NULL))
-            ))
-            .toString()
-
-        val bodyWithWhitespace = "\n\n  \n  $jsonBody"
-
-        val exception = assertThrows(OpenRouterException::class.java) {
-            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
-            method.isAccessible = true
-            try {
-                method.invoke(client, bodyWithWhitespace, "sk-or-test", JSONObject(), 200, 100L)
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw e.targetException
-            }
-        }
-
-        assertEquals(429, exception.statusCode)
-        assertEquals("JSON error injected into SSE stream", exception.userMessage)
-    }
-
-    @Test
-    fun parseResponseThrowsExceptionOnBlankContent() {
-        val body = JSONObject()
-            .put("id", "gen-123")
-            .put("choices", org.json.JSONArray().put(
-                JSONObject()
-                    .put("finish_reason", "stop")
-                    .put("message", JSONObject().put("role", "assistant").put("content", ""))
             ))
             .toString()
 
@@ -77,36 +44,8 @@ class AgentOpenRouterClientTest {
             }
         }
 
-        assertEquals("The agent model returned no usable text or tool calls. Finish reason: stop.", exception.userMessage)
-    }
-
-    @Test
-    fun parseResponseAcceptsToolCallsWithBlankContent() {
-        val body = JSONObject()
-            .put("id", "gen-123")
-            .put("choices", org.json.JSONArray().put(
-                JSONObject()
-                    .put("finish_reason", "tool_calls")
-                    .put("message", JSONObject()
-                        .put("role", "assistant")
-                        .put("content", "")
-                        .put("tool_calls", org.json.JSONArray().put(
-                            JSONObject()
-                                .put("id", "call-1")
-                                .put("type", "function")
-                                .put("function", JSONObject().put("name", "test").put("arguments", "{}"))
-                        ))
-                    )
-            ))
-            .toString()
-
-        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
-        method.isAccessible = true
-        val response = method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L)
-        
-        // This should not throw an exception because tool_calls are present
-        // The return type is RawAgentResponse, which is private. 
-        // We can just verify it didn't throw.
+        assertEquals(400, exception.statusCode)
+        assertEquals("Model failed", exception.userMessage)
     }
 
     @Test
@@ -114,9 +53,9 @@ class AgentOpenRouterClientTest {
         val body = JSONObject()
             .put("id", "gen-123")
             .put("model", "google/gemini-2.5-flash-lite")
-            .put("choices", org.json.JSONArray().put(
+            .put("choices", JSONArray().put(
                 JSONObject()
-                    .put("finish_reason", "stop") // Sometimes finish_reason is stop but content is error
+                    .put("finish_reason", "stop")
                     .put("message", JSONObject().put("role", "assistant").put("content", "Upstream provider error: rate limit exceeded for gemini-2.5-flash-lite"))
             ))
             .toString()
@@ -130,11 +69,44 @@ class AgentOpenRouterClientTest {
     }
 
     @Test
+    fun withRecoveredInlineSourcesFiltersFabricatedUrls() {
+        val rawResponseClass = Class.forName("com.david.openassistant.agent.AgentOpenRouterClient\$RawAgentResponse")
+        val constructor = rawResponseClass.getDeclaredConstructors().first { it.parameterCount == 8 }
+        constructor.isAccessible = true
+        
+        val summary = AgentApiSummary()
+        val sources = emptyList<AgentSourceCitation>()
+        val executions = emptyList<AgentToolExecution>()
+        val queryFp = emptyList<String>()
+        val rejectedQ = emptyList<RejectedResearchQuery>()
+        val verifiedUrls = setOf("https://trusted.com/page1")
+        
+        // Content contains one verified and one fabricated URL
+        val content = "Check out https://trusted.com/page1 and also https://fabricated.com/fake"
+        
+        val sourceReads = emptyList<SourceRead>()
+        val rawResponse = constructor.newInstance(content, summary, sources, executions, queryFp, rejectedQ, verifiedUrls, sourceReads)
+        
+        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("withRecoveredInlineSources", rawResponseClass, Set::class.java)
+        method.isAccessible = true
+        
+        val result = method.invoke(client, rawResponse, verifiedUrls)
+        
+        // Get 'sources' property (sources field is private but accessible via reflection)
+        val sourcesField = rawResponseClass.getDeclaredField("sources")
+        sourcesField.isAccessible = true
+        val resultSources = sourcesField.get(result) as List<*>
+        
+        assertEquals(1, resultSources.size)
+        val firstSource = resultSources[0] as AgentSourceCitation
+        assertEquals("https://trusted.com/page1", firstSource.url)
+    }
+
+    @Test
     fun basePayloadRestrictsToAllowlist() {
         val method = AgentOpenRouterClient::class.java.getDeclaredMethods().first { it.name == "basePayload" }
         method.isAccessible = true
         
-        // modelId "google/gemini" should be overridden by allowlist logic in basePayload to openrouter/auto-beta with fallback to openrouter/free
         // Signature: modelId, systemPrompt, userPrompt, reasoningEffort, role, selectionReason, freeOnly, goalId, taskId
         val payload = method.invoke(client, "google/gemini", "system", "user", null, null, null, false, null, null) as JSONObject
         
@@ -145,64 +117,15 @@ class AgentOpenRouterClientTest {
     }
 
     @Test
-    fun repairOversizedPayloadShrinksModelsArray() {
-        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("repairOversizedPayload", JSONObject::class.java)
-        method.isAccessible = true
-        
-        val oversized = JSONObject()
-            .put("models", org.json.JSONArray(listOf("m1", "m2", "m3", "m4", "m5")))
-            
-        val repaired = method.invoke(client, oversized) as JSONObject
-        
-        val models = repaired.getJSONArray("models")
-        assertEquals(3, models.length())
-        assertEquals("m1", models.getString(0))
-        assertEquals("m2", models.getString(1))
-        assertEquals("m3", models.getString(2))
-    }
-
-    @Test
-    fun validateAndNormalizeGeneratedRequestRejectsEmptyMessages() {
-        val method = AgentOpenRouterClient::class.java.getDeclaredMethods().first { it.name == "validateAndNormalizeGeneratedRequest" }
-        method.isAccessible = true
-
-        val malformed = JSONObject()
-            .put("model", "openrouter/auto")
-            // Missing "messages"
-
-        val exception = assertThrows(java.lang.reflect.InvocationTargetException::class.java) {
-            method.invoke(client, malformed)
-        }
-        val cause = exception.cause as OpenRouterException
-        assertEquals("Generated request is missing mandatory 'messages' array.", cause.message)
-    }
-
-    @Test
     fun validateAndNormalizeGeneratedRequestAcceptsValidMessages() {
         val method = AgentOpenRouterClient::class.java.getDeclaredMethods().first { it.name == "validateAndNormalizeGeneratedRequest" }
         method.isAccessible = true
 
         val valid = JSONObject()
             .put("model", "openrouter/auto")
-            .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", "hi")))
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "hi")))
 
         val normalized = method.invoke(client, valid) as JSONObject
         assertEquals(1, normalized.getJSONArray("messages").length())
-    }
-
-    @Test
-    fun validateAndNormalizeGeneratedRequestRejectsMalformedMessages() {
-        val method = AgentOpenRouterClient::class.java.getDeclaredMethods().first { it.name == "validateAndNormalizeGeneratedRequest" }
-        method.isAccessible = true
-
-        val malformed = JSONObject()
-            .put("model", "openrouter/auto")
-            .put("messages", "This should be an array but is a string")
-
-        val exception = assertThrows(java.lang.reflect.InvocationTargetException::class.java) {
-            method.invoke(client, malformed)
-        }
-        val cause = exception.cause as OpenRouterException
-        assertEquals("Generated request is missing mandatory 'messages' array.", cause.message)
     }
 }

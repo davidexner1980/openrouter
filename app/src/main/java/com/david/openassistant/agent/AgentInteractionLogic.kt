@@ -39,10 +39,28 @@ data class AgentToolExecution(
     val succeeded: Boolean,
 )
 
+data class StructureRepairLineage(
+    val originalResponseHash: String,
+    val originalRequestFingerprint: String,
+    val repairRequestFingerprint: String,
+    val repairAttemptCount: Int,
+    val repairReason: StructureRepairReason,
+    val repairOutcome: StructureRepairOutcome,
+    val preRepairContentChars: Int,
+    val postRepairContentChars: Int,
+    val preRepairRawClaims: Int,
+    val postRepairRawClaims: Int,
+    val preRepairRetainedClaims: Int,
+    val postRepairRetainedClaims: Int,
+    val preRepairSupportedClaims: Int,
+    val postRepairSupportedClaims: Int,
+)
+
 data class AgentStepResult(
     val content: String,
     val summary: AgentApiSummary,
     val sources: List<AgentSourceCitation> = emptyList(),
+    val sourceReads: List<SourceRead> = emptyList(),
     val completionScore: Double = 1.0,
     val acceptanceChecks: List<AgentAcceptanceCheck> = emptyList(),
     val claims: List<AgentClaim> = emptyList(),
@@ -51,6 +69,7 @@ data class AgentStepResult(
     val structuredOutputRepaired: Boolean = false,
     val queryFingerprints: List<String> = emptyList(),
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
+    val repairLineage: StructureRepairLineage? = null,
 )
 
 data class AgentClaimReview(

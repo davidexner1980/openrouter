@@ -98,6 +98,21 @@ fun AgentWorkScreen(
             }
 
             state.agentError?.let { item { ErrorCard(it) } }
+    state.agentMessage?.let { 
+        item { 
+            androidx.compose.material3.Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Text(
+                    text = it,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        } 
+    }
 
             if (state.agentGoals.isEmpty() && !state.isPlanningAgentGoal) {
                 item {

@@ -324,15 +324,23 @@ internal fun canCommitMilestoneResult(
     goal: AgentGoal,
     taskId: String,
     taskExecutionAttemptId: String,
-    ownership: ExecutionOwnership,
+    ticket: AgentOwnershipTicket,
 ): Boolean {
     val lease = goal.executionLease ?: return false
-    val activeLeaseMatch = lease.workerId == ownership.workerId &&
-        lease.attemptId == ownership.leaseAttemptId &&
-        lease.generation == ownership.executionGeneration &&
-        lease.taskId == ownership.taskId
-    return goal.status == AgentGoalStatus.RUNNING &&
-        goal.tasks.any { task -> task.id == taskId && task.status == AgentTaskStatus.RUNNING } &&
+    val activeLeaseMatch = lease.workerId == ticket.workerId &&
+        lease.ownerProcessSessionId == ticket.ownerProcessSessionId &&
+        lease.attemptId == ticket.attemptId &&
+        lease.generation == ticket.generation &&
+        lease.taskId == (ticket.taskId ?: "none")
+    
+    val statusMatch = if (ticket is TaskExecutionTicket) {
+        goal.status == AgentGoalStatus.RUNNING &&
+        goal.tasks.any { task -> task.id == taskId && task.status == AgentTaskStatus.RUNNING }
+    } else {
+        goal.status == AgentGoalStatus.PLANNING || goal.status == AgentGoalStatus.VERIFYING
+    }
+
+    return statusMatch &&
         goal.attempts.any { attempt ->
             attempt.id == taskExecutionAttemptId && attempt.status == AgentAttemptStatus.RUNNING
         } && activeLeaseMatch

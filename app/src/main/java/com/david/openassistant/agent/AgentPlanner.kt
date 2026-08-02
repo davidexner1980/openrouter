@@ -36,39 +36,51 @@ class AgentPlanner(
     suspend fun plan(
         apiKey: String,
         goal: AgentGoal,
+        ticket: PlanningTicket,
         models: List<OpenRouterModel> = emptyList(),
     ): WorkerOutcome {
-        val lease = goal.executionLease ?: return WorkerOutcome.FAIL
         val startedAt = System.currentTimeMillis()
         
+        // V37 PLANNING_START validation
+        val startValidation = store.validateTicket(ticket)
+        diagnostics.info(
+            event = "ownership_validation_completed",
+            component = "lease",
+            fields = mapOf(
+                "goal_id" to goal.id,
+                "validation_stage" to "PLANNING_START",
+                "outcome" to if (startValidation is TicketValidationResult.Valid) "PASS" else "FAIL",
+                "reason_code" to (startValidation as? TicketValidationResult.Mismatch)?.reason
+            )
+        )
+        if (startValidation !is TicketValidationResult.Valid) {
+            return WorkerOutcome.FAIL
+        }
+
         diagnostics.info(
             event = "planning_started",
             component = "mission",
-            fields = mapOf("goal_id" to goal.id, "worker_id" to lease.workerId)
+            fields = mapOf("goal_id" to goal.id, "worker_id" to ticket.workerId)
         )
         
-        diagnostics.info(
-            event = "planning_started",
-            component = "mission",
-            fields = mapOf("goal_id" to goal.id, "worker_id" to lease.workerId)
-        )
         val attempt = AgentAttempt(
             taskId = null,
             status = AgentAttemptStatus.RUNNING,
             startedAt = startedAt,
             modelId = goal.plannerModelId,
         )
-        store.updateGoal(goal.id) { current ->
+        store.updateGoalAtomic(goal.id, ticket) { current ->
             current.copy(attempts = retainAttempts(current.attempts + attempt))
         }
 
         val parentOperationId = "op-plan-${UUID.randomUUID()}"
         val missionContext = ProviderRequestContext.Mission(
             goalId = goal.id,
-            workerId = lease.workerId,
+            workerId = ticket.workerId,
             taskId = null,
-            attemptId = lease.attemptId,
-            executionGeneration = lease.generation,
+            attemptId = ticket.attemptId,
+            executionGeneration = ticket.generation,
+            acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.CREATE_PLAN,
             parentOperationId = parentOperationId,
@@ -118,11 +130,11 @@ class AgentPlanner(
                     }
                 }.take(MAX_EVIDENCE_CONTENT_CHARS),
             )
-            store.updateGoal(goal.id) { current ->
-                if (current.status != AgentGoalStatus.PLANNING) return@updateGoal current
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                if (current.status != AgentGoalStatus.PLANNING) return@updateGoalAtomic current
                 val accountingKey = "plan_accounting_${attempt.id}"
                 if (current.idempotencyRecords.any { it.key == accountingKey && it.state == IdempotencyState.COMMITTED }) {
-                    return@updateGoal current
+                    return@updateGoalAtomic current
                 }
 
                 val baseUpdated = current.withAdditionalUsage(summary.totalTokens, summary.costUsd)
@@ -130,9 +142,9 @@ class AgentPlanner(
                     key = accountingKey,
                     effectType = IdempotencyEffectType.PROVIDER_ACCOUNTING,
                     state = IdempotencyState.COMMITTED,
-                    claimOwner = lease.workerId,
+                    claimOwner = ticket.workerId,
                     committedAt = System.currentTimeMillis(),
-                    completedBy = lease.workerId
+                    completedBy = ticket.workerId
                 )
 
                 baseUpdated.copy(
@@ -185,7 +197,7 @@ class AgentPlanner(
             )
             WorkerOutcome.CONTINUE
         } catch (error: CancellationException) {
-            store.updateGoal(goal.id) { current ->
+            store.updateGoalAtomic(goal.id, ticket) { current ->
                 current.copy(
                     attempts = current.attempts.map { existing ->
                         if (existing.id == attempt.id && existing.status == AgentAttemptStatus.RUNNING) {
@@ -200,7 +212,7 @@ class AgentPlanner(
             }
             throw error
         } catch (error: Throwable) {
-            persistPlanningFailure(goal.id, attempt.id, error, models)
+            persistPlanningFailure(goal.id, attempt.id, error, ticket, models)
         }
     }
 
@@ -208,6 +220,7 @@ class AgentPlanner(
         goalId: String,
         attemptId: String,
         error: Throwable,
+        ticket: PlanningTicket,
         models: List<OpenRouterModel> = emptyList(),
     ): WorkerOutcome {
         val latest = store.loadSnapshot().goals.firstOrNull { it.id == goalId } ?: return WorkerOutcome.FAIL
@@ -228,8 +241,8 @@ class AgentPlanner(
         val message = error.toAgentFailureMessage("Planning failed before a durable plan was committed.").take(1_000)
         val finishedAt = System.currentTimeMillis()
         
-        store.updateGoal(goalId) { current ->
-            if (current.status != AgentGoalStatus.PLANNING) return@updateGoal current
+        store.updateGoalAtomic(goalId, ticket) { current ->
+            if (current.status != AgentGoalStatus.PLANNING) return@updateGoalAtomic current
             val accountedCurrent = current.accountPlanningFailureUsage(error)
             val switchingModels = decision.action in setOf(
                 ProviderRecoveryAction.SWITCH_TO_STABLE,

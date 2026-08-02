@@ -167,7 +167,7 @@ internal fun recoverPreservedResearchAssessment(
     )
     val effectiveScore = maxOf(task.progressScore, recovered.completionScore)
     if (effectiveScore < minimumCompletionScore) return null
-    if (!ResearchQualityGate.evaluateStep(task, recovered, policy).passed) return null
+    if (!ResearchQualityGate.evaluateStep(task, recovered, null, policy).passed) return null
     return recovered.copy(completionScore = effectiveScore)
 }
 
@@ -192,11 +192,13 @@ object ResearchQualityGate {
     fun evaluateStep(
         task: AgentTask,
         result: AgentStepResult,
+        goal: AgentGoal?,
         policy: AutonomyPolicy = AutonomyPolicy.DEFAULT,
         allocation: ResearchAllocationProfile? = null,
     ): ResearchQualityDecision {
         if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
-            return evaluatePublicationStep(task, result, allocation)
+            val evalGoal = goal ?: AgentGoal(id = "DUMMY_EVAL_GOAL", conversationId = "", userRequest = "", title = "", objective = "", finalOutputDescription = "", status = AgentGoalStatus.QUEUED, plannerModelId = "", executionModelId = "", tasks = emptyList())
+            return evaluatePublicationStep(task, result, evalGoal, allocation)
         }
         if (task.capability !in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH)) {
             return ResearchQualityDecision(true, emptyList())
@@ -302,6 +304,7 @@ object ResearchQualityGate {
     private fun evaluatePublicationStep(
         task: AgentTask,
         result: AgentStepResult,
+        goal: AgentGoal,
         allocation: ResearchAllocationProfile? = null,
     ): ResearchQualityDecision {
         val synthesis = task.capability == AgentCapability.SYNTHESIZE
@@ -315,12 +318,34 @@ object ResearchQualityGate {
         val minimumClaims = if (synthesis) {
             if (risk == ResearchRisk.HIGH) 5 else MIN_SYNTHESIS_CLAIMS
         } else MIN_CORRECTION_CLAIMS
+
+        val evidenceById = goal.evidence.associateBy { it.id }
+        val sourceReadsByCanonicalUrl = goal.sourceReads.associateBy { it.canonicalUrl }
+
+        val isDummyGoal = goal.id == "DUMMY_EVAL_GOAL"
         val groundedClaims = result.claims.filter { claim ->
-            claim.support !in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED) &&
-                (
-                    claim.supportingEvidenceIds.any(String::isNotBlank) ||
-                        claim.sourceUrls.any { it.trim().startsWith("https://") }
-                    )
+            if (claim.support in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED)) {
+                false
+            } else {
+                if (isDummyGoal) {
+                    claim.supportingEvidenceIds.any(String::isNotBlank) || claim.sourceUrls.any { it.trim().startsWith("https://") }
+                } else {
+                    claim.supportingEvidenceIds.any { evidenceId ->
+                        val ev = evidenceById[evidenceId]
+                        if (ev != null) {
+                            claim.sourceUrls.any { claimUrl ->
+                                val claimCanonical = canonicalSourceUrl(claimUrl)
+                                ev.sources.any { evSource ->
+                                    if (canonicalSourceUrl(evSource.url) == claimCanonical) {
+                                        val read = sourceReadsByCanonicalUrl[claimCanonical]
+                                        read?.provenance in setOf(SourceReadProvenance.VERIFIED_FETCH, SourceReadProvenance.PROVIDER_EXTRACT)
+                                    } else false
+                                }
+                            }
+                        } else false
+                    }
+                }
+            }
         }
         val groundedFacts = groundedClaims.count { it.type == AgentClaimType.FACT }
         val reasons = buildList {

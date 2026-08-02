@@ -79,6 +79,7 @@ data class AgentAcceptanceCheck(
  */
 data class AgentExecutionLease(
     val workerId: String,
+    val ownerProcessSessionId: String, // V36
     val taskId: String,
     val attemptId: String,
     val generation: Int,
@@ -141,6 +142,7 @@ data class AgentTask(
     val retryAuthorizedFingerprint: String? = null,
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
     val activeResearchStrategyJson: String? = null,
+    val repairLineage: StructureRepairLineage? = null,
 ) {
     val effectiveProgressScore: Double
         get() = when {

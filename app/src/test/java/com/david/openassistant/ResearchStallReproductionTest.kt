@@ -51,7 +51,7 @@ class ResearchStallReproductionTest {
             toolExecutions = executions
         )
         
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
         
         // The gate SHOULD PASS because extracts are now substantial (threshold 600)
         assertTrue("Gate should pass because threshold was lowered to 600", decision.passed)

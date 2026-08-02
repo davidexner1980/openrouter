@@ -924,6 +924,7 @@ class AgentOpenRouterClient internal constructor(
             (task.capability != AgentCapability.SYNTHESIZE) && 
             (modelId != FREE_ROUTER_MODEL_ID)
         
+        val baseAllowedUrls = goal.sourceReads.map { it.url }.toSet()
         if (useBodyBuilderForDesign) {
             val designInstructions = "Repair or design a high-intelligence request for milestone: ${task.title}. Instructions: ${task.instructions}"
             val designContext = "Goal: ${goal.objective}\nPrior evidence: $evidenceContext"
@@ -946,7 +947,7 @@ class AgentOpenRouterClient internal constructor(
                     taskId = task.id,
                 )
                 val rawDesignResponse = executeJsonRequest(apiKey, generatedPayload, generation, bodyBuilderExecContext)
-                val designResponse = rawDesignResponse.withRecoveredInlineSources()
+                val designResponse = rawDesignResponse.withRecoveredInlineSources(baseAllowedUrls)
                 return runCatching { parseStepResponse(designResponse, goal, task) }
                     .getOrElse { error ->
                         AgentStepResult(
@@ -1213,13 +1214,15 @@ class AgentOpenRouterClient internal constructor(
             buildResearchBootstrapFailureCheckpoint(error, researchBootstrap)
                 ?: throw error.withAgentUsage(researchBootstrap.summary)
         }
+        val allowedUrls = baseAllowedUrls + researchBootstrap.sources.map { it.url } + rawResponse.sources.map { it.url }
         val response = rawResponse
             .withResearchBootstrap(researchBootstrap)
-            .withRecoveredInlineSources()
+            .withRecoveredInlineSources(allowedUrls)
         val parsedResponse = runCatching { parseStepResponse(response, goal, task) }
             .getOrNull()
             ?.let { recoverResearchAssessment(task, it, autonomyPolicy) }
-        if (parsedResponse != null && !parsedResponse.needsResearchMetadataRepair(task)) return parsedResponse
+        val repairReason = if (parsedResponse == null) StructureRepairReason.SCHEMA_FAILURE else parsedResponse.needsResearchMetadataRepair(task, goal)
+        if (parsedResponse != null && repairReason == null) return parsedResponse
 
         // A successful provider call can still contain useful work wrapped in
         // malformed or incomplete structured metadata. Repair only its
@@ -1256,15 +1259,64 @@ class AgentOpenRouterClient internal constructor(
             toolExecutions = response.toolExecutions,
             queryFingerprints = response.queryFingerprints,
             rejectedQueries = response.rejectedQueries,
+            repairLineage = StructureRepairLineage(
+                originalResponseHash = response.content.hashCode().toString(16),
+                originalRequestFingerprint = task.progressFingerprint ?: "",
+                repairRequestFingerprint = "", // Since we failed to execute
+                repairAttemptCount = 1,
+                repairReason = repairReason!!,
+                repairOutcome = StructureRepairOutcome.FAILED_SCHEMA,
+                preRepairContentChars = response.content.length,
+                postRepairContentChars = response.content.length,
+                preRepairRawClaims = parsedResponse?.claims?.size ?: 0,
+                postRepairRawClaims = 0,
+                preRepairRetainedClaims = parsedResponse?.claims?.size ?: 0,
+                postRepairRetainedClaims = 0,
+                preRepairSupportedClaims = 0,
+                postRepairSupportedClaims = 0,
+            )
         )
 
-        val accountedResponse = response.mergeRepair(repairResponse).withRecoveredInlineSources()
+        val accountedResponse = response.mergeRepair(repairResponse).withRecoveredInlineSources(allowedUrls)
         val repairedResult = runCatching { parseStepResponse(accountedResponse, goal, task) }
             .getOrNull()
             ?.let { repaired ->
+                val preRepairClaims = parsedResponse?.claims ?: emptyList()
+                val postRepairClaims = repaired.claims
+                
+                val preRepairSupported = preRepairClaims.count { claim ->
+                    claim.support !in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED) &&
+                    (claim.supportingEvidenceIds.any(String::isNotBlank) || claim.sourceUrls.any { it.trim().startsWith("https://") })
+                }
+                val postRepairSupported = postRepairClaims.count { claim ->
+                    claim.support !in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED) &&
+                    (claim.supportingEvidenceIds.any(String::isNotBlank) || claim.sourceUrls.any { it.trim().startsWith("https://") })
+                }
+                
+                val finalRepairReason = repaired.needsResearchMetadataRepair(task, goal)
+                val outcome = if (finalRepairReason == null) StructureRepairOutcome.PASSED else StructureRepairOutcome.FAILED_QUALITY
+                
                 recoverResearchAssessment(
                     task = task,
-                    result = repaired.copy(structuredOutputRepaired = true),
+                    result = repaired.copy(
+                        structuredOutputRepaired = true,
+                        repairLineage = StructureRepairLineage(
+                            originalResponseHash = response.content.hashCode().toString(16),
+                            originalRequestFingerprint = task.progressFingerprint ?: "",
+                            repairRequestFingerprint = repairResponse.content.hashCode().toString(16), // proxy for repair req
+                            repairAttemptCount = 1,
+                            repairReason = repairReason!!,
+                            repairOutcome = outcome,
+                            preRepairContentChars = response.content.length,
+                            postRepairContentChars = repaired.content.length,
+                            preRepairRawClaims = preRepairClaims.size,
+                            postRepairRawClaims = postRepairClaims.size,
+                            preRepairRetainedClaims = preRepairClaims.size,
+                            postRepairRetainedClaims = postRepairClaims.size,
+                            preRepairSupportedClaims = preRepairSupported,
+                            postRepairSupportedClaims = postRepairSupported,
+                        )
+                    ),
                     policy = autonomyPolicy,
                     metadataWasRepaired = true,
                 )
@@ -1354,7 +1406,7 @@ class AgentOpenRouterClient internal constructor(
             apiKey = apiKey,
             strictPayload = basePayload(modelId, STRUCTURE_REPAIR_SYSTEM_PROMPT, prompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "step_structure_repair", freeOnly = freeOnly).apply {
                 put("temperature", 0.0)
-                put("response_format", jsonSchemaResponseFormat("agent_step_repair_v1", stepSchema()))
+                put("response_format", jsonSchemaResponseFormat("agent_step_repair_v1", stepSchema(task)))
             },
             jsonModePayload = basePayload(
                 modelId,
@@ -1629,6 +1681,7 @@ class AgentOpenRouterClient internal constructor(
             content = root.optString("work_product").trim().ifBlank { response.content },
             summary = response.summary,
             sources = response.sources,
+            sourceReads = response.sourceReads,
             completionScore = completionScore,
             acceptanceChecks = checks,
             claims = claims,
@@ -1893,8 +1946,10 @@ class AgentOpenRouterClient internal constructor(
     ): ResearchBootstrap {
         val runtime = toolRuntime ?: return ResearchBootstrap.EMPTY
         val sources = linkedMapOf<String, AgentSourceCitation>()
+        val verifiedUrls = mutableSetOf<String>()
         val executions = mutableListOf<AgentToolExecution>()
         val fetchedPages = mutableListOf<Pair<AgentSourceCitation, String>>()
+        val newSourceReads = mutableListOf<SourceRead>()
         var successfulSearches = 0
         var webFetchRequests = 0
         var discoveredLeads = 0
@@ -2068,7 +2123,13 @@ class AgentOpenRouterClient internal constructor(
                 )
                 
                 if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                    emitContentEvent(call.id, "generated_query", currentQuery, mapOf("goal_id" to goal.id, "task_id" to task.id))
+                    diagnostics?.contentPreview(
+                        kind = "generated_query",
+                        content = currentQuery,
+                        goalId = goal.id,
+                        taskId = task.id,
+                        exchangeId = call.id
+                    )
                 }
 
                 var searchResult = runCatching { runtime.execute(call, apiKey, modelId, goal) }
@@ -2218,7 +2279,14 @@ class AgentOpenRouterClient internal constructor(
                     
                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
                         newSources.forEach { s ->
-                            emitContentEvent(call.id, "search_result_snippet", s.excerpt.orEmpty(), mapOf("url" to s.url))
+                            diagnostics?.contentPreview(
+                                kind = "search_result_snippet",
+                                content = s.excerpt.orEmpty(),
+                                goalId = goal.id,
+                                taskId = task.id,
+                                exchangeId = call.id,
+                                extraFields = mapOf("url" to s.url)
+                            )
                         }
                     }
 
@@ -2353,11 +2421,19 @@ class AgentOpenRouterClient internal constructor(
                     )
                     
                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                        emitContentEvent(call.id, "source_extract", text, mapOf("url" to resolvedUrl, "rejected" to true, "reason" to reason))
+                        diagnostics?.contentPreview(
+                            kind = "source_extract",
+                            content = text,
+                            goalId = goal.id,
+                            taskId = task.id,
+                            exchangeId = call.id,
+                            extraFields = mapOf("url" to resolvedUrl, "rejected" to true, "reason" to reason)
+                        )
                     }
                     continue
                 }
 
+                verifiedUrls.add(resolvedUrl)
                 diagnostics?.info(
                     event = "source_read_accepted",
                     component = "research",
@@ -2371,7 +2447,14 @@ class AgentOpenRouterClient internal constructor(
                 )
                 
                 if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                    emitContentEvent(call.id, "source_extract", text, mapOf("url" to resolvedUrl))
+                    diagnostics?.contentPreview(
+                        kind = "source_extract",
+                        content = text,
+                        goalId = goal.id,
+                        taskId = task.id,
+                        exchangeId = call.id,
+                        extraFields = mapOf("url" to resolvedUrl)
+                    )
                 }
 
                 payload?.optJSONArray("discovered_leads")?.let { leads ->
@@ -2398,6 +2481,17 @@ class AgentOpenRouterClient internal constructor(
                 val resolvedSource = source.copy(url = resolvedUrl)
                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
+                newSourceReads += SourceRead(
+                    id = java.util.UUID.randomUUID().toString(),
+                    url = resolvedUrl,
+                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
+                    httpCode = 200,
+                    contentType = contentType,
+                    content = text,
+                    sourceRole = researchRole.name,
+                    authorityScore = validation.authorityScore,
+                    provenance = SourceReadProvenance.VERIFIED_FETCH,
+                )
                 executions += AgentToolExecution(
                     toolName = call.name,
                     summary = "Research full-source read [accepted, authority=${validation.authorityScore}]: $resolvedUrl — ${result.displaySummary}".take(600),
@@ -2635,6 +2729,7 @@ class AgentOpenRouterClient internal constructor(
                                     return@onSuccess
                                 }
 
+                                verifiedUrls.add(resolvedUrl)
                                 payload?.optJSONArray("discovered_leads")?.let { leads ->
                                     for (i in 0 until leads.length()) {
                                         val lead = leads.optJSONObject(i) ?: continue
@@ -2652,6 +2747,17 @@ class AgentOpenRouterClient internal constructor(
                                 val resolvedSource = followUpSource.copy(url = resolvedUrl)
                                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
+                                newSourceReads += SourceRead(
+                                    id = java.util.UUID.randomUUID().toString(),
+                                    url = resolvedUrl,
+                                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
+                                    httpCode = 200,
+                                    contentType = contentType,
+                                    content = text,
+                                    sourceRole = researchRole.name,
+                                    authorityScore = validation.authorityScore,
+                                    provenance = SourceReadProvenance.VERIFIED_FETCH,
+                                )
                                 executions += AgentToolExecution(
                                     toolName = fetchCall.name,
                                     summary = "Rabbit-hole read [$rabbitHoleIterationsRun, accepted, authority=${validation.authorityScore}]: $resolvedUrl — ${fetchResult.displaySummary}".take(600),
@@ -2759,6 +2865,8 @@ class AgentOpenRouterClient internal constructor(
             ),
             queryFingerprints = executedQueryFingerprints.toList(),
             rejectedQueries = rejectedQueries,
+            verifiedUrls = verifiedUrls,
+            sourceReads = newSourceReads.toList(),
         )
     }
 
@@ -3461,6 +3569,7 @@ class AgentOpenRouterClient internal constructor(
         
         val messages = payload.getJSONArray("messages")
         val accumulatedSources = linkedMapOf<String, AgentSourceCitation>()
+        val verifiedUrls = mutableSetOf<String>()
         val unavailableSourceKeys = mutableSetOf<String>()
         val executions = mutableListOf<AgentToolExecution>()
         val usedProviderCallIds = mutableSetOf<String>()
@@ -3499,6 +3608,7 @@ class AgentOpenRouterClient internal constructor(
         }
 
         fun preserveSource(source: AgentSourceCitation, successfulFetch: Boolean = false) {
+            if (successfulFetch) verifiedUrls.add(source.url)
             val key = sourceKey(source.url)
             val matchingEntries = accumulatedSources.entries
                 .filter { entry -> sourceKey(entry.key) == key }
@@ -3717,7 +3827,14 @@ class AgentOpenRouterClient internal constructor(
                                         )
                                     )
                                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                                        emitContentEvent(call.id, "tool_input", call.argumentsJson, mapOf("tool_name" to call.name))
+                                        diagnostics?.contentPreview(
+                                            kind = "tool_input",
+                                            content = call.argumentsJson,
+                                            goalId = goal?.id,
+                                            taskId = requestContext.taskId,
+                                            exchangeId = call.id,
+                                            extraFields = mapOf("tool_name" to call.name)
+                                        )
                                     }
 
                                     val result = runtime.execute(
@@ -3740,7 +3857,14 @@ class AgentOpenRouterClient internal constructor(
                                         )
                                     )
                                     if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                                        emitContentEvent(call.id, "tool_result", result.outputJson, mapOf("tool_name" to call.name))
+                                        diagnostics?.contentPreview(
+                                            kind = "tool_result",
+                                            content = result.outputJson,
+                                            goalId = goal?.id,
+                                            taskId = requestContext.taskId,
+                                            exchangeId = call.id,
+                                            extraFields = mapOf("tool_name" to call.name)
+                                        )
                                     }
                                     
                                     promptTokens += result.promptTokens
@@ -3875,6 +3999,7 @@ class AgentOpenRouterClient internal constructor(
                     ),
                     sources = accumulatedSources.values.take(MAX_SOURCE_CITATIONS).toList(),
                     toolExecutions = executions.toList(),
+                    verifiedUrls = verifiedUrls
                 )
             }
         } catch (error: Throwable) {
@@ -4344,6 +4469,7 @@ class AgentOpenRouterClient internal constructor(
                     fields = mapOf(
                         "exchange_id" to exchangeId,
                         "goal_id" to requestContext.goalId,
+                        "task_id" to requestContext.taskId,
                         "operation" to operation,
                         "requested_model" to payload.optString("model"),
                         "request_bytes" to wirePayloadText.toByteArray().size
@@ -4362,8 +4488,7 @@ class AgentOpenRouterClient internal constructor(
                         "endpoint" to CHAT_URL,
                         "requested_model" to payload.optString("model"),
                         "fallback_models" to (payload.optJSONArray("models")?.toString() ?: "none"),
-                        "safe_headers" to "Accept: application/json; Content-Type: application/json; X-OpenRouter-Title: OpenAssistant Android; X-OpenRouter-Metadata: enabled; User-Agent: OpenAssistant-Android/${BuildConfig.VERSION_NAME}; Authorization: Bearer [REDACTED]",
-                        "request_body" to safeDiagnosticPayloadText,
+                        "safe_headers" to "Accept: application/json; Authorization: Bearer [REDACTED]",
                         "request_bytes" to wirePayloadText.toByteArray().size,
                     ),
                 )
@@ -4419,7 +4544,6 @@ class AgentOpenRouterClient internal constructor(
                                 put("successful", semanticSuccess)
                                 put("duration_ms", System.currentTimeMillis() - startedAt)
                                 put("response_headers", response.headers.filterSensitive().toString())
-                                put("response_body", safeDiagnosticResponseBody)
                                 put("response_bytes", rawBody.toByteArray().size)
                                 choiceError?.let { put("embedded_error", it) }
                             },
@@ -4832,14 +4956,16 @@ class AgentOpenRouterClient internal constructor(
         // V36: Detailed Content Capture for provider answer
         val monitorStatus = researchMonitor?.status()
         if (monitorStatus?.detailedContentCaptureEnabled == true) {
-            emitContentEvent(
-                exchangeId = responseSummary.responseId ?: "unknown",
+            diagnostics?.contentPreview(
                 kind = "provider_answer",
                 content = nonNullContent,
-                fields = mapOf(
-                    "goal_id" to payload.optJSONObject("metadata")?.optString("goal_id"),
+                goalId = payload.optJSONObject("metadata")?.optString("goal_id"),
+                taskId = payload.optJSONObject("metadata")?.optString("task_id"),
+                exchangeId = responseSummary.responseId,
+                extraFields = mapOf(
                     "role" to role?.name,
-                    "finish_reason" to finishReason
+                    "finish_reason" to finishReason,
+                    "capture_sid" to monitorStatus.captureSessionId
                 )
             )
         }
@@ -5704,7 +5830,8 @@ class AgentOpenRouterClient internal constructor(
         sources = (sources + repair.sources).distinctBy { it.url }.take(MAX_SOURCE_CITATIONS),
         toolExecutions = toolExecutions + repair.toolExecutions,
         queryFingerprints = (queryFingerprints + repair.queryFingerprints).distinct(),
-        rejectedQueries = (rejectedQueries + repair.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } }
+        rejectedQueries = (rejectedQueries + repair.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } },
+        verifiedUrls = verifiedUrls + repair.verifiedUrls
     )
 
     private fun RawAgentResponse.withResearchBootstrap(bootstrap: ResearchBootstrap): RawAgentResponse = copy(
@@ -5712,22 +5839,51 @@ class AgentOpenRouterClient internal constructor(
         sources = (bootstrap.sources + sources).distinctBy { it.url }.take(MAX_SOURCE_CITATIONS),
         toolExecutions = bootstrap.executions + toolExecutions,
         queryFingerprints = (queryFingerprints + bootstrap.queryFingerprints).distinct(),
-        rejectedQueries = (rejectedQueries + bootstrap.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } }
+        rejectedQueries = (rejectedQueries + bootstrap.rejectedQueries).distinctBy { it.canonicalFingerprint.ifBlank { it.originalQuery } },
+        verifiedUrls = verifiedUrls + bootstrap.verifiedUrls
     )
 
-    private fun RawAgentResponse.withRecoveredInlineSources(): RawAgentResponse = copy(
-        sources = (sources + recoverHttpsSourceCitations(content))
-            .distinctBy { it.url }
-            .take(MAX_SOURCE_CITATIONS),
-    )
+    private fun RawAgentResponse.withRecoveredInlineSources(allowedUrls: Set<String>): RawAgentResponse {
+        val found = recoverHttpsSourceCitations(content)
+        val verified = found.filter { it.url in allowedUrls }
+        found.filter { it.url !in allowedUrls }.forEach { rejected ->
+            diagnostics?.warning(
+                event = "fabricated_source_rejected",
+                component = "research",
+                fields = mapOf("url" to rejected.url, "reason" to "model_fabricated_unverified")
+            )
+        }
+        return copy(
+            sources = (sources + verified)
+                .distinctBy { it.url }
+                .take(MAX_SOURCE_CITATIONS),
+        )
+    }
 
-    private fun AgentStepResult.needsResearchMetadataRepair(task: AgentTask): Boolean {
-        if (task.capability !in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH)) return false
-        if (content.isBlank()) return false
+    private fun AgentStepResult.needsResearchMetadataRepair(task: AgentTask, goal: AgentGoal): StructureRepairReason? {
+        if (task.capability !in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH, AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) return null
+        if (content.isBlank()) return null
+        
+        if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
+            val decision = ResearchQualityGate.evaluateStep(task, this, goal)
+            if (!decision.passed) {
+                val reasonStr = decision.reasons.joinToString()
+                if (reasonStr.contains("too little publication-ready analysis")) return StructureRepairReason.INSUFFICIENT_CONTENT
+                if (reasonStr.contains("produced") && reasonStr.contains("structured claim(s); at least")) return StructureRepairReason.INSUFFICIENT_CLAIMS
+                if (reasonStr.contains("grounded") && reasonStr.contains("claim(s) in preserved evidence IDs")) return StructureRepairReason.INVALID_PROVENANCE
+                if (reasonStr.contains("produced no grounded factual claim")) return StructureRepairReason.NO_SUPPORTED_FACTUAL_CLAIM
+                if (reasonStr.contains("must pass every acceptance criterion")) return StructureRepairReason.ACCEPTANCE_CRITERIA_INCOMPLETE
+                return StructureRepairReason.NO_SUPPORTED_FACTUAL_CLAIM
+            }
+        }
+        
         val missingFactualClaims = claims.none { it.type == AgentClaimType.FACT }
         val criteriaWereNotEvaluated = task.acceptanceCriteria.isNotEmpty() &&
             acceptanceChecks.all { it.status == AgentAcceptanceCheckStatus.NOT_EVALUATED }
-        return missingFactualClaims || criteriaWereNotEvaluated
+            
+        if (missingFactualClaims) return StructureRepairReason.NO_SUPPORTED_FACTUAL_CLAIM
+        if (criteriaWereNotEvaluated) return StructureRepairReason.ACCEPTANCE_CRITERIA_INCOMPLETE
+        return null
     }
 
     private fun AgentApiSummary.merge(other: AgentApiSummary): AgentApiSummary = AgentApiSummary(
@@ -5852,6 +6008,8 @@ class AgentOpenRouterClient internal constructor(
         val summary: AgentApiSummary,
         val queryFingerprints: List<String> = emptyList(),
         val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
+        val verifiedUrls: Set<String> = emptySet(),
+        val sourceReads: List<SourceRead> = emptyList(),
     ) {
         fun hasCompletedResearchToolWork(
             minimumSearches: Int,
@@ -5886,6 +6044,8 @@ class AgentOpenRouterClient internal constructor(
         val toolExecutions: List<AgentToolExecution> = emptyList(),
         val queryFingerprints: List<String> = emptyList(),
         val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
+        val verifiedUrls: Set<String> = emptySet(),
+        val sourceReads: List<SourceRead> = emptyList(),
     )
 
     private fun emitDetailedContentPreviews(
@@ -5902,40 +6062,19 @@ class AgentOpenRouterClient internal constructor(
             val role = msg.optString("role")
             val content = msg.optString("content")
             if (content.isNotBlank()) {
-                emitContentEvent(
-                    exchangeId = exchangeId,
+                diagnostics?.contentPreview(
                     kind = "provider_instruction",
                     content = content,
-                    fields = mapOf("role" to role, "index" to i, "goal_id" to context.goalId, "task_id" to context.taskId)
+                    goalId = context.goalId,
+                    taskId = context.taskId,
+                    exchangeId = exchangeId,
+                    extraFields = mapOf(
+                        "role" to role, 
+                        "index" to i,
+                        "capture_sid" to monitorStatus.captureSessionId
+                    )
                 )
             }
-        }
-    }
-
-    private fun emitContentEvent(
-        exchangeId: String,
-        kind: String,
-        content: String,
-        fields: Map<String, Any?>
-    ) {
-        val hash = com.david.openassistant.data.openrouter.OpenRouterProtocolUtils.computePayloadFingerprint(content)
-        val redacted = com.david.openassistant.data.diagnostics.redactResearchMonitorText(content)
-        val limit = 2000 // Logcat bound
-        
-        val chunkCount = (redacted.length + limit - 1) / limit
-        for (i in 0 until chunkCount) {
-            val chunk = redacted.substring(i * limit, minOf((i + 1) * limit, redacted.length))
-            diagnostics?.info(
-                event = "${kind}_content",
-                component = "content",
-                fields = fields + mapOf(
-                    "exchange_id" to exchangeId,
-                    "content_sha256" to hash,
-                    "chunk_index" to i,
-                    "chunk_count" to chunkCount,
-                    "preview" to chunk
-                )
-            )
         }
     }
 

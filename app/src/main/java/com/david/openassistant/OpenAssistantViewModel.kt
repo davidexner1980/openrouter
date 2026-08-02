@@ -1259,9 +1259,9 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 }
                 val file = File(getApplication<Application>().filesDir, "RESEARCH_REPORT_${goal.id.take(8)}.md")
                 file.writeText(report)
-                _uiState.update { it.copy(agentError = "Report exported to internal storage: ${file.name}") }
+                _uiState.update { it.copy(agentMessage = "Report exported to internal storage: ${file.name}", agentError = null) }
             }.onFailure { error ->
-                _uiState.update { it.copy(agentError = "Failed to export report: ${error.message}") }
+                _uiState.update { it.copy(agentError = "Failed to export report: ${error.message}", agentMessage = null) }
             }
         }
     }
@@ -1613,6 +1613,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 selectedModelId = if (automationDecision.route == AutomationRoute.TOOL_ASSISTED_CHAT) modelId else it.selectedModelId,
                 isGenerating = true,
                 chatError = null,
+                agentError = null,
+                agentMessage = null,
                 lastToolExecution = null,
                 pendingImageAttachment = null,
                 attachmentError = null,
@@ -1742,6 +1744,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         section = AppSection.WORK,
                         researchDraft = null,
                         isResearchBriefEditRequested = false,
+                        agentError = null,
+                        agentMessage = null,
                     )
                 }
                 val goal = result.snapshot.goals.firstOrNull { it.id == result.goalId }
@@ -1762,6 +1766,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         section = AppSection.WORK,
                         researchDraft = null,
                         isResearchBriefEditRequested = false,
+                        agentError = null,
+                        agentMessage = null,
                     )
                 }
             }
@@ -1789,6 +1795,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         section = AppSection.WORK,
                         researchDraft = null,
                         isResearchBriefEditRequested = false,
+                        agentError = null,
+                        agentMessage = null,
                     )
                 }
             }

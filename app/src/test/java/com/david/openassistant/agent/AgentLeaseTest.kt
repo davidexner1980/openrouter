@@ -36,6 +36,7 @@ class AgentLeaseTest {
         goal = goal.copy(
             executionLease = AgentExecutionLease(
                 workerId = workerId,
+                ownerProcessSessionId = "test-session",
                 taskId = "none",
                 attemptId = "attempt-1",
                 generation = 1,
@@ -64,6 +65,7 @@ class AgentLeaseTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "worker-1",
+                ownerProcessSessionId = "test-session",
                 taskId = "none",
                 attemptId = "attempt-1",
                 generation = 1,
@@ -96,6 +98,7 @@ class AgentLeaseTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "worker-1",
+                ownerProcessSessionId = "test-session",
                 taskId = "none",
                 attemptId = "attempt-1",
                 generation = 1,
@@ -115,6 +118,7 @@ class AgentLeaseTest {
             goal = goal.copy(
                 executionLease = AgentExecutionLease(
                     workerId = newWorkerId,
+                    ownerProcessSessionId = "test-session",
                     taskId = "none",
                     attemptId = "attempt-2",
                     generation = (existing?.generation ?: 0) + 1,
@@ -149,6 +153,7 @@ class AgentLeaseTest {
             attempts = listOf(AgentAttempt(id = attempt1Id, taskId = taskId, status = AgentAttemptStatus.RUNNING, startedAt = 0, modelId = "m")),
             executionLease = AgentExecutionLease(
                 workerId = "worker-2", // Different worker took the lease!
+                ownerProcessSessionId = "test-session",
                 taskId = taskId,
                 attemptId = "attempt-2",
                 generation = 2,
@@ -157,13 +162,16 @@ class AgentLeaseTest {
             )
         )
 
-        val ownership1 = ExecutionOwnership(
-            workerId = worker1Id,
-            leaseAttemptId = "attempt-1",
-            executionGeneration = 1,
-            taskId = taskId,
+        val ticket = TaskExecutionTicket(
+            goal.id,
+            taskId,
+            worker1Id,
+            "session-1",
+            1,
+            "attempt-1",
+            0L
         )
-        val canCommit = canCommitMilestoneResult(goal, taskId, attempt1Id, ownership1)
+        val canCommit = canCommitMilestoneResult(goal, taskId, attempt1Id, ticket)
         assertFalse(canCommit)
     }
 }

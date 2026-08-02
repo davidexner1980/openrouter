@@ -25,10 +25,27 @@ class AgentVerifier(
     suspend fun verifyAndFinish(
         apiKey: String,
         goal: AgentGoal,
+        ticket: PlanningTicket,
         models: List<OpenRouterModel> = emptyList(),
     ): WorkerOutcome {
+        // V37 VERIFICATION_START validation
+        val startValidation = store.validateTicket(ticket)
+        diagnostics.info(
+            event = "ownership_validation_completed",
+            component = "lease",
+            fields = mapOf(
+                "goal_id" to goal.id,
+                "validation_stage" to "VERIFICATION_START",
+                "outcome" to if (startValidation is TicketValidationResult.Valid) "PASS" else "FAIL",
+                "reason_code" to (startValidation as? TicketValidationResult.Mismatch)?.reason
+            )
+        )
+        if (startValidation !is TicketValidationResult.Valid) {
+            return WorkerOutcome.DONE
+        }
+
         var preVerificationExcludedClaimCount = 0
-        val verificationSnapshot = store.updateGoal(goal.id) { current ->
+        val verificationSnapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
             if (current.status !in setOf(AgentGoalStatus.RUNNING, AgentGoalStatus.QUEUED)) {
                 current
             } else {
@@ -74,14 +91,14 @@ class AgentVerifier(
 
         return try {
             val latest = findGoal(goal.id) ?: return WorkerOutcome.FAIL
-            val lease = latest.executionLease ?: return WorkerOutcome.FAIL
             val parentOperationId = "op-verify-${UUID.randomUUID()}"
             val missionContext = ProviderRequestContext.Mission(
                 goalId = goal.id,
-                workerId = lease.workerId,
+                workerId = ticket.workerId,
                 taskId = null,
-                attemptId = lease.attemptId,
-                executionGeneration = lease.generation,
+                attemptId = ticket.attemptId,
+                executionGeneration = ticket.generation,
+                acquiredAt = ticket.acquiredAt,
                 role = AgentTaskRole.PRIMARY_REASONING,
                 operation = MissionOperation.VERIFY_GOAL,
                 parentOperationId = parentOperationId,
@@ -192,7 +209,7 @@ class AgentVerifier(
                     maximumCharacters = MAX_EVIDENCE_CONTENT_CHARS,
                 ),
             )
-            val accountingKey = "verification_accounting_${lease.attemptId}"
+            val accountingKey = "verification_accounting_${ticket.attemptId}"
             val baseUpdated = if (currentAfterVerification.idempotencyRecords.any { it.key == accountingKey && it.state == IdempotencyState.COMMITTED }) {
                 currentAfterVerification
             } else {
@@ -201,9 +218,9 @@ class AgentVerifier(
                     key = accountingKey,
                     effectType = IdempotencyEffectType.PROVIDER_ACCOUNTING,
                     state = IdempotencyState.COMMITTED,
-                    claimOwner = lease.workerId,
+                    claimOwner = ticket.workerId,
                     committedAt = System.currentTimeMillis(),
-                    completedBy = lease.workerId
+                    completedBy = ticket.workerId
                 )
                 updated.copy(idempotencyRecords = updated.idempotencyRecords + record)
             }
@@ -219,8 +236,8 @@ class AgentVerifier(
                     answer = rawPublishedResult,
                     claims = publicationGraph.claims,
                 )
-                val completedSnapshot = store.updateGoal(goal.id) { current ->
-                    if (current.status != AgentGoalStatus.VERIFYING) return@updateGoal current
+                val completedSnapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
+                    if (current.status != AgentGoalStatus.VERIFYING) return@updateGoalAtomic current
                     val hasUnresolved = mergedChecks.any { it.status == AgentAcceptanceCheckStatus.PARTIAL }
                     val finalStatus = if (hasUnresolved) AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS else AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE
                     val completed = current.copy(
@@ -293,8 +310,8 @@ class AgentVerifier(
                         append(" issue(s). No unverified answer was published. A fresh correction cycle will retry automatically from preserved evidence after backoff.")
                     }
                 }
-                val failedSnapshot = store.updateGoal(goal.id) { current ->
-                    if (current.status != AgentGoalStatus.VERIFYING) return@updateGoal current
+                val failedSnapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
+                    if (current.status != AgentGoalStatus.VERIFYING) return@updateGoalAtomic current
                     current.copy(
                         status = terminalStatus,
                         acceptanceChecks = mergedChecks,
@@ -339,8 +356,8 @@ class AgentVerifier(
                     ?.firstOrNull { it.capability == AgentCapability.CORRECT }
                     ?.id
                 if (failedGoal?.status == AgentGoalStatus.FAILED && newestCorrectionId != null) {
-                    val restartedSnapshot = store.updateGoal(goal.id) { current ->
-                        if (current.status != AgentGoalStatus.FAILED) return@updateGoal current
+                    val restartedSnapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
+                        if (current.status != AgentGoalStatus.FAILED) return@updateGoalAtomic current
                         current.copy(
                             status = AgentGoalStatus.QUEUED,
                             tasks = current.tasks.map { existing ->
@@ -459,8 +476,8 @@ class AgentVerifier(
                     precedingDependencies += correctionId
                     correctionTask
                 }
-                val correctionSnapshot = store.updateGoal(goal.id) { current ->
-                    if (current.status != AgentGoalStatus.VERIFYING) return@updateGoal current
+                val correctionSnapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
+                    if (current.status != AgentGoalStatus.VERIFYING) return@updateGoalAtomic current
                     current.copy(
                         status = AgentGoalStatus.QUEUED,
                         tasks = current.tasks + correctionTasks,
@@ -551,8 +568,8 @@ class AgentVerifier(
                     "recovery_model" to decision.nextModelId,
                 ),
             )
-            store.updateGoal(goal.id) { current ->
-                if (current.status != AgentGoalStatus.VERIFYING) return@updateGoal current
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                if (current.status != AgentGoalStatus.VERIFYING) return@updateGoalAtomic current
                 val waiting = decision.action == ProviderRecoveryAction.WAIT_FOR_CREDENTIAL
                 val rateLimitFailure = (statusCode == 429)
                 val switchingModels = decision.action in setOf(

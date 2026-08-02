@@ -173,7 +173,7 @@ class ResearchAssessmentRecoveryTest {
             },
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertTrue(decision.reasons.joinToString(), decision.passed)
     }
@@ -223,7 +223,7 @@ class ResearchAssessmentRecoveryTest {
             ),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result)
+        val decision = ResearchQualityGate.evaluateStep(task, result, null)
 
         assertTrue(decision.reasons.joinToString(), decision.passed)
     }

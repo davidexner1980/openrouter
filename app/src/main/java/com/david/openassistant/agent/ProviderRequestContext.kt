@@ -11,10 +11,20 @@ sealed class ProviderRequestContext {
         val taskId: String? = null,
         val attemptId: String,
         val executionGeneration: Int,
+        val acquiredAt: Long,
         val role: AgentTaskRole? = null,
         val operation: MissionOperation,
         val parentOperationId: String,
     ) : ProviderRequestContext() {
+        fun toTicket(acquiredAt: Long): AgentOwnershipTicket {
+            val session = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
+            return if (taskId != null) {
+                TaskExecutionTicket(goalId, taskId, workerId, session, executionGeneration, attemptId, acquiredAt)
+            } else {
+                PlanningTicket(goalId, workerId, session, executionGeneration, attemptId, acquiredAt)
+            }
+        }
+
         fun forChildOperation(
             operation: MissionOperation,
             role: AgentTaskRole,

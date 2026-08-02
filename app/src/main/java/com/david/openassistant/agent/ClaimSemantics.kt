@@ -12,6 +12,7 @@ data class SourceRead(
     val sourceRole: String,
     val authorityScore: Int,
     val readAt: Long = System.currentTimeMillis(),
+    val provenance: SourceReadProvenance = SourceReadProvenance.UNVERIFIED_CITATION,
 )
 
 data class EvidenceCandidate(

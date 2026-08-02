@@ -290,6 +290,31 @@ enum class EscalationTactic {
     ASK_USER
 }
 
+enum class SourceReadProvenance {
+    VERIFIED_FETCH,
+    PROVIDER_EXTRACT,
+    LEGACY_ASSUMED,
+    UNVERIFIED_CITATION
+}
+
+enum class StructureRepairReason {
+    SCHEMA_FAILURE,
+    INSUFFICIENT_CLAIMS,
+    INSUFFICIENT_CONTENT,
+    NO_SUPPORTED_FACTUAL_CLAIM,
+    ACCEPTANCE_CRITERIA_INCOMPLETE,
+    INVALID_PROVENANCE
+}
+
+enum class StructureRepairOutcome {
+    NOT_ATTEMPTED,
+    PASSED,
+    FAILED_SCHEMA,
+    FAILED_PROVENANCE,
+    FAILED_QUALITY,
+    FAILED_ACCEPTANCE_CRITERIA
+}
+
 /**
  * Represents the final decision of a worker execution loop.
  */
