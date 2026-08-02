@@ -39,6 +39,7 @@ data class OpenAssistantUiState(
     val agentGoals: List<AgentGoal> = emptyList(),
     val selectedAgentGoalId: String? = null,
     val agentError: String? = null,
+    val agentMessage: String? = null,
     val lastToolExecution: ToolExecutionEvidence? = null,
     val activeToolRecipeCount: Int = 0,
     val workspaceFileCount: Int = 0,

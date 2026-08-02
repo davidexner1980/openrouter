@@ -13,7 +13,7 @@ class SynthesisRecoveryTest {
         val decision = synthesisGapDecision(
             synthesis,
             result,
-            ResearchQualityGate.evaluateStep(synthesis, result).reasons,
+            ResearchQualityGate.evaluateStep(synthesis, result, null).reasons,
         )
 
         assertTrue(decision.hasActionableGap)
@@ -200,7 +200,7 @@ class SynthesisRecoveryTest {
         val decision = synthesisGapDecision(
             synthesis,
             weak,
-            ResearchQualityGate.evaluateStep(synthesis, weak).reasons,
+            ResearchQualityGate.evaluateStep(synthesis, weak, null).reasons,
         )
 
         assertFalse(decision.hasActionableGap)
@@ -214,7 +214,7 @@ class SynthesisRecoveryTest {
         val decision = synthesisGapDecision(
             synthesis,
             result,
-            ResearchQualityGate.evaluateStep(synthesis, result).reasons,
+            ResearchQualityGate.evaluateStep(synthesis, result, null).reasons,
         )
         val freeRouteGoal = goal(
             tasks = listOf(synthesis.copy(order = 0)),

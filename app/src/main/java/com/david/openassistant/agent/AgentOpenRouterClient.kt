@@ -1221,7 +1221,8 @@ class AgentOpenRouterClient internal constructor(
         val parsedResponse = runCatching { parseStepResponse(response, goal, task) }
             .getOrNull()
             ?.let { recoverResearchAssessment(task, it, autonomyPolicy) }
-        if (parsedResponse != null && !parsedResponse.needsResearchMetadataRepair(task)) return parsedResponse
+        val repairReason = if (parsedResponse == null) StructureRepairReason.SCHEMA_FAILURE else parsedResponse.needsResearchMetadataRepair(task, goal)
+        if (parsedResponse != null && repairReason == null) return parsedResponse
 
         // A successful provider call can still contain useful work wrapped in
         // malformed or incomplete structured metadata. Repair only its
@@ -1258,15 +1259,64 @@ class AgentOpenRouterClient internal constructor(
             toolExecutions = response.toolExecutions,
             queryFingerprints = response.queryFingerprints,
             rejectedQueries = response.rejectedQueries,
+            repairLineage = StructureRepairLineage(
+                originalResponseHash = response.content.hashCode().toString(16),
+                originalRequestFingerprint = task.progressFingerprint ?: "",
+                repairRequestFingerprint = "", // Since we failed to execute
+                repairAttemptCount = 1,
+                repairReason = repairReason!!,
+                repairOutcome = StructureRepairOutcome.FAILED_SCHEMA,
+                preRepairContentChars = response.content.length,
+                postRepairContentChars = response.content.length,
+                preRepairRawClaims = parsedResponse?.claims?.size ?: 0,
+                postRepairRawClaims = 0,
+                preRepairRetainedClaims = parsedResponse?.claims?.size ?: 0,
+                postRepairRetainedClaims = 0,
+                preRepairSupportedClaims = 0,
+                postRepairSupportedClaims = 0,
+            )
         )
 
         val accountedResponse = response.mergeRepair(repairResponse).withRecoveredInlineSources(allowedUrls)
         val repairedResult = runCatching { parseStepResponse(accountedResponse, goal, task) }
             .getOrNull()
             ?.let { repaired ->
+                val preRepairClaims = parsedResponse?.claims ?: emptyList()
+                val postRepairClaims = repaired.claims
+                
+                val preRepairSupported = preRepairClaims.count { claim ->
+                    claim.support !in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED) &&
+                    (claim.supportingEvidenceIds.any(String::isNotBlank) || claim.sourceUrls.any { it.trim().startsWith("https://") })
+                }
+                val postRepairSupported = postRepairClaims.count { claim ->
+                    claim.support !in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED) &&
+                    (claim.supportingEvidenceIds.any(String::isNotBlank) || claim.sourceUrls.any { it.trim().startsWith("https://") })
+                }
+                
+                val finalRepairReason = repaired.needsResearchMetadataRepair(task, goal)
+                val outcome = if (finalRepairReason == null) StructureRepairOutcome.PASSED else StructureRepairOutcome.FAILED_QUALITY
+                
                 recoverResearchAssessment(
                     task = task,
-                    result = repaired.copy(structuredOutputRepaired = true),
+                    result = repaired.copy(
+                        structuredOutputRepaired = true,
+                        repairLineage = StructureRepairLineage(
+                            originalResponseHash = response.content.hashCode().toString(16),
+                            originalRequestFingerprint = task.progressFingerprint ?: "",
+                            repairRequestFingerprint = repairResponse.content.hashCode().toString(16), // proxy for repair req
+                            repairAttemptCount = 1,
+                            repairReason = repairReason!!,
+                            repairOutcome = outcome,
+                            preRepairContentChars = response.content.length,
+                            postRepairContentChars = repaired.content.length,
+                            preRepairRawClaims = preRepairClaims.size,
+                            postRepairRawClaims = postRepairClaims.size,
+                            preRepairRetainedClaims = preRepairClaims.size,
+                            postRepairRetainedClaims = postRepairClaims.size,
+                            preRepairSupportedClaims = preRepairSupported,
+                            postRepairSupportedClaims = postRepairSupported,
+                        )
+                    ),
                     policy = autonomyPolicy,
                     metadataWasRepaired = true,
                 )
@@ -1356,7 +1406,7 @@ class AgentOpenRouterClient internal constructor(
             apiKey = apiKey,
             strictPayload = basePayload(modelId, STRUCTURE_REPAIR_SYSTEM_PROMPT, prompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "step_structure_repair", freeOnly = freeOnly).apply {
                 put("temperature", 0.0)
-                put("response_format", jsonSchemaResponseFormat("agent_step_repair_v1", stepSchema()))
+                put("response_format", jsonSchemaResponseFormat("agent_step_repair_v1", stepSchema(task)))
             },
             jsonModePayload = basePayload(
                 modelId,
@@ -1631,6 +1681,7 @@ class AgentOpenRouterClient internal constructor(
             content = root.optString("work_product").trim().ifBlank { response.content },
             summary = response.summary,
             sources = response.sources,
+            sourceReads = response.sourceReads,
             completionScore = completionScore,
             acceptanceChecks = checks,
             claims = claims,
@@ -1898,6 +1949,7 @@ class AgentOpenRouterClient internal constructor(
         val verifiedUrls = mutableSetOf<String>()
         val executions = mutableListOf<AgentToolExecution>()
         val fetchedPages = mutableListOf<Pair<AgentSourceCitation, String>>()
+        val newSourceReads = mutableListOf<SourceRead>()
         var successfulSearches = 0
         var webFetchRequests = 0
         var discoveredLeads = 0
@@ -2429,6 +2481,17 @@ class AgentOpenRouterClient internal constructor(
                 val resolvedSource = source.copy(url = resolvedUrl)
                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
+                newSourceReads += SourceRead(
+                    id = java.util.UUID.randomUUID().toString(),
+                    url = resolvedUrl,
+                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
+                    httpCode = 200,
+                    contentType = contentType,
+                    content = text,
+                    sourceRole = researchRole.name,
+                    authorityScore = validation.authorityScore,
+                    provenance = SourceReadProvenance.VERIFIED_FETCH,
+                )
                 executions += AgentToolExecution(
                     toolName = call.name,
                     summary = "Research full-source read [accepted, authority=${validation.authorityScore}]: $resolvedUrl — ${result.displaySummary}".take(600),
@@ -2684,6 +2747,17 @@ class AgentOpenRouterClient internal constructor(
                                 val resolvedSource = followUpSource.copy(url = resolvedUrl)
                                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
+                                newSourceReads += SourceRead(
+                                    id = java.util.UUID.randomUUID().toString(),
+                                    url = resolvedUrl,
+                                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
+                                    httpCode = 200,
+                                    contentType = contentType,
+                                    content = text,
+                                    sourceRole = researchRole.name,
+                                    authorityScore = validation.authorityScore,
+                                    provenance = SourceReadProvenance.VERIFIED_FETCH,
+                                )
                                 executions += AgentToolExecution(
                                     toolName = fetchCall.name,
                                     summary = "Rabbit-hole read [$rabbitHoleIterationsRun, accepted, authority=${validation.authorityScore}]: $resolvedUrl — ${fetchResult.displaySummary}".take(600),
@@ -2791,7 +2865,8 @@ class AgentOpenRouterClient internal constructor(
             ),
             queryFingerprints = executedQueryFingerprints.toList(),
             rejectedQueries = rejectedQueries,
-            verifiedUrls = verifiedUrls
+            verifiedUrls = verifiedUrls,
+            sourceReads = newSourceReads.toList(),
         )
     }
 
@@ -5785,13 +5860,30 @@ class AgentOpenRouterClient internal constructor(
         )
     }
 
-    private fun AgentStepResult.needsResearchMetadataRepair(task: AgentTask): Boolean {
-        if (task.capability !in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH)) return false
-        if (content.isBlank()) return false
+    private fun AgentStepResult.needsResearchMetadataRepair(task: AgentTask, goal: AgentGoal): StructureRepairReason? {
+        if (task.capability !in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH, AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) return null
+        if (content.isBlank()) return null
+        
+        if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
+            val decision = ResearchQualityGate.evaluateStep(task, this, goal)
+            if (!decision.passed) {
+                val reasonStr = decision.reasons.joinToString()
+                if (reasonStr.contains("too little publication-ready analysis")) return StructureRepairReason.INSUFFICIENT_CONTENT
+                if (reasonStr.contains("produced") && reasonStr.contains("structured claim(s); at least")) return StructureRepairReason.INSUFFICIENT_CLAIMS
+                if (reasonStr.contains("grounded") && reasonStr.contains("claim(s) in preserved evidence IDs")) return StructureRepairReason.INVALID_PROVENANCE
+                if (reasonStr.contains("produced no grounded factual claim")) return StructureRepairReason.NO_SUPPORTED_FACTUAL_CLAIM
+                if (reasonStr.contains("must pass every acceptance criterion")) return StructureRepairReason.ACCEPTANCE_CRITERIA_INCOMPLETE
+                return StructureRepairReason.NO_SUPPORTED_FACTUAL_CLAIM
+            }
+        }
+        
         val missingFactualClaims = claims.none { it.type == AgentClaimType.FACT }
         val criteriaWereNotEvaluated = task.acceptanceCriteria.isNotEmpty() &&
             acceptanceChecks.all { it.status == AgentAcceptanceCheckStatus.NOT_EVALUATED }
-        return missingFactualClaims || criteriaWereNotEvaluated
+            
+        if (missingFactualClaims) return StructureRepairReason.NO_SUPPORTED_FACTUAL_CLAIM
+        if (criteriaWereNotEvaluated) return StructureRepairReason.ACCEPTANCE_CRITERIA_INCOMPLETE
+        return null
     }
 
     private fun AgentApiSummary.merge(other: AgentApiSummary): AgentApiSummary = AgentApiSummary(
@@ -5917,6 +6009,7 @@ class AgentOpenRouterClient internal constructor(
         val queryFingerprints: List<String> = emptyList(),
         val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
         val verifiedUrls: Set<String> = emptySet(),
+        val sourceReads: List<SourceRead> = emptyList(),
     ) {
         fun hasCompletedResearchToolWork(
             minimumSearches: Int,
@@ -5952,6 +6045,7 @@ class AgentOpenRouterClient internal constructor(
         val queryFingerprints: List<String> = emptyList(),
         val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
         val verifiedUrls: Set<String> = emptySet(),
+        val sourceReads: List<SourceRead> = emptyList(),
     )
 
     private fun emitDetailedContentPreviews(

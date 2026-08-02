@@ -160,8 +160,16 @@ class AgentTaskExecutor internal constructor(
         val isAuthorizedRetry = task.retryAuthorizedFingerprint == currentFingerprint
         
         if (task.lastRequestFingerprint == currentFingerprint && task.attemptCount >= 1 && !isAuthorizedRetry) {
-            val error = IllegalStateException("Identical context fingerprint detected; skipping repetitive provider request.")
-            return persistTaskFailure(goal.id, task.id, agentAttemptId, error, currentFingerprint, ticket, models, taskDiagnostics)
+            taskDiagnostics.warning("identical_context_fingerprint_suppressed", mapOf("fingerprint" to currentFingerprint))
+            store.commitTaskResultAtomic(ticket) { current ->
+                val currentTask = current.tasks.firstOrNull { it.id == task.id } ?: return@commitTaskResultAtomic current
+                current.copy(
+                    status = AgentGoalStatus.PAUSED,
+                    tasks = current.tasks.map { if (it.id == task.id) it.copy(status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, failureClass = "STRUCTURED_SYNTHESIS_DEFICIT") else it },
+                    events = appendEvent(current.events, "Execution paused: identical context fingerprint detected. Awaiting new evidence or user intervention.")
+                )
+            }
+            return WorkerOutcome.DONE
         }
         
         if (isAuthorizedRetry) {
@@ -236,7 +244,18 @@ class AgentTaskExecutor internal constructor(
     private fun calculateTaskFingerprint(goal: AgentGoal, task: AgentTask): String {
         val selectedContext = EvidenceContextSelector.select(goal, task)
         return buildString {
+            append("g:").append(goal.id).append(';')
+            append("t:").append(task.id).append(';')
+            append("cap:").append(task.capability.name).append(';')
+            append("state:").append(task.status.name).append(':').append(task.failureClass ?: "").append(';')
+            append("schema:").append(com.david.openassistant.BuildConfig.DIAGNOSTIC_SCHEMA_VERSION).append(';')
             append("ctx:").append(selectedContext.fingerprint).append(';')
+            
+            // Acceptance criteria definition
+            task.acceptanceCriteria.sortedBy { it.id }.forEach { crit ->
+                append("ac:").append(crit.id).append(':').append(crit.description.hashCode()).append(';')
+            }
+
             // Retry counters, timestamps, and model wording are deliberately excluded.
             // Only durable accepted state may change the progress fingerprint.
             goal.evidence
@@ -302,13 +321,13 @@ class AgentTaskExecutor internal constructor(
     private fun evaluateStepQuality(
         task: AgentTask,
         result: AgentStepResult,
-        evidence: List<AgentEvidence>,
+        goal: AgentGoal,
         allocation: ResearchAllocationProfile? = null,
     ): StepQualityEvaluation {
         val criticalCheckFailed = result.acceptanceChecks.any {
             (it.status == AgentAcceptanceCheckStatus.FAIL) && (it.score < 0.25)
         }
-        val researchQuality = ResearchQualityGate.evaluateStep(task, result, autonomyPolicy, allocation)
+        val researchQuality = ResearchQualityGate.evaluateStep(task, result, goal, autonomyPolicy, allocation)
         val boundedResearchRecoveryAccepted = acceptsBoundedResearchRecovery(
             task = task,
             result = result,
@@ -336,7 +355,7 @@ class AgentTaskExecutor internal constructor(
         val impreciseSourceSelections = if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
             findImpreciseClaimSourceSelections(
                 claims = result.claims,
-                evidence = evidence,
+                evidence = goal.evidence,
             )
         } else {
             emptyList()
@@ -548,7 +567,8 @@ class AgentTaskExecutor internal constructor(
         }
 
         val allocationProfile = AgentResearchAllocator.profileForGoal(currentAfterCall, autonomyPolicy)
-        val quality = evaluateStepQuality(task, result, currentAfterCall.evidence + proposedEvidenceItem, allocationProfile)
+        val testGoal = currentAfterCall.copy(evidence = currentAfterCall.evidence + listOf(proposedEvidenceItem))
+        val quality = evaluateStepQuality(task, result, testGoal, allocationProfile)
         val synthesisGapDecision = if (
             !quality.criticalCheckFailed &&
             quality.correctionClaimGatePassed &&
@@ -1311,17 +1331,24 @@ class AgentTaskExecutor internal constructor(
             ),
             evidence = upsertEvidence(routedCurrent.evidence, evidenceItem),
             sourceReads = (routedCurrent.sourceReads + result.sources.map { s ->
+                val textLength = s.excerpt.orEmpty().length
+                val provenance = if (textLength >= 600) { // MIN_PROVIDER_EXTRACT_CHARS = 600
+                    SourceReadProvenance.PROVIDER_EXTRACT
+                } else {
+                    SourceReadProvenance.UNVERIFIED_CITATION
+                }
                 SourceRead(
                     id = UUID.randomUUID().toString(),
                     url = s.url,
                     canonicalUrl = ResearchQualityGate.canonicalSourceUrl(s.url),
-                    httpCode = 200, // Assumed successful if in result.sources
+                    httpCode = 0, // Unverified citations don't have telemetry
                     contentType = "text/html",
                     content = s.excerpt.orEmpty(),
                     sourceRole = researchPassRole(task).name,
-                    authorityScore = computeDomainAuthorityScore(s.url, s.excerpt.orEmpty())
+                    authorityScore = computeDomainAuthorityScore(s.url, s.excerpt.orEmpty()),
+                    provenance = provenance,
                 )
-            }).distinctBy { it.url },
+            } + result.sourceReads).distinctBy { it.url },
             claims = mergedClaims,
             evidenceLinks = retainEvidenceLinks(
                 (retainedLinks + newLinks)

@@ -1269,6 +1269,7 @@ class AgentStore private constructor(
         .put("retry_authorized_fingerprint", task.retryAuthorizedFingerprint ?: JSONObject.NULL)
         .put("rejected_queries", JSONArray().apply { task.rejectedQueries.forEach { put(encodeRejectedQuery(it)) } })
         .put("active_research_strategy_json", task.activeResearchStrategyJson ?: JSONObject.NULL)
+        .put("repair_lineage", task.repairLineage?.let { encodeStructureRepairLineage(it) } ?: JSONObject.NULL)
 
     private fun decodeTask(json: JSONObject): AgentTask {
         val status = json.optEnum("status", AgentTaskStatus.PLANNED)
@@ -1327,8 +1328,42 @@ class AgentStore private constructor(
             retryAuthorizedFingerprint = json.optNullableString("retry_authorized_fingerprint"),
             rejectedQueries = json.optJSONArray("rejected_queries").decodeList(::decodeRejectedQuery),
             activeResearchStrategyJson = json.optNullableString("active_research_strategy_json"),
+            repairLineage = json.optJSONObject("repair_lineage")?.let { decodeStructureRepairLineage(it) },
         )
     }
+
+    private fun encodeStructureRepairLineage(lineage: StructureRepairLineage): JSONObject = JSONObject()
+        .put("original_response_hash", lineage.originalResponseHash)
+        .put("original_request_fingerprint", lineage.originalRequestFingerprint)
+        .put("repair_request_fingerprint", lineage.repairRequestFingerprint)
+        .put("repair_attempt_count", lineage.repairAttemptCount)
+        .put("repair_reason", lineage.repairReason.name)
+        .put("repair_outcome", lineage.repairOutcome.name)
+        .put("pre_repair_content_chars", lineage.preRepairContentChars)
+        .put("post_repair_content_chars", lineage.postRepairContentChars)
+        .put("pre_repair_raw_claims", lineage.preRepairRawClaims)
+        .put("post_repair_raw_claims", lineage.postRepairRawClaims)
+        .put("pre_repair_retained_claims", lineage.preRepairRetainedClaims)
+        .put("post_repair_retained_claims", lineage.postRepairRetainedClaims)
+        .put("pre_repair_supported_claims", lineage.preRepairSupportedClaims)
+        .put("post_repair_supported_claims", lineage.postRepairSupportedClaims)
+
+    private fun decodeStructureRepairLineage(json: JSONObject): StructureRepairLineage = StructureRepairLineage(
+        originalResponseHash = json.getString("original_response_hash"),
+        originalRequestFingerprint = json.getString("original_request_fingerprint"),
+        repairRequestFingerprint = json.getString("repair_request_fingerprint"),
+        repairAttemptCount = json.getInt("repair_attempt_count"),
+        repairReason = StructureRepairReason.valueOf(json.getString("repair_reason")),
+        repairOutcome = StructureRepairOutcome.valueOf(json.getString("repair_outcome")),
+        preRepairContentChars = json.getInt("pre_repair_content_chars"),
+        postRepairContentChars = json.getInt("post_repair_content_chars"),
+        preRepairRawClaims = json.getInt("pre_repair_raw_claims"),
+        postRepairRawClaims = json.getInt("post_repair_raw_claims"),
+        preRepairRetainedClaims = json.getInt("pre_repair_retained_claims"),
+        postRepairRetainedClaims = json.getInt("post_repair_retained_claims"),
+        preRepairSupportedClaims = json.getInt("pre_repair_supported_claims"),
+        postRepairSupportedClaims = json.getInt("post_repair_supported_claims"),
+    )
 
     private fun encodeCriterion(criterion: AgentAcceptanceCriterion): JSONObject = JSONObject()
         .put("id", criterion.id)
@@ -1672,18 +1707,38 @@ class AgentStore private constructor(
         .put("source_role", read.sourceRole)
         .put("authority_score", read.authorityScore)
         .put("read_at", read.readAt)
+        .put("provenance", read.provenance.name)
 
-    private fun decodeSourceRead(json: JSONObject): SourceRead = SourceRead(
-        id = json.getString("id"),
-        url = json.getString("url"),
-        canonicalUrl = json.getString("canonical_url"),
-        httpCode = json.getInt("http_code"),
-        contentType = json.getString("content_type"),
-        content = json.getString("content"),
-        sourceRole = json.getString("source_role"),
-        authorityScore = json.getInt("authority_score"),
-        readAt = json.getLong("read_at"),
-    )
+    private fun decodeSourceRead(json: JSONObject): SourceRead {
+        val httpCode = json.getInt("http_code")
+        val parsedProvenanceStr = json.optString("provenance", "")
+        val provenance = if (parsedProvenanceStr.isNotBlank()) {
+            SourceReadProvenance.valueOf(parsedProvenanceStr)
+        } else {
+            // Legacy Migration logic for provenance
+            val content = json.optString("content", "")
+            val hasContent = content.isNotBlank()
+            if (hasContent && httpCode == 200) {
+                // We shouldn't blindly infer VERIFIED_FETCH from httpCode == 200
+                // We'll map to LEGACY_ASSUMED if it has http 200, but not fully verified.
+                SourceReadProvenance.LEGACY_ASSUMED
+            } else {
+                SourceReadProvenance.UNVERIFIED_CITATION
+            }
+        }
+        return SourceRead(
+            id = json.getString("id"),
+            url = json.getString("url"),
+            canonicalUrl = json.getString("canonical_url"),
+            httpCode = httpCode,
+            contentType = json.getString("content_type"),
+            content = json.getString("content"),
+            sourceRole = json.getString("source_role"),
+            authorityScore = json.getInt("authority_score"),
+            readAt = json.getLong("read_at"),
+            provenance = provenance,
+        )
+    }
 
     private fun encodeEvidenceCandidate(candidate: EvidenceCandidate): JSONObject = JSONObject()
         .put("id", candidate.id)
