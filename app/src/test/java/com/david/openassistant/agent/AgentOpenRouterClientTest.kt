@@ -35,10 +35,10 @@ class AgentOpenRouterClientTest {
             .toString()
 
         val exception = assertThrows(OpenRouterException::class.java) {
-            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
+            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType, String::class.java)
             method.isAccessible = true
             try {
-                method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L)
+                method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L, "ex-123")
             } catch (e: java.lang.reflect.InvocationTargetException) {
                 throw e.targetException
             }
@@ -60,11 +60,11 @@ class AgentOpenRouterClientTest {
             ))
             .toString()
 
-        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType)
+        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType, String::class.java)
         method.isAccessible = true
         
         // V36: Should NOT throw 429 even if content says rate limit, because HTTP status is 200.
-        val response = method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L)
+        val response = method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L, "ex-123")
         assertNotNull(response)
     }
 

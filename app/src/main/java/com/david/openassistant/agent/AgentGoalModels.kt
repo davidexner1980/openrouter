@@ -5,6 +5,7 @@ import java.math.RoundingMode
 import java.util.UUID
 
 data class AgentGoal(
+    // Force rebuild
     val id: String = UUID.randomUUID().toString(),
     val conversationId: String,
     val submissionId: String? = null,
@@ -61,6 +62,7 @@ data class AgentGoal(
     val networkWaitReason: String? = null,
     val resumeStatusAfterNetwork: AgentGoalStatus? = null,
     val requestAttempts: List<ProviderRequestAttempt> = emptyList(),
+    val retryAuthorizations: List<ProviderRetryAuthorization> = emptyList(),
     val idempotencyRecords: List<IdempotencyRecord> = emptyList(),
     val monitorOutbox: List<MonitorOutboxRecord> = emptyList(),
     val routeFingerprints: List<RouteFailureFingerprint> = emptyList(),

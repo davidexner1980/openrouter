@@ -2,13 +2,83 @@ package com.david.openassistant.agent
 
 import java.util.UUID
 
+enum class ProviderTransportStage {
+    NOT_DISPATCHED,
+    CONNECTING,
+    REQUEST_HEADERS_SENT,
+    REQUEST_BODY_STARTED,
+    REQUEST_BODY_COMPLETE,
+    RESPONSE_HEADERS_RECEIVED,
+    RESPONSE_BODY_READING,
+    RESPONSE_BODY_COMPLETE,
+    PARSING,
+    CLASSIFYING,
+    TERMINAL
+}
+
+enum class ProviderDeliveryCertainty {
+    NOT_SENT,
+    SENT_UNCONFIRMED,
+    RESPONSE_CONFIRMED
+}
+
+enum class ProviderAttemptFailureClass {
+    LOCAL_VALIDATION,
+    DNS_FAILURE,
+    CONNECT_FAILURE,
+    TLS_FAILURE,
+    WRITE_TIMEOUT,
+    CALL_TIMEOUT,
+    READ_TIMEOUT_BEFORE_HEADERS,
+    RESPONSE_BODY_TIMEOUT,
+    CONNECTION_RESET,
+    HTTP_400_MODEL_LIST,
+    HTTP_408,
+    HTTP_429,
+    HTTP_5XX,
+    MALFORMED_RESPONSE,
+    STRUCTURED_RESPONSE_DEFICIT,
+    CANCELLED,
+    CANCELLATION_TIMEOUT,
+    TERMINAL_PERSISTENCE_FAILURE,
+    UNKNOWN_TRANSPORT_FAILURE
+}
+
+enum class ProviderRetryDecision {
+    NO_RETRY,
+    LOCAL_REPAIR_ONLY,
+    SAFE_WIRE_RETRY,
+    BOUNDED_AMBIGUOUS_RETRY,
+    WAIT_RETRY_AFTER,
+    ROUTE_RECOVERY,
+    PAUSE_AMBIGUOUS_SETTLEMENT
+}
+
+data class ProviderRetryAuthorization(
+    val logicalRequestId: String,
+    val payloadFingerprint: String,
+    val executionGeneration: Int,
+    val previousExchangeId: String?,
+    val failureClass: String,
+    val deliveryCertainty: ProviderDeliveryCertainty,
+    val attemptOrdinal: Int,
+    val authorizationTimestamp: Long = System.currentTimeMillis()
+)
+
 data class ProviderRequestAttempt(
     val exchangeId: String,
+    val logicalRequestId: String = "",
+    val wireAttemptOrdinal: Int = 1,
+    val previousExchangeId: String? = null,
+    val providerResponseId: String? = null,
+    val transportStage: ProviderTransportStage = ProviderTransportStage.NOT_DISPATCHED,
+    val deliveryCertainty: ProviderDeliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
     val parentOperationId: String,
     val goalId: String,
     val taskId: String? = null,
     val executionGeneration: Int,
     val requestedModel: String,
+    val resolvedModel: String? = null,
     val role: AgentTaskRole? = null,
     val payloadFingerprint: String,
     val exchangeOutcome: ExchangeOutcome = ExchangeOutcome.ACTIVE,
