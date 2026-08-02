@@ -151,7 +151,12 @@ object AgentResearchAllocator {
     }
 
     fun evaluateGaps(goal: AgentGoal, profile: ResearchAllocationProfile): ResearchAllocationGaps {
+        val activeCycleId = goal.activeResearchCycleId
+        val activeCycle = goal.researchCycles.firstOrNull { it.id == activeCycleId }
+        val carryForwardIds = activeCycle?.learningSummary?.carryForwardEvidenceIds?.toSet() ?: emptySet()
+
         val researchEvidence = goal.evidence.filter {
+            (activeCycleId == null || it.cycleId == activeCycleId || it.id in carryForwardIds) &&
             it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH)
         }
         val sourceUrls = researchEvidence
@@ -167,6 +172,7 @@ object AgentResearchAllocator {
         val remainingDomainGap = (profile.targetDomains - domains.size).coerceAtLeast(0)
         
         val researchTasks = goal.tasks.filter { 
+            (activeCycleId == null || it.cycleId == activeCycleId) &&
             it.capability in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH) 
         }
         val completedRoles = researchTasks
@@ -204,12 +210,15 @@ object AgentResearchAllocator {
 
     fun chooseNextTask(goal: AgentGoal, profile: ResearchAllocationProfile, now: Long = System.currentTimeMillis()): AllocatedTaskSelection {
         val gaps = evaluateGaps(goal, profile)
+        val activeCycleId = goal.activeResearchCycleId
         
         val completedIds = goal.tasks
             .filter { it.status == AgentTaskStatus.COMPLETED }
             .mapTo(mutableSetOf()) { it.id }
         
-        val dependencySatisfiedTasks = goal.tasks
+        val relevantTasks = if (activeCycleId == null) goal.tasks else goal.tasks.filter { it.cycleId == activeCycleId }
+
+        val dependencySatisfiedTasks = relevantTasks
             .filter { it.status != AgentTaskStatus.COMPLETED && it.status != AgentTaskStatus.CANCELLED && it.status != AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
             .filter { it.branchExhaustionReason == null }
             .filter { it.dependsOn.all(completedIds::contains) }

@@ -12,6 +12,7 @@ enum class IdempotencyEffectType {
     MISSION_STATE_COMMIT,
     MONITOR_TERMINAL_EVENT,
     BODY_BUILDER_PROPOSAL_RESULT,
+    SYSTEM_REPAIR,
 }
 
 enum class IdempotencyState {

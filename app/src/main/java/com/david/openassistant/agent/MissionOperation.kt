@@ -21,7 +21,9 @@ enum class MissionOperation(
     RESEARCH_STRATEGY_REFINEMENT("research_strategy_refinement", true),
     BODY_BUILDER_REQUEST("body_builder_request", true),
     BODY_BUILDER_GENERATED_EXECUTION("body_builder_generated_execution", true),
-    LENGTH_CONTINUATION("length_continuation", true);
+    LENGTH_CONTINUATION("length_continuation", true),
+    CYCLE_ADVANCE("cycle_advance", false),
+    RECOVERY_PROPOSAL("recovery_proposal", true);
 
     companion object {
         fun fromName(name: String): MissionOperation? = values().firstOrNull { it.operationName == name }

@@ -678,6 +678,169 @@ class AgentOpenRouterClient internal constructor(
         .put("required", JSONArray(listOf("title", "question", "objective", "confirmed_constraints", "inferred_preferences", "unresolved_questions", "evidence_requirements", "preferred_source_types", "freshness_requirement", "exclusions", "desired_deliverable")))
         .put("additionalProperties", false)
 
+    suspend fun createResearchRecoveryProposal(
+        apiKey: String,
+        modelId: String,
+        goal: AgentGoal,
+        plan: ResearchRecoveryPlan,
+        evidence: List<AgentEvidence>,
+        freeOnly: Boolean,
+        requestContext: ProviderRequestContext.Mission,
+    ): Pair<RecoveryProposal, AgentApiSummary> {
+        val generation = requestContext.executionGeneration
+        val systemPrompt = "You are an expert Research Recovery Analyst."
+        val userPrompt = buildString {
+            appendLine("The current research task has stalled. Your goal is to propose a materially novel investigation strategy.")
+            appendLine("Diagnosis: ${plan.diagnosis.name}")
+            appendLine("Selected Tactic: ${plan.selectedTactic.name}")
+            appendLine()
+            appendLine("Current Operational Objective: ${goal.objective}")
+            appendLine("Constraints: ${goal.confirmedConstraints.joinToString(", ")}")
+            appendLine()
+            appendLine("Available Evidence Context:")
+            evidence.forEach { item ->
+                appendLine("- [${item.kind}] ${item.title}: ${item.summary}")
+            }
+        }
+
+        val response = executeStructuredWithFallback(
+            apiKey = apiKey,
+            strictPayload = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "recovery_proposal", freeOnly = freeOnly, goalId = goal.id, taskId = plan.taskId).apply {
+                put("response_format", jsonSchemaResponseFormat("research_recovery_proposal", recoveryProposalSchema()))
+                put("temperature", 0.1)
+            },
+            jsonModePayload = basePayload(
+                modelId,
+                systemPrompt,
+                "$userPrompt\nReturn one valid JSON object matching the requested structure and no markdown.",
+                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "recovery_proposal_json_mode",
+                freeOnly = freeOnly,
+                goalId = goal.id,
+                taskId = plan.taskId
+            ).apply {
+                put("response_format", JSONObject().put("type", "json_object"))
+                put("temperature", 0.1)
+            },
+            plainPayload = basePayload(
+                modelId,
+                systemPrompt,
+                "$userPrompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
+                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "recovery_proposal_plain",
+                freeOnly = freeOnly,
+                goalId = goal.id,
+                taskId = plan.taskId
+            ).apply {
+                put("temperature", 0.1)
+            },
+            generation = generation,
+            requestContext = requestContext,
+        )
+
+        val proposal = parseRecoveryProposal(response.content)
+        return proposal to response.summary
+    }
+
+    private fun recoveryProposalSchema(): JSONObject = JSONObject()
+        .put("type", "object")
+        .put("properties", JSONObject()
+            .put("revised_investigation_interpretation", JSONObject().put("type", "string"))
+            .put("specific_unresolved_gap", JSONObject().put("type", "string"))
+            .put("selected_source_family_shift", JSONObject().put("type", "string").put("nullable", true))
+            .put("evidence_targets", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
+            .put("falsifiers", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
+            .put("new_query_portfolio", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
+            .put("follow_up_rule", JSONObject().put("type", "string").put("nullable", true))
+            .put("rationale", JSONObject().put("type", "string"))
+            .put("expected_novelty_dimensions", JSONObject().put("type", "array").put("items", JSONObject().put("type", "string")))
+        )
+        .put("required", JSONArray(listOf(
+            "revised_investigation_interpretation", "specific_unresolved_gap", "evidence_targets",
+            "falsifiers", "new_query_portfolio", "rationale", "expected_novelty_dimensions"
+        )))
+
+    private fun parseRecoveryProposal(content: String): RecoveryProposal {
+        val json = JSONObject(content)
+        return RecoveryProposal(
+            revisedInvestigationInterpretation = json.getString("revised_investigation_interpretation"),
+            specificUnresolvedGap = json.getString("specific_unresolved_gap"),
+            selectedSourceFamilyShift = json.optNullableString("selected_source_family_shift"),
+            evidenceTargets = json.getJSONArray("evidence_targets").toStringList(),
+            falsifiers = json.getJSONArray("falsifiers").toStringList(),
+            newQueryPortfolio = json.getJSONArray("new_query_portfolio").toStringList(),
+            followUpRule = json.optNullableString("follow_up_rule"),
+            rationale = json.getString("rationale"),
+            expectedNoveltyDimensions = json.getJSONArray("expected_novelty_dimensions").toStringList()
+        )
+    }
+
+    suspend fun createCycleAdvancementProposal(
+        apiKey: String,
+        modelId: String,
+        goal: AgentGoal,
+        sourceCycle: ResearchCycle,
+        learningSummary: ResearchCycleLearningSummary,
+        freeOnly: Boolean,
+        requestContext: ProviderRequestContext.Mission,
+    ): Pair<AgentPlanDraft, AgentApiSummary> {
+        val generation = requestContext.executionGeneration
+        val systemPrompt = "You are an expert Research Strategist."
+        val userPrompt = buildString {
+            appendLine("The current research cycle has been exhausted. You must propose a successor cycle with a refined operational objective and a new task plan.")
+            appendLine("Immutable Root Objective: ${goal.objective}")
+            appendLine("Current Cycle Ordinal: ${sourceCycle.ordinal}")
+            appendLine()
+            appendLine("Learning Summary from Current Cycle:")
+            appendLine("- Findings: ${learningSummary.establishedFindings.joinToString("; ")}")
+            appendLine("- Remaining Gaps: ${learningSummary.remainingUnresolvedGaps.joinToString("; ")}")
+            appendLine("- Rejected Material: ${learningSummary.rejectedOrUnreliableMaterial.joinToString("; ")}")
+            appendLine("- Advancement Reason: ${learningSummary.advancementReason}")
+            appendLine()
+            appendLine("Your task is to refine the OPERATIONAL objective (without changing the root subject) and provide a new set of tasks to close the remaining gaps.")
+        }
+
+        val response = executeStructuredWithFallback(
+            apiKey = apiKey,
+            strictPayload = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "cycle_advancement", freeOnly = freeOnly, goalId = goal.id).apply {
+                put("response_format", jsonSchemaResponseFormat("cycle_advancement_plan", planSchema()))
+                put("temperature", 0.1)
+            },
+            jsonModePayload = basePayload(
+                modelId,
+                systemPrompt,
+                "$userPrompt\nReturn one valid JSON object matching the requested structure and no markdown.",
+                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "cycle_advancement_json_mode",
+                freeOnly = freeOnly,
+                goalId = goal.id
+            ).apply {
+                put("response_format", JSONObject().put("type", "json_object"))
+                put("temperature", 0.1)
+            },
+            plainPayload = basePayload(
+                modelId,
+                systemPrompt,
+                "$userPrompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
+                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "cycle_advancement_plain",
+                freeOnly = freeOnly,
+                goalId = goal.id
+            ).apply {
+                put("temperature", 0.1)
+            },
+            generation = generation,
+            requestContext = requestContext,
+        )
+
+        val draft = parsePlan(response.content, freeOnly)
+        return draft to response.summary
+    }
+
     suspend fun createPlan(
         apiKey: String,
         modelId: String,

@@ -130,3 +130,61 @@ data class ResearchRecoveryPlan(
     val generatedAt: Long? = null,
     val committedAt: Long? = null
 )
+
+enum class ResearchCycleStatus {
+    PLANNING,
+    ACTIVE,
+    SUPERSEDED,
+    COMPLETED,
+    EXHAUSTED,
+    FAILED
+}
+
+data class ResearchCycleLearningSummary(
+    val establishedFindings: List<String>,
+    val acceptedEvidenceIds: List<String>,
+    val acceptedClaimIds: List<String>,
+    val remainingUnresolvedGaps: List<String>,
+    val contradictions: List<String>,
+    val rejectedOrUnreliableMaterial: List<String>,
+    val exhaustedQueryApproaches: List<String>,
+    val exhaustedSourceFamilies: List<String>,
+    val attemptedTactics: List<EscalationTactic>,
+    val failedStrategyFingerprints: List<String>,
+    val carryForwardEvidenceIds: List<String>,
+    val advancementReason: String
+)
+
+data class ResearchCycle(
+    val id: String, // Deterministic ID
+    val ordinal: Int,
+    val parentCycleId: String?,
+    val status: ResearchCycleStatus,
+    val objectiveRevisionId: String,
+    val triggerDiagnosis: ExecutionStallDiagnosis,
+    val selectedAdvancementTactic: EscalationTactic,
+    val strategyFingerprint: String,
+    val queryPortfolioFingerprint: String,
+    val acceptedEvidenceFingerprint: String,
+    val unresolvedGapFingerprint: String,
+    val learningSummary: ResearchCycleLearningSummary?,
+    val createdAt: Long = System.currentTimeMillis(),
+    val activatedAt: Long? = null,
+    val supersededAt: Long? = null,
+    val completedAt: Long? = null,
+    val exhaustedAt: Long? = null
+)
+
+data class ObjectiveRevision(
+    val id: String, // Deterministic ID
+    val ordinal: Int,
+    val parentRevisionId: String?,
+    val immutableRootObjectiveFingerprint: String,
+    val operationalObjective: String,
+    val unresolvedGaps: List<String>,
+    val retainedConstraints: List<String>,
+    val evidenceRequirements: List<String>,
+    val revisionReason: String,
+    val revisionFingerprint: String,
+    val createdAt: Long = System.currentTimeMillis()
+)

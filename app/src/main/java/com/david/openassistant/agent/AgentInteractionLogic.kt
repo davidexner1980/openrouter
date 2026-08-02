@@ -8,6 +8,7 @@ fun AgentGoalStatus.isFinalTerminalStatus(): Boolean = this in setOf(
     AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
     AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
     AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+    AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
     AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
 )
 

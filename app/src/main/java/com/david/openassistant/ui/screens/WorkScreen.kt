@@ -248,6 +248,7 @@ fun StatusBadge(status: AgentGoalStatus) {
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
         AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> MaterialTheme.colorScheme.error to "Blocked"
         AgentGoalStatus.PAUSED,
         AgentGoalStatus.CANCELLED -> MaterialTheme.colorScheme.outline to status.name.lowercase().replaceFirstChar(Char::uppercase)
@@ -941,6 +942,7 @@ private fun AgentGoal.needsUserAction(): Boolean =
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
         AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
     )
 
@@ -970,6 +972,7 @@ private fun AgentGoal.missionPhaseLabel(): String =
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
         AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
+        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> "Mission Halted"
         AgentGoalStatus.PAUSED -> "Mission Paused"
         AgentGoalStatus.CANCELLED -> "Mission Stopped"

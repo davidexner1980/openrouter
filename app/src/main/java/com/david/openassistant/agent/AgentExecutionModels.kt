@@ -166,6 +166,7 @@ data class ExecutionOwnership(
 
 data class AgentTask(
     val id: String = UUID.randomUUID().toString(),
+    val cycleId: String? = null,
     val order: Int,
     val title: String,
     val instructions: String,

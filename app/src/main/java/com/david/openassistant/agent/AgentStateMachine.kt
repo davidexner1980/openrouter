@@ -20,6 +20,7 @@ object AgentStateMachine {
             AgentGoalStatus.FAILED,
             AgentGoalStatus.BLOCKED,
             AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
+            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         ),
         AgentGoalStatus.QUEUED to setOf(
             AgentGoalStatus.RUNNING,
@@ -32,6 +33,7 @@ object AgentStateMachine {
             AgentGoalStatus.FINALIZING,
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
+            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         ),
         AgentGoalStatus.RUNNING to setOf(
             AgentGoalStatus.QUEUED,
@@ -44,6 +46,7 @@ object AgentStateMachine {
             AgentGoalStatus.FINALIZING,
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
+            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         ),
         AgentGoalStatus.VERIFYING to setOf(
             AgentGoalStatus.QUEUED,
@@ -125,6 +128,7 @@ object AgentStateMachine {
         AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE to emptySet(),
         AgentGoalStatus.INSUFFICIENT_CURRENT_DATA to emptySet(),
         AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES to emptySet(),
+        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED to emptySet(),
         AgentGoalStatus.REQUIRES_USER_CLARIFICATION to setOf(
             AgentGoalStatus.PLANNING,
             AgentGoalStatus.QUEUED,

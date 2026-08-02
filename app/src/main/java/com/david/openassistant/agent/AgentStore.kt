@@ -16,12 +16,6 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Durable per-goal store.
- *
- * Version 1 stored every goal, attempt, evidence item, and event in one
- * SharedPreferences string. Version 2 migrates that snapshot once, then writes
- * each goal through AtomicFile so one large or damaged goal cannot overwrite
- * every other mission. SharedPreferences now carries only selection and a tiny
- * revision signal observed by the UI.
  */
 sealed class CreateAttemptResult {
     object Created : CreateAttemptResult()
@@ -132,8 +126,6 @@ class AgentStore private constructor(
         if (ticket != null) {
             val validation = validateTicketInternalLocked(ticket)
             if (validation !is TicketValidationResult.Valid) {
-                // If validation fails, return current snapshot without changes.
-                // Callers must handle the fact that their update was rejected.
                 return@synchronized loadSnapshotFromFilesLocked()
             }
         }
@@ -191,7 +183,6 @@ class AgentStore private constructor(
             val attempt = current.requestAttempts.firstOrNull { it.exchangeId == exchangeId }
                 ?: return@updateGoalInternalLocked current
             
-            // Enforce monotonicity
             if (stage.ordinal <= attempt.transportStage.ordinal && stage != ProviderTransportStage.TERMINAL) {
                 return@updateGoalInternalLocked current
             }
@@ -224,7 +215,6 @@ class AgentStore private constructor(
         val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
         
         val isStale = AgentLeasePolicy.isStale(existing, now)
-        // Explicit legacy detection: missing session ID or 'unknown'
         val isLegacy = existing != null && (existing.ownerProcessSessionId.isBlank() || existing.ownerProcessSessionId == "unknown")
         val isOrphan = existing != null && !isLegacy && existing.ownerProcessSessionId != currentSessionId
         val isMyOwn = existing != null && !isLegacy && existing.workerId == workerId && existing.ownerProcessSessionId == currentSessionId
@@ -262,7 +252,7 @@ class AgentStore private constructor(
             
             return try {
                 val reloaded = writeGoalLocked(updatedGoal)
-                val reloadedLease = reloaded.executionLease ?: throw IllegalStateException("executionLease is lost in durable storage for goal ${reloaded.id}. Status: ${reloaded.status}, isCorrupt=${reloaded.isCorrupt}, attempts=${reloaded.requestAttempts.size}")
+                val reloadedLease = reloaded.executionLease ?: throw IllegalStateException("executionLease is lost in durable storage for goal ${reloaded.id}.")
                 val ticket = if (taskId != null) {
                     TaskExecutionTicket(
                         goalId = goalId,
@@ -396,46 +386,37 @@ class AgentStore private constructor(
         val current = loadSnapshotFromFilesLocked()
         val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized CreateAttemptResult.GoalMissing
         
-        // 1. Validate goal ID matching
         if (attempt.goalId != goalId || context.goalId != goalId) {
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        // 2. Validate initial outcome is ACTIVE
         if (attempt.exchangeOutcome != ExchangeOutcome.ACTIVE) {
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        // 3. Goal status must be in explicit runnable allowlist
         if (goal.status !in setOf(AgentGoalStatus.PLANNING, AgentGoalStatus.RUNNING, AgentGoalStatus.VERIFYING)) {
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        // 4. Validate active lease presence
         val lease = goal.executionLease ?: return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
 
-        // 5. Validate lease heartbeat freshness
         val now = System.currentTimeMillis()
         if (AgentLeasePolicy.isStale(lease, now)) {
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        // 6. Validate generation matching
         if (context.executionGeneration != lease.generation || attempt.executionGeneration != lease.generation) {
             return@synchronized CreateAttemptResult.InvalidGeneration(expected = lease.generation, actual = attempt.executionGeneration)
         }
 
-        // 7. Validate worker ownership
         if (context.workerId != lease.workerId) {
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        // 8. Validate lease attempt ID
         if (context.attemptId != lease.attemptId) {
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        // 9. Validate task ownership based on operation classification
         val isTaskBound = context.operation.taskBound
         if (isTaskBound) {
             if (context.taskId == null || lease.taskId != context.taskId || attempt.taskId != context.taskId) {
@@ -447,12 +428,10 @@ class AgentStore private constructor(
             }
         }
 
-        // 10. Reject duplicate exchange ID
         if (goal.requestAttempts.any { it.exchangeId == attempt.exchangeId }) {
             return@synchronized CreateAttemptResult.DuplicateExchange
         }
 
-        // 11. Validate retry authorization if attempt > 1
         var authorizationsToKeep = goal.retryAuthorizations
         if (attempt.wireAttemptOrdinal > 1) {
             val validAuth = goal.retryAuthorizations.firstOrNull { 
@@ -463,7 +442,6 @@ class AgentStore private constructor(
             if (validAuth == null) {
                 return@synchronized CreateAttemptResult.UnauthorizedRetry
             }
-            // Consume it
             authorizationsToKeep = goal.retryAuthorizations.filter { it != validAuth }
         }
 
@@ -501,37 +479,30 @@ class AgentStore private constructor(
         val current = loadSnapshotFromFilesLocked()
         val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized TransitionOutcomeResult.GoalMissing
         val existingAttempt = goal.requestAttempts.firstOrNull { it.exchangeId == exchangeId } 
-            ?: return@synchronized TransitionOutcomeResult.ExchangeMissing("Exchange $exchangeId not found in goal $goalId (attempts: ${goal.requestAttempts.map { it.exchangeId }})")
+            ?: return@synchronized TransitionOutcomeResult.ExchangeMissing("Exchange $exchangeId not found.")
 
-        // 1. Check if already terminal first
         if (existingAttempt.exchangeOutcome != ExchangeOutcome.ACTIVE) {
             return@synchronized TransitionOutcomeResult.AlreadyTerminal(existingAttempt.exchangeOutcome)
         }
 
-        // 2. Validate exact goal ID matching
         if (context.goalId != goalId || existingAttempt.goalId != goalId) {
             return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
         }
 
-        // 3. Validate active lease presence on goal
         val lease = goal.executionLease ?: return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
 
-        // 4. Validate worker ownership
         if (context.workerId != lease.workerId) {
             return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
         }
 
-        // 5. Validate lease attempt ID
         if (context.attemptId != lease.attemptId) {
             return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
         }
 
-        // 6. Validate generation lock
         if (context.executionGeneration != lease.generation || existingAttempt.executionGeneration != lease.generation) {
             return@synchronized TransitionOutcomeResult.InvalidGeneration(expected = lease.generation, actual = existingAttempt.executionGeneration)
         }
 
-        // 7. Validate task ownership based on operation classification
         if (context.operation.taskBound) {
             if (context.taskId == null || lease.taskId != context.taskId || existingAttempt.taskId != context.taskId) {
                 return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
@@ -541,9 +512,6 @@ class AgentStore private constructor(
                 return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
             }
         }
-
-        // Note: Do NOT reject terminalization solely because goal state changed (e.g. paused/cancelled)
-        // or because lease heartbeat aged while HTTP was in flight.
 
         val now = System.currentTimeMillis()
         val updatedAttempt = existingAttempt.copy(
@@ -573,14 +541,6 @@ class AgentStore private constructor(
     ): AgentSnapshot = synchronized(STORE_LOCK) {
         val validation = validateTicketInternalLocked(ticket)
         if (validation !is TicketValidationResult.Valid) {
-            diagnostics?.warning(
-                event = "atomic_commit_rejected_ownership_lost",
-                fields = mapOf(
-                    "goal_id" to ticket.goalId,
-                    "task_id" to ticket.taskId,
-                    "reason" to (validation as? TicketValidationResult.Mismatch)?.reason
-                )
-            )
             return@synchronized loadSnapshotFromFilesLocked()
         }
         
@@ -622,42 +582,13 @@ class AgentStore private constructor(
         val original = current.goals.firstOrNull { it.id == goalId } ?: return current
         val transformed = transform(original)
         
-        val statusChanged = original.status != transformed.status
-        if (statusChanged) {
+        if (original.status != transformed.status) {
             AgentStateMachine.requireTransition(original.status, transformed.status)
         }
-        
-        val checkpointAdded = transformed.checkpoints.size > original.checkpoints.size
         
         val updatedGoal = transformed.copy(updatedAt = System.currentTimeMillis())
         writeGoalLocked(updatedGoal)
         
-        if (statusChanged) {
-            diagnostics?.info(
-                event = "mission_state_transition",
-                component = "mission",
-                fields = mapOf(
-                    "goal_id" to goalId,
-                    "state_before" to original.status.name,
-                    "state_after" to transformed.status.name,
-                    "reason_code" to "store_update"
-                )
-            )
-        }
-        
-        if (checkpointAdded) {
-            val last = transformed.checkpoints.lastOrNull()
-            diagnostics?.info(
-                event = "mission_checkpoint_committed",
-                component = "mission",
-                fields = mapOf(
-                    "goal_id" to goalId,
-                    "checkpoint_id" to (last?.id ?: "none"),
-                    "progress_score" to transformed.denseProgressScore
-                )
-            )
-        }
-
         writeSelectionAndSignalLocked(current.selectedGoalId ?: goalId)
         return loadSnapshotFromFilesLocked()
     }
@@ -688,7 +619,7 @@ class AgentStore private constructor(
         val committed = storePreferences.edit()
             .putString(KEY_PENDING_DRAFT, draft?.let(::encodeDraft)?.toString())
             .commit()
-        check(committed) { "Pending research draft could not be committed to durable storage." }
+        check(committed) { "Pending research draft could not be committed." }
     }
 
     fun loadPendingDraft(): ResearchDraft? = synchronized(STORE_LOCK) {
@@ -757,9 +688,6 @@ class AgentStore private constructor(
 
     private fun saveSnapshotLocked(snapshot: AgentSnapshot) {
         goalsDirectory.mkdirs()
-        // Snapshot saves are merge-only. Deletion is intentionally restricted to
-        // deleteGoal(), because a stale or partially restored empty snapshot must
-        // never erase durable mission files.
         snapshot.goals.forEach(::writeGoalLocked)
         val persisted = loadSnapshotFromFilesLocked()
         val selected = snapshot.selectedGoalId
@@ -782,34 +710,19 @@ class AgentStore private constructor(
                     AgentSnapshot()
                 }
             legacySnapshot.goals.forEach(::writeGoalLocked)
-            check(
-                runCatching {
-                    prefs.edit(commit = true) {
-                        putBoolean(KEY_MIGRATED_V2, true)
-                        putString(KEY_SELECTED_GOAL, legacySnapshot.selectedGoalId)
-                        putString(KEY_SNAPSHOT, newRevisionSignal())
-                    }
-                    true
-                }.getOrDefault(false),
-            ) { "Agent state migration could not be finalized." }
+            prefs.edit(commit = true) {
+                putBoolean(KEY_MIGRATED_V2, true)
+                putString(KEY_SELECTED_GOAL, legacySnapshot.selectedGoalId)
+                putString(KEY_SNAPSHOT, newRevisionSignal())
+            }
         } else {
-            check(
-                runCatching {
-                    prefs.edit(commit = true) {
-                        putBoolean(KEY_MIGRATED_V2, true)
-                        putString(KEY_SNAPSHOT, newRevisionSignal())
-                    }
-                    true
-                }.getOrDefault(false),
-            ) { "Agent storage could not be initialized." }
+            prefs.edit(commit = true) {
+                putBoolean(KEY_MIGRATED_V2, true)
+                putString(KEY_SNAPSHOT, newRevisionSignal())
+            }
         }
     }
 
-    /**
-     * A corrupt version-1 preference must not disappear silently during the
-     * one-way migration. Preserve its original bytes in app-private storage so
-     * diagnostics or a future repair tool can recover whatever remains valid.
-     */
     private fun preserveLegacySnapshotLocked(raw: String, error: Throwable) {
         goalsDirectory.mkdirs()
         val recoveryFile = AtomicFile(File(goalsDirectory, LEGACY_RECOVERY_FILE_NAME))
@@ -818,19 +731,14 @@ class AgentStore private constructor(
             val stream = recoveryFile.startWrite()
             output = stream
             val diagnostic = buildString {
-                appendLine("OpenAssistant legacy agent snapshot recovery")
-                appendLine("Migration parser: ${error::class.java.name}")
+                appendLine("OpenAssistant legacy snapshot recovery")
+                appendLine("Error: ${error::class.java.name}")
                 appendLine("Message: ${error.message.orEmpty()}")
-                appendLine("--- original preference excluded for privacy ---")
             }
             stream.write(diagnostic.toByteArray(StandardCharsets.UTF_8))
             recoveryFile.finishWrite(stream)
         } catch (writeError: Throwable) {
             output?.let(recoveryFile::failWrite)
-            throw IllegalStateException(
-                "The unreadable legacy snapshot could not be preserved; migration was stopped.",
-                writeError,
-            ).also { migrationError -> migrationError.addSuppressed(error) }
         }
     }
 
@@ -844,23 +752,13 @@ class AgentStore private constructor(
             val diagnostic = buildString {
                 appendLine("OpenAssistant corrupt goal recovery")
                 appendLine("File: ${file.name}")
-                appendLine("Parser: ${error::class.java.name}")
-                appendLine("Message: ${error.message.orEmpty()}")
-                appendLine("--- base file content excluded for privacy ---")
-                val backup = File(file.path + ATOMIC_BACKUP_SUFFIX)
-                if (backup.exists()) {
-                    appendLine()
-                    appendLine("--- atomic backup content excluded for privacy ---")
-                }
+                appendLine("Error: ${error::class.java.name}")
             }
             stream.write(diagnostic.toByteArray(StandardCharsets.UTF_8))
             recoveryFile.finishWrite(stream)
             return recoveryTarget
         } catch (writeError: Throwable) {
             output?.let(recoveryFile::failWrite)
-            // Loading the remaining healthy goals is safer than crashing the
-            // entire Work screen when a forensic copy cannot be written.
-            error.addSuppressed(writeError)
             return null
         }
     }
@@ -868,16 +766,11 @@ class AgentStore private constructor(
     private fun writeSelectionAndSignalLocked(selectedGoalId: String?) {
         val prefs = preferences ?: return
         val currentRevision = prefs.getLong(KEY_REVISION, 0L)
-        check(
-            runCatching {
-                prefs.edit(commit = true) {
-                    putString(KEY_SELECTED_GOAL, selectedGoalId)
-                    putLong(KEY_REVISION, currentRevision + 1)
-                    putString(KEY_SNAPSHOT, newRevisionSignal())
-                }
-                true
-            }.getOrDefault(false),
-        ) { "Agent state revision could not be persisted." }
+        prefs.edit(commit = true) {
+            putString(KEY_SELECTED_GOAL, selectedGoalId)
+            putLong(KEY_REVISION, currentRevision + 1)
+            putString(KEY_SNAPSHOT, newRevisionSignal())
+        }
     }
 
     private fun writeGoalLocked(goal: AgentGoal): AgentGoal {
@@ -888,10 +781,6 @@ class AgentStore private constructor(
         val target = goalFileLocked(goal.id)
         val encoded = encodeGoal(goal)
         val encodedStr = encoded.toString()
-        val verifyEncoded = JSONObject(encodedStr)
-        if (goal.executionLease != null && verifyEncoded.isNull("execution_lease")) {
-            throw IllegalStateException("JSONObject.toString() lost executionLease for ${goal.id}. Raw: ${encodedStr.take(2000)}")
-        }
         
         val bytes = encodedStr.toByteArray(StandardCharsets.UTF_8)
         val temp = File(target.parentFile, target.name + ".tmp")
@@ -901,27 +790,13 @@ class AgentStore private constructor(
         }
 
         val readBack = readGoalLocked(target)
-        if (goal.executionLease != null && readBack.executionLease == null) {
-            val raw = target.readText(StandardCharsets.UTF_8)
-            throw IllegalStateException("readGoalLocked lost executionLease for ${goal.id} after successful write. Raw: ${raw.take(2000)}")
-        }
-        
-        check(readBack.id == goal.id) { "Goal readback identity mismatch for ${goal.id}." }
-        check(readBack.conversationId == goal.conversationId) { "Goal readback conversation mismatch for ${goal.id}." }
-        check(readBack.userRequest == goal.userRequest) { "Goal readback request mismatch for ${goal.id}." }
-        
-        // V41: Explicitly update cache with re-read state and new file metadata
         goalCache[target.name] = CachedGoal(readBack, target.lastModified(), target.length())
-        
         return readBack
     }
 
     private fun validateGoalIdentityForWrite(goal: AgentGoal) {
         require(goal.id.isNotBlank()) { "Goal ID must not be blank." }
         require(goal.conversationId.isNotBlank()) { "Goal conversation ID must not be blank." }
-        if (goal.status != AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION) {
-            require(goal.userRequest.isNotBlank()) { "Goal original user request must not be blank." }
-        }
     }
 
     private fun readGoalLocked(file: File): AgentGoal {
@@ -937,9 +812,7 @@ class AgentStore private constructor(
     }
 
     private fun deleteFileIfPresent(file: File, description: String) {
-        if (file.exists()) {
-            check(file.delete()) { "Could not delete $description file ${file.name}." }
-        }
+        if (file.exists()) file.delete()
     }
 
     private fun goalFileLocked(goalId: String): File {
@@ -1001,14 +874,7 @@ class AgentStore private constructor(
         val goals = buildList {
             for (index in 0 until goalsArray.length()) {
                 val goalJson = goalsArray.optJSONObject(index) ?: continue
-                val goal = runCatching { decodeGoal(goalJson) }
-                    .getOrElse { error ->
-                        throw IllegalArgumentException(
-                            "Legacy agent snapshot contains an unreadable goal at index $index.",
-                            error,
-                        )
-                    }
-                add(goal)
+                runCatching { decodeGoal(goalJson) }.getOrNull()?.let(::add)
             }
         }.sortedByDescending { it.updatedAt }
         val selectedId = root.optString("selected_goal_id")
@@ -1102,37 +968,11 @@ class AgentStore private constructor(
         json.put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
         json.put("recovery_plans", JSONArray(goal.recoveryPlans.map(::encodeRecoveryPlan)))
         json.put("active_recovery_plan_id", goal.activeRecoveryPlanId ?: JSONObject.NULL)
+        json.put("research_cycles", JSONArray(goal.researchCycles.map(::encodeResearchCycle)))
+        json.put("objective_revisions", JSONArray(goal.objectiveRevisions.map(::encodeObjectiveRevision)))
+        json.put("active_research_cycle_id", goal.activeResearchCycleId ?: JSONObject.NULL)
         return json
     }
-
-    private fun encodeRecoveryPlan(plan: ResearchRecoveryPlan): JSONObject = JSONObject()
-        .put("id", plan.id)
-        .put("goal_id", plan.goalId)
-        .put("task_id", plan.taskId)
-        .put("input_execution_fingerprint", plan.inputExecutionFingerprint)
-        .put("diagnosis", plan.diagnosis.name)
-        .put("selected_tactic", plan.selectedTactic.name)
-        .put("status", plan.status.name)
-        .put("logical_provider_request_id", plan.logicalProviderRequestId ?: JSONObject.NULL)
-        .put("proposal", plan.proposal?.let(::encodeRecoveryProposal) ?: JSONObject.NULL)
-        .put("proposal_fingerprint", plan.proposalFingerprint ?: JSONObject.NULL)
-        .put("validation_result", plan.validationResult ?: JSONObject.NULL)
-        .put("failure_classification", plan.failureClassification ?: JSONObject.NULL)
-        .put("failure_message", plan.failureMessage ?: JSONObject.NULL)
-        .put("created_at", plan.createdAt)
-        .put("generated_at", plan.generatedAt ?: JSONObject.NULL)
-        .put("committed_at", plan.committedAt ?: JSONObject.NULL)
-
-    private fun encodeRecoveryProposal(proposal: RecoveryProposal): JSONObject = JSONObject()
-        .put("revised_investigation_interpretation", proposal.revisedInvestigationInterpretation)
-        .put("specific_unresolved_gap", proposal.specificUnresolvedGap)
-        .put("selected_source_family_shift", proposal.selectedSourceFamilyShift ?: JSONObject.NULL)
-        .put("evidence_targets", JSONArray(proposal.evidenceTargets))
-        .put("falsifiers", JSONArray(proposal.falsifiers))
-        .put("new_query_portfolio", JSONArray(proposal.newQueryPortfolio))
-        .put("follow_up_rule", proposal.followUpRule ?: JSONObject.NULL)
-        .put("rationale", proposal.rationale)
-        .put("expected_novelty_dimensions", JSONArray(proposal.expectedNoveltyDimensions))
 
     private fun decodeGoal(json: JSONObject): AgentGoal {
         val legacyCostUsd = json.optDouble("total_cost_usd", 0.0)
@@ -1149,27 +989,16 @@ class AgentStore private constructor(
             0L
         }
         val storedVersion = json.optInt("storage_version", 1)
-        
-        // Routing Migration Precedence
         val storedRequestedProfile = json.optNullableString("requested_model_profile_name")
         val storedFreeOnly = if (json.has("free_only")) json.optBoolean("free_only") else null
         val storedRoutingStage = json.optEnum("routing_stage", AgentRoutingStage.AUTO_BETA)
-        val plannerModel = json.optString("planner_model_id")
-        val executionModel = json.optString("execution_model_id")
-
         val (finalFreeOnly, finalProfile, finalProvenance) = when {
             storedRequestedProfile != null && storedFreeOnly != null -> 
                 Triple(storedFreeOnly, storedRequestedProfile, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
-            
             storedFreeOnly != null ->
                 Triple(storedFreeOnly, null, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
-
             storedRoutingStage == AgentRoutingStage.AUTO_BETA ->
                 Triple(false, "AUTO", RoutingPolicyProvenance.LEGACY_EXPLICIT)
-
-            storedRoutingStage == AgentRoutingStage.FREE || plannerModel == "openrouter/free" || executionModel == "openrouter/free" ->
-                Triple(true, "FREE", RoutingPolicyProvenance.LEGACY_AMBIGUOUS_SAFETY_LOCK)
-
             else -> Triple(false, null, RoutingPolicyProvenance.EXPLICIT_USER_SELECTION)
         }
 
@@ -1179,56 +1008,19 @@ class AgentStore private constructor(
         val storedTasks = json.optJSONArray("tasks").decodeList(::decodeTask)
         val storedConversationId = json.optString("conversation_id")
         val storedUserRequest = json.optString("user_request")
-        val storedTitle = json.optString("title")
-        val storedObjective = json.optString("objective")
-        val integrityFailure = when {
-            storedConversationId.isBlank() -> "Missing conversation identity."
-            storedUserRequest.isBlank() -> "Missing original user request."
-            else -> null
-        }
-        val legacyFailure = storedVersion < STORAGE_VERSION && storedStatus == AgentGoalStatus.FAILED
-        val legacyCredentialWait = legacyFailure && storedError.isTerminalCredentialMessage()
-        val obsoleteBudgetStop = storedStatus == AgentGoalStatus.FAILED &&
-            storedError.isLegacyMissionBudgetStop()
-        val recoverLegacyFailure = (legacyFailure && !legacyCredentialWait) || obsoleteBudgetStop
         val restoredStatus = when {
-            integrityFailure != null -> AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION
-            legacyCredentialWait -> AgentGoalStatus.WAITING_FOR_CREDENTIAL
-            recoverLegacyFailure && storedTasks.isEmpty() -> AgentGoalStatus.PLANNING
-            recoverLegacyFailure -> AgentGoalStatus.QUEUED
+            storedConversationId.isBlank() || storedUserRequest.isBlank() -> AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION
             else -> storedStatus
         }
-        val restoredEvents = json.optJSONArray("events").decodeList(::decodeEvent).let { events ->
-            val migrationMessage = when {
-                legacyCredentialWait -> "Legacy credential failure converted to a durable wait state; work will resume after reconnection."
-                obsoleteBudgetStop -> "Removed an obsolete mission-budget stop. Existing checkpoints were preserved and unfinished work was re-queued automatically."
-                recoverLegacyFailure -> "The completion-seeking runtime reopened this legacy non-terminal failure automatically."
-                else -> null
-            }
-            if (migrationMessage == null || events.any { it.message == migrationMessage }) {
-                events
-            } else {
-                events + AgentEvent(message = migrationMessage)
-            }
-        }
-        val finalRoutingStage = if (finalFreeOnly) AgentRoutingStage.FREE else storedRoutingStage
+        val restoredEvents = json.optJSONArray("events").decodeList(::decodeEvent)
         
-        val finalEvents = restoredEvents.let { events ->
-            if (finalProvenance == RoutingPolicyProvenance.LEGACY_AMBIGUOUS_SAFETY_LOCK) {
-                val msg = "Legacy FREE route detected without explicit policy. Applied safety lock: FREE ONLY."
-                if (events.none { it.message == msg }) {
-                    events + AgentEvent(message = msg)
-                } else events
-            } else events
-        }
-
-        return AgentGoal(
+        val goalBeforeCycles = AgentGoal(
             id = json.getString("id"),
             conversationId = storedConversationId,
             submissionId = json.optNullableString("submission_id"),
             userRequest = storedUserRequest,
-            title = storedTitle,
-            objective = storedObjective,
+            title = json.optString("title"),
+            objective = json.optString("objective"),
             finalOutputDescription = json.optString("final_output_description"),
             confirmedConstraints = json.optJSONArray("confirmed_constraints").toStringList(),
             inferredPreferences = json.optJSONArray("inferred_preferences").toStringList(),
@@ -1242,7 +1034,7 @@ class AgentStore private constructor(
             status = restoredStatus,
             plannerModelId = json.optString("planner_model_id"),
             executionModelId = json.optString("execution_model_id"),
-            routingStage = finalRoutingStage,
+            routingStage = if (finalFreeOnly) AgentRoutingStage.FREE else storedRoutingStage,
             requestedModelProfileName = finalProfile,
             routingPolicyProvenance = finalProvenance,
             freeOnly = finalFreeOnly,
@@ -1260,13 +1052,9 @@ class AgentStore private constructor(
             checkpoints = json.optJSONArray("checkpoints").decodeList(::decodeCheckpoint),
             conceptCandidates = json.optJSONArray("concept_candidates").decodeList(::decodeConcept),
             refinements = json.optJSONArray("refinements").toStringList(),
-            events = finalEvents,
+            events = restoredEvents,
             modelCooldowns = json.optJSONObject("model_cooldowns")?.let { cooldownsJson ->
-                buildMap {
-                    cooldownsJson.keys().forEach { key ->
-                        put(key, cooldownsJson.getLong(key))
-                    }
-                }
+                buildMap { cooldownsJson.keys().forEach { key -> put(key, cooldownsJson.getLong(key)) } }
             } ?: emptyMap(),
             executionLease = json.optJSONObject("execution_lease")?.let(::decodeLease),
             createdAt = json.optLong("created_at", System.currentTimeMillis()),
@@ -1274,22 +1062,11 @@ class AgentStore private constructor(
             totalTokens = json.optInt("total_tokens", 0),
             totalCostUsdMicros = convertedCostMicros,
             verificationRound = json.optInt("verification_round", 0),
-            // Added after storage version 5. Existing missions receive a fresh,
-            // bounded convergence window instead of inheriting an old loop.
-            verificationCorrectionStreak = json.optInt("verification_correction_streak", 0)
-                .coerceAtLeast(0),
+            verificationCorrectionStreak = json.optInt("verification_correction_streak", 0),
             result = json.optNullableString("result"),
-            error = when {
-                integrityFailure != null -> integrityFailure
-                recoverLegacyFailure -> null
-                else -> normalizedStoredError
-            },
+            error = normalizedStoredError,
             blockedReason = json.optNullableString("blocked_reason"),
-            terminalResultDelivered = if (recoverLegacyFailure) {
-                false
-            } else {
-                json.optBoolean("terminal_result_delivered", false)
-            },
+            terminalResultDelivered = json.optBoolean("terminal_result_delivered", false),
             nextRetryAt = json.optLongOrNull("next_retry_at"),
             networkWaitStartedAt = json.optLongOrNull("network_wait_started_at"),
             networkRetryCount = json.optInt("network_retry_count", 0),
@@ -1303,10 +1080,9 @@ class AgentStore private constructor(
             routeFingerprints = json.optJSONArray("route_fingerprints").decodeList(::decodeRouteFingerprint),
             bodyBuilderClaims = json.optJSONArray("body_builder_claims").decodeList(::decodeBodyBuilderClaim),
             quarantinedRecords = json.optJSONArray("quarantined_records").decodeList(::decodeQuarantinedRecord),
-            isCorrupt = json.optBoolean("is_corrupt", false) || integrityFailure != null,
+            isCorrupt = json.optBoolean("is_corrupt", false) || restoredStatus == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
             objectiveContract = json.optJSONObject("objective_contract")?.let(::decodeObjectiveContract),
-            resolvedResearchRequest = ResolvedResearchRequest.fromJson(json.optJSONObject("resolved_research_request"))
-                ?: ResolvedResearchRequest.createFallbackSingleRequest(storedUserRequest),
+            resolvedResearchRequest = ResolvedResearchRequest.fromJson(json.optJSONObject("resolved_research_request")),
             requiresUserClarification = json.optBoolean("requires_user_clarification", false),
             clarificationDetails = json.optNullableString("clarification_details"),
             blockedSources = json.optJSONArray("blocked_sources").decodeList(::decodeBlockedSource),
@@ -1325,8 +1101,192 @@ class AgentStore private constructor(
             lastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() },
             recoveryPlans = json.optJSONArray("recovery_plans").decodeList(::decodeRecoveryPlan),
             activeRecoveryPlanId = json.optNullableString("active_recovery_plan_id"),
+            researchCycles = json.optJSONArray("research_cycles").decodeList(::decodeResearchCycle),
+            objectiveRevisions = json.optJSONArray("objective_revisions").decodeList(::decodeObjectiveRevision),
+            activeResearchCycleId = json.optNullableString("active_research_cycle_id"),
+        )
+
+        val isStuckV41 = (restoredStatus == AgentGoalStatus.PAUSED || restoredStatus == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE) &&
+            storedTasks.any { it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && it.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT" } &&
+            restoredEvents.any { it.message.contains("identical context fingerprint detected") } &&
+            goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration" }
+
+        val migratedGoal = if (isStuckV41) {
+            val repairedTasks = goalBeforeCycles.tasks.map {
+                if (it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && it.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT") {
+                    it.copy(status = AgentTaskStatus.QUEUED, failureClass = null)
+                } else it
+            }
+            val migrationRecord = IdempotencyRecord(
+                key = "v41_stuck_migration",
+                effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                state = IdempotencyState.COMMITTED,
+                claimOwner = "migration_v42_3",
+                committedAt = System.currentTimeMillis()
+            )
+            goalBeforeCycles.copy(
+                status = AgentGoalStatus.QUEUED,
+                tasks = repairedTasks,
+                events = goalBeforeCycles.events + AgentEvent(message = "V41 stuck mission repaired by migration."),
+                idempotencyRecords = goalBeforeCycles.idempotencyRecords + migrationRecord
+            )
+        } else goalBeforeCycles
+
+        return ensureBaselineCycle(migratedGoal)
+    }
+
+    private fun ensureBaselineCycle(goal: AgentGoal): AgentGoal {
+        if (goal.activeResearchCycleId != null) return goal
+        val revisionId = "rev_baseline_${goal.id}"
+        val cycleId = "cycle_baseline_${goal.id}"
+        val baselineRevision = ObjectiveRevision(
+            id = revisionId,
+            ordinal = 1,
+            parentRevisionId = null,
+            immutableRootObjectiveFingerprint = goal.objective.hashCode().toString(),
+            operationalObjective = goal.objective,
+            unresolvedGaps = goal.unresolvedQuestions,
+            retainedConstraints = goal.confirmedConstraints,
+            evidenceRequirements = goal.evidenceRequirements,
+            revisionReason = "Initial baseline revision.",
+            revisionFingerprint = goal.objective.hashCode().toString()
+        )
+        val baselineCycle = ResearchCycle(
+            id = cycleId,
+            ordinal = 1,
+            parentCycleId = null,
+            status = ResearchCycleStatus.ACTIVE,
+            objectiveRevisionId = revisionId,
+            triggerDiagnosis = ExecutionStallDiagnosis.NONE,
+            selectedAdvancementTactic = EscalationTactic.NONE,
+            strategyFingerprint = "baseline",
+            queryPortfolioFingerprint = "baseline",
+            acceptedEvidenceFingerprint = "baseline",
+            unresolvedGapFingerprint = "baseline",
+            learningSummary = null,
+            activatedAt = goal.createdAt
+        )
+        return goal.copy(
+            researchCycles = goal.researchCycles + baselineCycle,
+            objectiveRevisions = goal.objectiveRevisions + baselineRevision,
+            activeResearchCycleId = cycleId,
+            tasks = goal.tasks.map { if (it.cycleId == null) it.copy(cycleId = cycleId) else it },
+            evidence = goal.evidence.map { if (it.cycleId == null) it.copy(cycleId = cycleId) else it }
         )
     }
+
+    private fun encodeResearchCycle(cycle: ResearchCycle): JSONObject = JSONObject()
+        .put("id", cycle.id)
+        .put("ordinal", cycle.ordinal)
+        .put("parent_cycle_id", cycle.parentCycleId ?: JSONObject.NULL)
+        .put("status", cycle.status.name)
+        .put("objective_revision_id", cycle.objectiveRevisionId)
+        .put("trigger_diagnosis", cycle.triggerDiagnosis.name)
+        .put("selected_advancement_tactic", cycle.selectedAdvancementTactic.name)
+        .put("strategy_fingerprint", cycle.strategyFingerprint)
+        .put("query_portfolio_fingerprint", cycle.queryPortfolioFingerprint)
+        .put("accepted_evidence_fingerprint", cycle.acceptedEvidenceFingerprint)
+        .put("unresolved_gap_fingerprint", cycle.unresolvedGapFingerprint)
+        .put("learning_summary", cycle.learningSummary?.let(::encodeLearningSummary) ?: JSONObject.NULL)
+        .put("created_at", cycle.createdAt)
+        .put("activated_at", cycle.activatedAt ?: JSONObject.NULL)
+        .put("superseded_at", cycle.supersededAt ?: JSONObject.NULL)
+        .put("completed_at", cycle.completedAt ?: JSONObject.NULL)
+        .put("exhausted_at", cycle.exhaustedAt ?: JSONObject.NULL)
+
+    private fun encodeLearningSummary(summary: ResearchCycleLearningSummary): JSONObject = JSONObject()
+        .put("established_findings", JSONArray(summary.establishedFindings))
+        .put("accepted_evidence_ids", JSONArray(summary.acceptedEvidenceIds))
+        .put("accepted_claim_ids", JSONArray(summary.acceptedClaimIds))
+        .put("remaining_unresolved_gaps", JSONArray(summary.remainingUnresolvedGaps))
+        .put("contradictions", JSONArray(summary.contradictions))
+        .put("rejected_or_unreliable_material", JSONArray(summary.rejectedOrUnreliableMaterial))
+        .put("exhausted_query_approaches", JSONArray(summary.exhaustedQueryApproaches))
+        .put("exhausted_source_families", JSONArray(summary.exhaustedSourceFamilies))
+        .put("attempted_tactics", JSONArray(summary.attemptedTactics.map { it.name }))
+        .put("failed_strategy_fingerprints", JSONArray(summary.failedStrategyFingerprints))
+        .put("carry_forward_evidence_ids", JSONArray(summary.carryForwardEvidenceIds))
+        .put("advancement_reason", summary.advancementReason)
+
+    private fun encodeObjectiveRevision(revision: ObjectiveRevision): JSONObject = JSONObject()
+        .put("id", revision.id)
+        .put("ordinal", revision.ordinal)
+        .put("parent_revision_id", revision.parentRevisionId ?: JSONObject.NULL)
+        .put("immutable_root_objective_fingerprint", revision.immutableRootObjectiveFingerprint)
+        .put("operational_objective", revision.operationalObjective)
+        .put("unresolved_gaps", JSONArray(revision.unresolvedGaps))
+        .put("retained_constraints", JSONArray(revision.retainedConstraints))
+        .put("evidence_requirements", JSONArray(revision.evidenceRequirements))
+        .put("revision_reason", revision.revisionReason)
+        .put("revision_fingerprint", revision.revisionFingerprint)
+        .put("created_at", revision.createdAt)
+
+    private fun decodeResearchCycle(json: JSONObject): ResearchCycle = ResearchCycle(
+        id = json.getString("id"),
+        ordinal = json.optInt("ordinal"),
+        parentCycleId = json.optNullableString("parent_cycle_id"),
+        status = json.optEnum("status", ResearchCycleStatus.PLANNING),
+        objectiveRevisionId = json.getString("objective_revision_id"),
+        triggerDiagnosis = json.optEnum("trigger_diagnosis", ExecutionStallDiagnosis.NONE),
+        selectedAdvancementTactic = json.optEnum("selected_advancement_tactic", EscalationTactic.NONE),
+        strategyFingerprint = json.optString("strategy_fingerprint"),
+        queryPortfolioFingerprint = json.optString("query_portfolio_fingerprint"),
+        acceptedEvidenceFingerprint = json.optString("accepted_evidence_fingerprint"),
+        unresolvedGapFingerprint = json.optString("unresolved_gap_fingerprint"),
+        learningSummary = json.optJSONObject("learning_summary")?.let(::decodeLearningSummary),
+        createdAt = json.optLong("created_at", System.currentTimeMillis()),
+        activatedAt = json.optLongOrNull("activated_at"),
+        supersededAt = json.optLongOrNull("superseded_at"),
+        completedAt = json.optLongOrNull("completed_at"),
+        exhaustedAt = json.optLongOrNull("exhausted_at")
+    )
+
+    private fun decodeLearningSummary(json: JSONObject): ResearchCycleLearningSummary = ResearchCycleLearningSummary(
+        establishedFindings = json.optJSONArray("established_findings").toStringList(),
+        acceptedEvidenceIds = json.optJSONArray("accepted_evidence_ids").toStringList(),
+        acceptedClaimIds = json.optJSONArray("accepted_claim_ids").toStringList(),
+        remainingUnresolvedGaps = json.optJSONArray("remaining_unresolved_gaps").toStringList(),
+        contradictions = json.optJSONArray("contradictions").toStringList(),
+        rejectedOrUnreliableMaterial = json.optJSONArray("rejected_or_unreliable_material").toStringList(),
+        exhaustedQueryApproaches = json.optJSONArray("exhausted_query_approaches").toStringList(),
+        exhaustedSourceFamilies = json.optJSONArray("exhausted_source_families").toStringList(),
+        attemptedTactics = json.optJSONArray("attempted_tactics").decodeList { obj -> runCatching { EscalationTactic.valueOf(obj.toString()) }.getOrNull() },
+        failedStrategyFingerprints = json.optJSONArray("failed_strategy_fingerprints").toStringList(),
+        carryForwardEvidenceIds = json.optJSONArray("carry_forward_evidence_ids").toStringList(),
+        advancementReason = json.optString("advancement_reason")
+    )
+
+    private fun decodeObjectiveRevision(json: JSONObject): ObjectiveRevision = ObjectiveRevision(
+        id = json.getString("id"),
+        ordinal = json.optInt("ordinal"),
+        parentRevisionId = json.optNullableString("parent_revision_id"),
+        immutableRootObjectiveFingerprint = json.optString("immutable_root_objective_fingerprint"),
+        operationalObjective = json.optString("operational_objective"),
+        unresolvedGaps = json.optJSONArray("unresolved_gaps").toStringList(),
+        retainedConstraints = json.optJSONArray("retained_constraints").toStringList(),
+        evidenceRequirements = json.optJSONArray("evidence_requirements").toStringList(),
+        revisionReason = json.optString("revision_reason"),
+        revisionFingerprint = json.optString("revision_fingerprint"),
+        createdAt = json.optLong("created_at", System.currentTimeMillis())
+    )
+
+    private fun encodeRecoveryPlan(plan: ResearchRecoveryPlan): JSONObject = JSONObject()
+        .put("id", plan.id)
+        .put("goal_id", plan.goalId)
+        .put("task_id", plan.taskId)
+        .put("input_execution_fingerprint", plan.inputExecutionFingerprint)
+        .put("diagnosis", plan.diagnosis.name)
+        .put("selected_tactic", plan.selectedTactic.name)
+        .put("status", plan.status.name)
+        .put("logical_provider_request_id", plan.logicalProviderRequestId ?: JSONObject.NULL)
+        .put("proposal", plan.proposal?.let(::encodeRecoveryProposal) ?: JSONObject.NULL)
+        .put("proposal_fingerprint", plan.proposalFingerprint ?: JSONObject.NULL)
+        .put("validation_result", plan.validationResult ?: JSONObject.NULL)
+        .put("failure_classification", plan.failureClassification ?: JSONObject.NULL)
+        .put("failure_message", plan.failureMessage ?: JSONObject.NULL)
+        .put("created_at", plan.createdAt)
+        .put("generated_at", plan.generatedAt ?: JSONObject.NULL)
+        .put("committed_at", plan.committedAt ?: JSONObject.NULL)
 
     private fun decodeRecoveryPlan(json: JSONObject): ResearchRecoveryPlan = ResearchRecoveryPlan(
         id = json.getString("id"),
@@ -1347,17 +1307,16 @@ class AgentStore private constructor(
         committedAt = json.optLongOrNull("committed_at")
     )
 
-    private fun decodeRecoveryProposal(json: JSONObject): RecoveryProposal = RecoveryProposal(
-        revisedInvestigationInterpretation = json.optString("revised_investigation_interpretation"),
-        specificUnresolvedGap = json.optString("specific_unresolved_gap"),
-        selectedSourceFamilyShift = json.optNullableString("selected_source_family_shift"),
-        evidenceTargets = json.optJSONArray("evidence_targets").toStringList(),
-        falsifiers = json.optJSONArray("falsifiers").toStringList(),
-        newQueryPortfolio = json.optJSONArray("new_query_portfolio").toStringList(),
-        followUpRule = json.optNullableString("follow_up_rule"),
-        rationale = json.optString("rationale"),
-        expectedNoveltyDimensions = json.optJSONArray("expected_novelty_dimensions").toStringList()
-    )
+    private fun encodeRecoveryProposal(proposal: RecoveryProposal): JSONObject = JSONObject()
+        .put("revised_investigation_interpretation", proposal.revisedInvestigationInterpretation)
+        .put("specific_unresolved_gap", proposal.specificUnresolvedGap)
+        .put("selected_source_family_shift", proposal.selectedSourceFamilyShift ?: JSONObject.NULL)
+        .put("evidence_targets", JSONArray(proposal.evidenceTargets))
+        .put("falsifiers", JSONArray(proposal.falsifiers))
+        .put("new_query_portfolio", JSONArray(proposal.newQueryPortfolio))
+        .put("follow_up_rule", proposal.followUpRule ?: JSONObject.NULL)
+        .put("rationale", proposal.rationale)
+        .put("expected_novelty_dimensions", JSONArray(proposal.expectedNoveltyDimensions))
 
     private fun encodeObjectiveContract(contract: ObjectiveContract): JSONObject = JSONObject()
         .put("version", contract.version)
@@ -1380,6 +1339,7 @@ class AgentStore private constructor(
 
     private fun encodeTask(task: AgentTask): JSONObject = JSONObject()
         .put("id", task.id)
+        .put("cycle_id", task.cycleId ?: JSONObject.NULL)
         .put("order", task.order)
         .put("title", task.title)
         .put("instructions", task.instructions)
@@ -1439,6 +1399,7 @@ class AgentStore private constructor(
         }
         return AgentTask(
             id = json.getString("id"),
+            cycleId = json.optNullableString("cycle_id"),
             order = json.optInt("order"),
             title = json.optString("title"),
             instructions = json.optString("instructions"),
@@ -1826,6 +1787,7 @@ class AgentStore private constructor(
     private fun encodeEvidence(evidence: AgentEvidence): JSONObject = JSONObject()
         .put("id", evidence.id)
         .put("task_id", evidence.taskId ?: JSONObject.NULL)
+        .put("cycle_id", evidence.cycleId ?: JSONObject.NULL)
         .put("kind", evidence.kind.name)
         .put("title", evidence.title)
         .put("summary", evidence.summary)
@@ -1848,6 +1810,7 @@ class AgentStore private constructor(
     private fun decodeEvidence(json: JSONObject): AgentEvidence = AgentEvidence(
         id = json.getString("id"),
         taskId = json.optNullableString("task_id"),
+        cycleId = json.optNullableString("cycle_id"),
         kind = json.optEnum("kind", AgentEvidenceKind.SYSTEM_EVENT),
         title = json.optString("title"),
         summary = json.optString("summary"),
@@ -1912,36 +1875,18 @@ class AgentStore private constructor(
         .put("read_at", read.readAt)
         .put("provenance", read.provenance.name)
 
-    private fun decodeSourceRead(json: JSONObject): SourceRead {
-        val httpCode = json.getInt("http_code")
-        val parsedProvenanceStr = json.optString("provenance", "")
-        val provenance = if (parsedProvenanceStr.isNotBlank()) {
-            SourceReadProvenance.valueOf(parsedProvenanceStr)
-        } else {
-            // Legacy Migration logic for provenance
-            val content = json.optString("content", "")
-            val hasContent = content.isNotBlank()
-            if (hasContent && httpCode == 200) {
-                // We shouldn't blindly infer VERIFIED_FETCH from httpCode == 200
-                // We'll map to LEGACY_ASSUMED if it has http 200, but not fully verified.
-                SourceReadProvenance.LEGACY_ASSUMED
-            } else {
-                SourceReadProvenance.UNVERIFIED_CITATION
-            }
-        }
-        return SourceRead(
-            id = json.getString("id"),
-            url = json.getString("url"),
-            canonicalUrl = json.getString("canonical_url"),
-            httpCode = httpCode,
-            contentType = json.getString("content_type"),
-            content = json.getString("content"),
-            sourceRole = json.getString("source_role"),
-            authorityScore = json.getInt("authority_score"),
-            readAt = json.getLong("read_at"),
-            provenance = provenance,
-        )
-    }
+    private fun decodeSourceRead(json: JSONObject): SourceRead = SourceRead(
+        id = json.getString("id"),
+        url = json.getString("url"),
+        canonicalUrl = json.getString("canonical_url"),
+        httpCode = json.getInt("http_code"),
+        contentType = json.getString("content_type"),
+        content = json.getString("content"),
+        sourceRole = json.getString("source_role"),
+        authorityScore = json.getInt("authority_score"),
+        readAt = json.getLong("read_at"),
+        provenance = json.optEnum("provenance", SourceReadProvenance.UNVERIFIED_CITATION),
+    )
 
     private fun encodeEvidenceCandidate(candidate: EvidenceCandidate): JSONObject = JSONObject()
         .put("id", candidate.id)
@@ -2015,7 +1960,7 @@ class AgentStore private constructor(
         sequence = json.optInt("sequence"),
         createdAt = json.optLong("created_at"),
         completedTaskIds = json.optJSONArray("completed_task_ids").toStringList(),
-        progressScore = json.optDouble("progress_score", 0.0).coerceIn(0.0, 1.0),
+        progressScore = json.optDouble("progress_score", 0.0),
         note = json.optString("note"),
     )
 
@@ -2042,17 +1987,6 @@ class AgentStore private constructor(
         createdAt = json.optLong("created_at"),
     )
 
-    private fun encodeEvent(event: AgentEvent): JSONObject = JSONObject()
-        .put("id", event.id)
-        .put("created_at", event.createdAt)
-        .put("message", event.message)
-
-    private fun decodeEvent(json: JSONObject): AgentEvent = AgentEvent(
-        id = json.getString("id"),
-        createdAt = json.optLong("created_at"),
-        message = json.optString("message").let { normalizeAgentFailureMessage(it, it) },
-    )
-
     private fun encodeLease(lease: AgentExecutionLease): JSONObject = JSONObject()
         .put("worker_id", lease.workerId)
         .put("owner_process_session_id", lease.ownerProcessSessionId)
@@ -2061,16 +1995,6 @@ class AgentStore private constructor(
         .put("generation", lease.generation)
         .put("acquired_at", lease.acquiredAt)
         .put("heartbeat_at", lease.heartbeatAt)
-
-    private fun decodeLease(json: JSONObject): AgentExecutionLease = AgentExecutionLease(
-        workerId = json.getString("worker_id"),
-        ownerProcessSessionId = json.optString("owner_process_session_id", "unknown"),
-        taskId = json.getString("task_id"),
-        attemptId = json.getString("attempt_id"),
-        generation = json.getInt("generation"),
-        acquiredAt = json.getLong("acquired_at"),
-        heartbeatAt = json.getLong("heartbeat_at"),
-    )
 
     private fun encodeBlockedSource(rec: BlockedSourceRecord): JSONObject = JSONObject()
         .put("canonical_document_id", rec.canonicalDocumentId ?: JSONObject.NULL)
@@ -2084,6 +2008,38 @@ class AgentStore private constructor(
         .put("alternate_routes_attempted", JSONArray(rec.alternateRoutesAttempted))
         .put("terminal_state", rec.terminalState)
         .put("source_task_id", rec.sourceTaskId ?: JSONObject.NULL)
+
+    private fun encodeEvent(event: AgentEvent): JSONObject = JSONObject()
+        .put("id", event.id)
+        .put("created_at", event.createdAt)
+        .put("message", event.message)
+
+    private fun decodeEvent(json: JSONObject): AgentEvent = AgentEvent(
+        id = json.getString("id"),
+        createdAt = json.optLong("created_at"),
+        message = json.optString("message"),
+    )
+
+    private fun encodeRejectedQuery(rec: RejectedResearchQuery): JSONObject = JSONObject()
+        .put("original_query", rec.originalQuery)
+        .put("normalized_query", rec.normalizedQuery)
+        .put("canonical_fingerprint", rec.canonicalFingerprint)
+        .put("task_id", rec.taskId)
+        .put("reason_code", rec.reasonCode)
+        .put("reason_detail", rec.reasonDetail)
+        .put("matched_weak_anchors", JSONArray(rec.matchedWeakAnchors))
+        .put("created_at", rec.createdAt)
+        .put("generation", rec.generation)
+
+    private fun decodeLease(json: JSONObject): AgentExecutionLease = AgentExecutionLease(
+        workerId = json.getString("worker_id"),
+        ownerProcessSessionId = json.optString("owner_process_session_id", "unknown"),
+        taskId = json.getString("task_id"),
+        attemptId = json.getString("attempt_id"),
+        generation = json.getInt("generation"),
+        acquiredAt = json.getLong("acquired_at"),
+        heartbeatAt = json.getLong("heartbeat_at"),
+    )
 
     private fun decodeBlockedSource(json: JSONObject): BlockedSourceRecord = BlockedSourceRecord(
         canonicalDocumentId = json.optNullableString("canonical_document_id"),
@@ -2099,16 +2055,17 @@ class AgentStore private constructor(
         sourceTaskId = json.optNullableString("source_task_id"),
     )
 
-    private fun encodeRejectedQuery(rec: RejectedResearchQuery): JSONObject = JSONObject()
-        .put("original_query", rec.originalQuery)
-        .put("normalized_query", rec.normalizedQuery)
-        .put("canonical_fingerprint", rec.canonicalFingerprint)
-        .put("task_id", rec.taskId)
-        .put("reason_code", rec.reasonCode)
-        .put("reason_detail", rec.reasonDetail)
-        .put("matched_weak_anchors", JSONArray(rec.matchedWeakAnchors))
-        .put("created_at", rec.createdAt)
-        .put("generation", rec.generation)
+    private fun decodeRecoveryProposal(json: JSONObject): RecoveryProposal = RecoveryProposal(
+        revisedInvestigationInterpretation = json.optString("revised_investigation_interpretation"),
+        specificUnresolvedGap = json.optString("specific_unresolved_gap"),
+        selectedSourceFamilyShift = json.optNullableString("selected_source_family_shift"),
+        evidenceTargets = json.optJSONArray("evidence_targets").toStringList(),
+        falsifiers = json.optJSONArray("falsifiers").toStringList(),
+        newQueryPortfolio = json.optJSONArray("new_query_portfolio").toStringList(),
+        followUpRule = json.optNullableString("follow_up_rule"),
+        rationale = json.optString("rationale"),
+        expectedNoveltyDimensions = json.optJSONArray("expected_novelty_dimensions").toStringList()
+    )
 
     private fun decodeRejectedQuery(json: JSONObject): RejectedResearchQuery = RejectedResearchQuery(
         originalQuery = json.getString("original_query"),
@@ -2155,11 +2112,6 @@ class AgentStore private constructor(
         }
     }
 
-    private fun String?.isTerminalCredentialMessage(): Boolean {
-        val normalized = this.orEmpty().lowercase()
-        return "credential" in normalized && ("invalid" in normalized || "forbidden" in normalized || "unavailable" in normalized)
-    }
-
     companion object {
         val readCount = AtomicLong(0)
         val writeCount = AtomicLong(0)
@@ -2175,7 +2127,7 @@ class AgentStore private constructor(
         private const val ATOMIC_BACKUP_SUFFIX = ".bak"
         private const val LEGACY_RECOVERY_FILE_NAME = "legacy_snapshot_recovery.txt"
         private const val CORRUPT_RECOVERY_SUFFIX = ".corrupt-recovery.txt"
-        private const val STORAGE_VERSION = 11
+        private const val STORAGE_VERSION = 12
         private val STORE_LOCK = Any()
 
         fun isTaskBoundOperation(operation: String): Boolean {

@@ -1,5 +1,6 @@
 package com.david.openassistant.agent
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -9,6 +10,92 @@ import org.junit.Test
 import java.util.UUID
 
 class AgentStoreMigrationTest {
+
+    @Test
+    fun v41StuckMissionMigratesSafely() {
+        val goalId = "stuck-v41"
+        val v41Json = JSONObject()
+            .put("storage_version", 11)
+            .put("id", goalId)
+            .put("conversation_id", "conv-1")
+            .put("user_request", "Stuck request")
+            .put("title", "Stuck Title")
+            .put("objective", "Stuck Objective")
+            .put("status", "PAUSED")
+            .put("planner_model_id", "model")
+            .put("execution_model_id", "model")
+            .put("tasks", JSONArray().put(JSONObject()
+                .put("id", "task-1")
+                .put("status", "BLOCKED_WITH_PARTIAL_EVIDENCE")
+                .put("failure_class", "STRUCTURED_SYNTHESIS_DEFICIT")
+            ))
+            .put("events", JSONArray().put(JSONObject()
+                .put("id", "event-1")
+                .put("message", "identical context fingerprint detected")
+            ))
+
+        val tempDir = java.nio.file.Files.createTempDirectory("agentstore_v41_mig").toFile()
+        val store = AgentStore(tempDir)
+        val decodeMethod = AgentStore::class.java.getDeclaredMethod("decodeGoal", JSONObject::class.java)
+        decodeMethod.isAccessible = true
+        val decodedGoal = decodeMethod.invoke(store, v41Json) as AgentGoal
+
+        assertEquals(AgentGoalStatus.QUEUED, decodedGoal.status)
+        assertEquals(AgentTaskStatus.QUEUED, decodedGoal.tasks.first().status)
+        assertTrue(decodedGoal.events.any { it.message.contains("V41 stuck mission repaired") })
+        assertTrue(decodedGoal.idempotencyRecords.any { it.key == "v41_stuck_migration" })
+        assertNotNull(decodedGoal.activeResearchCycleId)
+    }
+
+    @Test
+    fun goalWithCyclesEncodesAndDecodesSymmetrically() {
+        val cycleId = "cycle-1"
+        val cycle = ResearchCycle(
+            id = cycleId,
+            ordinal = 1,
+            parentCycleId = null,
+            status = ResearchCycleStatus.ACTIVE,
+            objectiveRevisionId = "rev-1",
+            triggerDiagnosis = ExecutionStallDiagnosis.NONE,
+            selectedAdvancementTactic = EscalationTactic.NONE,
+            strategyFingerprint = "fp",
+            queryPortfolioFingerprint = "fp",
+            acceptedEvidenceFingerprint = "fp",
+            unresolvedGapFingerprint = "fp",
+            learningSummary = null,
+            activatedAt = 123456L
+        )
+        val goal = AgentGoal(
+            id = "goal-cycle",
+            conversationId = "conv-1",
+            userRequest = "Request",
+            title = "Title",
+            objective = "Objective",
+            finalOutputDescription = "Description",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "model",
+            executionModelId = "model",
+            tasks = emptyList(),
+            researchCycles = listOf(cycle),
+            activeResearchCycleId = cycleId
+        )
+
+        val tempDir = java.nio.file.Files.createTempDirectory("agentstore_cycle").toFile()
+        val store = AgentStore(tempDir)
+        
+        val encodeMethod = AgentStore::class.java.getDeclaredMethod("encodeGoal", AgentGoal::class.java)
+        encodeMethod.isAccessible = true
+        val encodedJson = encodeMethod.invoke(store, goal) as JSONObject
+        
+        val decodeMethod = AgentStore::class.java.getDeclaredMethod("decodeGoal", JSONObject::class.java)
+        decodeMethod.isAccessible = true
+        val decodedGoal = decodeMethod.invoke(store, encodedJson) as AgentGoal
+        
+        assertEquals(1, decodedGoal.researchCycles.size)
+        assertEquals(cycleId, decodedGoal.activeResearchCycleId)
+        assertEquals(cycleId, decodedGoal.researchCycles.first().id)
+        assertEquals(ResearchCycleStatus.ACTIVE, decodedGoal.researchCycles.first().status)
+    }
 
     @Test
     fun version7GoalJsonDecodesSafelyWithNewVersion8Fields() {

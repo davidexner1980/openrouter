@@ -22,7 +22,17 @@ object EvidenceContextSelector {
         maxItems: Int = 16,
         maxCharacters: Int = 72_000,
     ): SelectedContext {
-        if (goal.evidence.isEmpty() || maxItems <= 0 || maxCharacters <= 0) {
+        val activeCycleId = goal.activeResearchCycleId
+        val activeCycle = goal.researchCycles.firstOrNull { it.id == activeCycleId }
+        val carryForwardIds = activeCycle?.learningSummary?.carryForwardEvidenceIds?.toSet() ?: emptySet()
+
+        val cycleEvidence = if (activeCycleId == null) {
+            goal.evidence
+        } else {
+            goal.evidence.filter { it.cycleId == activeCycleId || it.id in carryForwardIds }
+        }
+
+        if (cycleEvidence.isEmpty() || maxItems <= 0 || maxCharacters <= 0) {
             return SelectedContext(emptyList(), 0, 0, 0, "")
         }
         
@@ -32,14 +42,14 @@ object EvidenceContextSelector {
         )
         
         // Deduplicate evidence by canonical source URL or content hash
-        val uniqueEvidence = goal.evidence
+        val uniqueEvidence = cycleEvidence
             .filter { it.kind != AgentEvidenceKind.SYSTEM_EVENT }
             .distinctBy { evidence ->
                 val sourceKey = evidence.sources.firstOrNull()?.url?.let { ResearchQualityGate.canonicalSourceUrl(it) }
                 sourceKey ?: evidence.content.hashCode().toString()
             }
         
-        val deduplicatedCount = goal.evidence.size - uniqueEvidence.size
+        val deduplicatedCount = cycleEvidence.size - uniqueEvidence.size
 
         val ranked = uniqueEvidence
             .mapIndexed { index, evidence ->

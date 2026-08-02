@@ -98,6 +98,9 @@ data class AgentGoal(
     val objectiveContract: ObjectiveContract? = null,
     val recoveryPlans: List<ResearchRecoveryPlan> = emptyList(),
     val activeRecoveryPlanId: String? = null,
+    val researchCycles: List<ResearchCycle> = emptyList(),
+    val objectiveRevisions: List<ObjectiveRevision> = emptyList(),
+    val activeResearchCycleId: String? = null,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)
@@ -121,17 +124,24 @@ data class AgentGoal(
         get() = totalCostUsdMicros.toDouble() / 1_000_000.0
 
     val completedTaskCount: Int
-        get() = tasks.count { it.status == AgentTaskStatus.COMPLETED }
+        get() = tasks.count {
+            (activeResearchCycleId == null || it.cycleId == activeResearchCycleId) &&
+                it.status == AgentTaskStatus.COMPLETED
+        }
 
     val stepProgressFraction: Float
-        get() = if (tasks.isEmpty()) 0f else completedTaskCount.toFloat() / tasks.size.toFloat()
+        get() {
+            val relevantTasks = if (activeResearchCycleId == null) tasks else tasks.filter { it.cycleId == activeResearchCycleId }
+            return if (relevantTasks.isEmpty()) 0f else completedTaskCount.toFloat() / relevantTasks.size.toFloat()
+        }
 
     val denseProgressScore: Double
         get() {
-            if (tasks.isEmpty()) return 0.0
-            val totalWeight = tasks.sumOf { it.weight.coerceAtLeast(0.1) }
+            val relevantTasks = if (activeResearchCycleId == null) tasks else tasks.filter { it.cycleId == activeResearchCycleId }
+            if (relevantTasks.isEmpty()) return 0.0
+            val totalWeight = relevantTasks.sumOf { it.weight.coerceAtLeast(0.1) }
             if (totalWeight <= 0.0) return 0.0
-            return tasks.sumOf { it.weight.coerceAtLeast(0.1) * it.effectiveProgressScore }
+            return relevantTasks.sumOf { it.weight.coerceAtLeast(0.1) * it.effectiveProgressScore }
                 .div(totalWeight)
                 .coerceIn(0.0, 1.0)
         }
@@ -140,7 +150,10 @@ data class AgentGoal(
         get() = denseProgressScore.toFloat()
 
     val isReadyForVerification: Boolean
-        get() = tasks.isNotEmpty() && tasks.all { it.status == AgentTaskStatus.COMPLETED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
+        get() {
+            val relevantTasks = if (activeResearchCycleId == null) tasks else tasks.filter { it.cycleId == activeResearchCycleId }
+            return relevantTasks.isNotEmpty() && relevantTasks.all { it.status == AgentTaskStatus.COMPLETED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
+        }
 
     val acceptanceScore: Double
         get() {
@@ -192,12 +205,14 @@ data class AgentGoal(
 
     fun nextRunnableTask(skipCooldowns: Boolean = false): AgentTask? {
         val now = System.currentTimeMillis()
+        val relevantTasks = if (activeResearchCycleId == null) tasks else tasks.filter { it.cycleId == activeResearchCycleId }
+
         val completedIds = tasks
             .filter { it.status == AgentTaskStatus.COMPLETED }
             .mapTo(mutableSetOf()) { it.id }
-        
+
         // Find tasks that are not blocked by dependencies
-        val dependencySatisfiedTasks = tasks
+        val dependencySatisfiedTasks = relevantTasks
             .filter { it.status != AgentTaskStatus.COMPLETED && it.status != AgentTaskStatus.CANCELLED && it.status != AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
             .filter { it.branchExhaustionReason == null }
             .filter { it.dependsOn.all(completedIds::contains) }

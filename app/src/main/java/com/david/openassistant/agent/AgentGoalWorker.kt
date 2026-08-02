@@ -248,7 +248,8 @@ class AgentGoalWorker(
                                 return@coroutineScope Result.success()
                             } else if (satisfiedTasks.isEmpty() && resumedGoal.tasks.any { it.status == AgentTaskStatus.FAILED }) {
                                 // If we have failed tasks that are blocked by dependencies or other reasons, repair them.
-                                repairBlockedWorkflow(resumedGoal, null)
+                                // Note: structural repair without apiKey will fallback to legacy logic or fail if advancement needed.
+                                repairBlockedWorkflow("", resumedGoal, null)
                             } else if (satisfiedTasks.isEmpty() && !resumedGoal.isReadyForVerification) {
                                  // Stranded: no runnable task, no satisfied tasks, and not ready for verification.
                                  store.updateGoalAtomic(goalId, null) { current ->
@@ -424,10 +425,23 @@ class AgentGoalWorker(
                             }
                             leasedGoal.status == AgentGoalStatus.RECOVERING -> {
                                 notifier.updateNotification(goalId, leasedGoal.title, "Recovering Research")
-                                // V42.2: Recovery engine should eventually be called here or in taskExecutor
-                                // For now, we continue to taskExecutor if RECOVERING task is selected
-                                val recoveryOutcome = repairBlockedWorkflow(leasedGoal, ticket)
-                                recoveryOutcome
+                                val activeRecoveryPlan = leasedGoal.recoveryPlans.firstOrNull { it.id == leasedGoal.activeRecoveryPlanId }
+                                if (activeRecoveryPlan?.selectedTactic == EscalationTactic.CYCLE_ADVANCE && ticket is PlanningTicket) {
+                                    val learningSummary = constructLearningSummary(leasedGoal, "Exhausted all within-cycle tactics.")
+                                    val updatedLeasedGoal = store.updateGoalAtomic(goalId, ticket) { current ->
+                                        val activeCycle = current.researchCycles.firstOrNull { it.id == current.activeResearchCycleId }
+                                        if (activeCycle != null) {
+                                            current.copy(
+                                                researchCycles = current.researchCycles.map {
+                                                    if (it.id == activeCycle.id) it.copy(learningSummary = learningSummary) else it
+                                                }
+                                            )
+                                        } else current
+                                    }.goals.firstOrNull { it.id == goalId } ?: leasedGoal
+                                    planner.recoverCycle(apiKey, updatedLeasedGoal, ticket)
+                                } else {
+                                    repairBlockedWorkflow(apiKey, leasedGoal, ticket)
+                                }
                             }
                             else -> {
                                 reconcileInterruptedWork(goalId, ticket)
@@ -444,7 +458,7 @@ class AgentGoalWorker(
                                         verifier.verifyAndFinish(apiKey, leasedGoal, ticket, models)
                                     }
                                     else -> {
-                                        repairBlockedWorkflow(leasedGoal, ticket)
+                                        repairBlockedWorkflow(apiKey, leasedGoal, ticket)
                                     }
                                 }
                             }
@@ -693,7 +707,51 @@ class AgentGoalWorker(
         }
     }
 
-    private fun repairBlockedWorkflow(goal: AgentGoal, ticket: AgentOwnershipTicket?): WorkerOutcome {
+    private suspend fun repairBlockedWorkflow(
+        apiKey: String,
+        goal: AgentGoal,
+        ticket: AgentOwnershipTicket?
+    ): WorkerOutcome {
+        val stalledTask = goal.tasks.firstOrNull { it.status == AgentTaskStatus.FAILED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
+            ?: goal.tasks.firstOrNull { it.status != AgentTaskStatus.COMPLETED }
+
+        if (stalledTask != null) {
+            val diagnosis = ResearchRecoveryEngine.diagnoseStall(goal, stalledTask, goal.freeOnly, false)
+            if (diagnosis != ExecutionStallDiagnosis.NONE) {
+                val tactic = ResearchRecoveryEngine.selectTactic(goal, stalledTask, diagnosis)
+                if (tactic == EscalationTactic.CYCLE_ADVANCE) {
+                    if (ticket is PlanningTicket) {
+                        val learningSummary = constructLearningSummary(goal, "Stall detected: ${diagnosis.name}. Tactics exhausted.")
+                        val updatedGoal = store.updateGoalAtomic(goal.id, ticket) { current ->
+                            val activeCycle = current.researchCycles.firstOrNull { it.id == current.activeResearchCycleId }
+                            if (activeCycle != null) {
+                                current.copy(
+                                    researchCycles = current.researchCycles.map {
+                                        if (it.id == activeCycle.id) it.copy(learningSummary = learningSummary) else it
+                                    }
+                                )
+                            } else current
+                        }.goals.firstOrNull { it.id == goal.id } ?: goal
+                        return planner.recoverCycle(apiKey, updatedGoal, ticket)
+                    } else {
+                        // Switch to planning status to acquire planning lease
+                        store.updateGoalAtomic(goal.id, ticket) { current ->
+                            current.copy(status = AgentGoalStatus.RECOVERING)
+                        }
+                        return WorkerOutcome.CONTINUE
+                    }
+                } else if (tactic == EscalationTactic.MARK_EXHAUSTED) {
+                    store.updateGoalAtomic(goal.id, ticket) { current ->
+                        current.copy(
+                            status = AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+                            events = appendEvent(current.events, "Research cycles exhausted. No materially novel strategy remains.")
+                        )
+                    }
+                    return WorkerOutcome.DONE
+                }
+            }
+        }
+
         val snapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
             if (current.status.isInactive()) return@updateGoalAtomic current
             val ordered = current.tasks.sortedBy { it.order }
@@ -775,6 +833,51 @@ class AgentGoalWorker(
         } else {
             WorkerOutcome.DONE
         }
+    }
+
+    private fun constructLearningSummary(goal: AgentGoal, reason: String): ResearchCycleLearningSummary {
+        val establishedFindings = goal.claims
+            .filter { it.support == AgentClaimSupport.SUPPORTED }
+            .map { it.text }
+            .take(20)
+        
+        val acceptedEvidenceIds = goal.evidence
+            .filter { it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH, AgentEvidenceKind.RESEARCH_HIT) }
+            .map { it.id }
+            
+        val acceptedClaimIds = goal.claims
+            .filter { it.support == AgentClaimSupport.SUPPORTED || it.support == AgentClaimSupport.PARTIAL }
+            .map { it.id }
+
+        val remainingUnresolvedGaps = goal.tasks
+            .filter { it.status != AgentTaskStatus.COMPLETED }
+            .map { it.title }
+
+        val contradictions = goal.claims
+            .filter { it.support == AgentClaimSupport.CONTRADICTED }
+            .map { it.text }
+
+        val allRejectedQueries = goal.tasks.flatMap { it.rejectedQueries }
+        val rejectedOrUnreliableMaterial = allRejectedQueries.map { it.originalQuery }
+
+        val attemptedTactics = goal.recoveryPlans
+            .filter { it.status == RecoveryPlanStatus.COMMITTED }
+            .map { it.selectedTactic }
+
+        return ResearchCycleLearningSummary(
+            establishedFindings = establishedFindings,
+            acceptedEvidenceIds = acceptedEvidenceIds,
+            acceptedClaimIds = acceptedClaimIds,
+            remainingUnresolvedGaps = remainingUnresolvedGaps,
+            contradictions = contradictions,
+            rejectedOrUnreliableMaterial = rejectedOrUnreliableMaterial,
+            exhaustedQueryApproaches = allRejectedQueries.map { it.normalizedQuery }.distinct(),
+            exhaustedSourceFamilies = emptyList(),
+            attemptedTactics = attemptedTactics,
+            failedStrategyFingerprints = emptyList(),
+            carryForwardEvidenceIds = acceptedEvidenceIds,
+            advancementReason = reason
+        )
     }
 
     private fun waitForCredential(goalId: String, ticket: AgentOwnershipTicket, message: String) {

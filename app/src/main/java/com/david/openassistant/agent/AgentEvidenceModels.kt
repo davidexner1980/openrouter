@@ -11,6 +11,7 @@ data class AgentSourceCitation(
 data class AgentEvidence(
     val id: String = UUID.randomUUID().toString(),
     val taskId: String? = null,
+    val cycleId: String? = null,
     val kind: AgentEvidenceKind,
     val title: String,
     val summary: String,

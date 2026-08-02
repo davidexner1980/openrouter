@@ -30,6 +30,7 @@ enum class AgentGoalStatus {
     INSUFFICIENT_CURRENT_DATA,
     REQUIRES_USER_CLARIFICATION,
     FINALIZING,
+    RESEARCH_CYCLES_EXHAUSTED,
     /** Parseable mission record whose execution-critical provenance is missing or invalid. */
     CORRUPT_OR_INCOMPLETE_MISSION,
 }
@@ -53,6 +54,7 @@ fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
     AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
     AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
     AgentGoalStatus.FINALIZING,
+    AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
     AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
 )
 
@@ -288,6 +290,8 @@ enum class EscalationTactic {
     RE_EVALUATE_ASSUMPTIONS,
     SMALLEST_MISSING_FACT,
     ASK_USER,
+    CYCLE_ADVANCE,
+    MARK_EXHAUSTED,
 
     // V42.2 Additions
     RESOLVE_ENTITIES,
@@ -386,4 +390,6 @@ enum class ResumeReason {
     PROCESS_RECOVERY,
     STALE_LEASE_RECOVERY,
     SCHEDULER_REPAIR,
+    TACTIC_PIVOT,
+    CYCLE_ADVANCE
 }

@@ -83,7 +83,16 @@ object ResearchRecoveryEngine {
             else -> listOf(EscalationTactic.REFORMULATE_QUERY)
         }
 
-        return candidates.firstOrNull { it !in attemptedTactics } ?: EscalationTactic.ASK_USER
+        val withinCycleTactic = candidates.firstOrNull { it !in attemptedTactics }
+        if (withinCycleTactic != null) return withinCycleTactic
+
+        // If within-cycle tactics are exhausted, consider cycle advancement.
+        val cycleCount = goal.researchCycles.size
+        return if (cycleCount < 3) {
+            EscalationTactic.CYCLE_ADVANCE
+        } else {
+            EscalationTactic.MARK_EXHAUSTED
+        }
     }
 
     private fun ExecutionStallDiagnosis.toTactic(): EscalationTactic = when(this) {
@@ -144,6 +153,20 @@ object ResearchRecoveryEngine {
         val raw = "v1:${proposal.revisedInvestigationInterpretation}:${proposal.specificUnresolvedGap}:" +
                 "${proposal.selectedSourceFamilyShift}:$queries:$targets:${proposal.rationale}"
         
+        return MessageDigest.getInstance("SHA-256")
+            .digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    fun generateCycleIdentity(goalId: String, ordinal: Int): String {
+        val raw = "cycle:$goalId:$ordinal"
+        return MessageDigest.getInstance("SHA-256")
+            .digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    fun generateRevisionIdentity(goalId: String, ordinal: Int): String {
+        val raw = "revision:$goalId:$ordinal"
         return MessageDigest.getInstance("SHA-256")
             .digest(raw.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }

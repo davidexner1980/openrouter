@@ -217,6 +217,131 @@ class AgentPlanner(
         }
     }
 
+    suspend fun recoverCycle(
+        apiKey: String,
+        goal: AgentGoal,
+        ticket: PlanningTicket,
+    ): WorkerOutcome {
+        val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId } ?: return WorkerOutcome.FAIL
+        val learningSummary = activeCycle.learningSummary ?: return WorkerOutcome.FAIL
+        
+        val attempt = AgentAttempt(
+            taskId = null,
+            status = AgentAttemptStatus.RUNNING,
+            startedAt = System.currentTimeMillis(),
+            modelId = goal.plannerModelId,
+        )
+        store.updateGoalAtomic(goal.id, ticket) { current ->
+            current.copy(attempts = retainAttempts(current.attempts + attempt))
+        }
+
+        val parentOperationId = "op-cycle-advance-${UUID.randomUUID()}"
+        val missionContext = ProviderRequestContext.Mission(
+            goalId = goal.id,
+            workerId = ticket.workerId,
+            taskId = null,
+            attemptId = ticket.attemptId,
+            executionGeneration = ticket.generation,
+            acquiredAt = ticket.acquiredAt,
+            role = AgentTaskRole.PRIMARY_REASONING,
+            operation = MissionOperation.CYCLE_ADVANCE,
+            parentOperationId = parentOperationId,
+        )
+
+        return try {
+            val (plan, summary) = client.createCycleAdvancementProposal(
+                apiKey = apiKey,
+                modelId = AgentRoutingPolicy.guardModel(goal, goal.plannerModelId),
+                goal = goal,
+                sourceCycle = activeCycle,
+                learningSummary = learningSummary,
+                freeOnly = goal.freeOnly,
+                requestContext = missionContext,
+            )
+            currentCoroutineContext().ensureActive()
+
+            val nextCycleOrdinal = activeCycle.ordinal + 1
+            val nextRevisionOrdinal = (goal.objectiveRevisions.maxOfOrNull { it.ordinal } ?: 1) + 1
+            
+            val nextRevisionId = ResearchRecoveryEngine.generateRevisionIdentity(goal.id, nextRevisionOrdinal)
+            val nextCycleId = ResearchRecoveryEngine.generateCycleIdentity(goal.id, nextCycleOrdinal)
+
+            val nextRevision = ObjectiveRevision(
+                id = nextRevisionId,
+                ordinal = nextRevisionOrdinal,
+                parentRevisionId = goal.objectiveRevisions.lastOrNull()?.id,
+                immutableRootObjectiveFingerprint = goal.objective.hashCode().toString(),
+                operationalObjective = plan.objective,
+                unresolvedGaps = plan.tasks.map { it.title },
+                retainedConstraints = goal.confirmedConstraints,
+                evidenceRequirements = goal.evidenceRequirements,
+                revisionReason = "Cycle advancement refinement.",
+                revisionFingerprint = plan.objective.hashCode().toString()
+            )
+
+            val tasks = plan.tasks.mapIndexed { index, draft ->
+                AgentTask(
+                    id = draft.id,
+                    cycleId = nextCycleId,
+                    order = index,
+                    title = draft.title,
+                    instructions = draft.instructions,
+                    capability = draft.capability,
+                    dependsOn = draft.dependsOn,
+                    status = AgentTaskStatus.QUEUED,
+                    weight = draft.weight,
+                    acceptanceCriteria = ConstraintValidator.filterGrounded(draft.acceptanceCriteria, goal.userRequest),
+                )
+            }
+
+            val nextCycle = ResearchCycle(
+                id = nextCycleId,
+                ordinal = nextCycleOrdinal,
+                parentCycleId = activeCycle.id,
+                status = ResearchCycleStatus.ACTIVE,
+                objectiveRevisionId = nextRevisionId,
+                triggerDiagnosis = activeCycle.triggerDiagnosis,
+                selectedAdvancementTactic = EscalationTactic.CYCLE_ADVANCE,
+                strategyFingerprint = "advanced",
+                queryPortfolioFingerprint = "advanced",
+                acceptedEvidenceFingerprint = "advanced",
+                unresolvedGapFingerprint = "advanced",
+                learningSummary = null,
+                activatedAt = System.currentTimeMillis()
+            )
+
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                if (current.activeResearchCycleId != activeCycle.id) return@updateGoalAtomic current
+                
+                val updatedCycles = current.researchCycles.map {
+                    if (it.id == activeCycle.id) it.copy(status = ResearchCycleStatus.SUPERSEDED, supersededAt = System.currentTimeMillis())
+                    else it
+                } + nextCycle
+
+                current.copy(
+                    researchCycles = updatedCycles,
+                    objectiveRevisions = current.objectiveRevisions + nextRevision,
+                    activeResearchCycleId = nextCycleId,
+                    tasks = tasks,
+                    attempts = current.attempts.map { existing ->
+                         if (existing.id == attempt.id) existing.copy(status = AgentAttemptStatus.SUCCEEDED, finishedAt = System.currentTimeMillis(), resolvedModel = summary.resolvedModel)
+                         else existing
+                    },
+                    events = appendEvent(current.events, "Advanced to research cycle $nextCycleOrdinal with refined objective: ${plan.objective}"),
+                    error = null
+                )
+            }
+            diagnostics.info(
+                event = "cycle_advanced",
+                component = "mission",
+                fields = mapOf("goal_id" to goal.id, "cycle_ordinal" to nextCycleOrdinal)
+            )
+            WorkerOutcome.CONTINUE
+        } catch (error: Throwable) {
+             persistPlanningFailure(goal.id, attempt.id, error, ticket)
+        }
+    }
+
     private fun persistPlanningFailure(
         goalId: String,
         attemptId: String,
