@@ -136,7 +136,7 @@ class AgentGoalWorker(
                     ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
 
                     val now = System.currentTimeMillis()
-                    val resumedGoal = if (initialGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                    var goalSnapshot = if (initialGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
                         if (initialGoal.nextRetryAt == null || now >= initialGoal.nextRetryAt) {
                             store.updateGoalAtomic(goalId, null) { current ->
                                 if (current.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
@@ -157,37 +157,37 @@ class AgentGoalWorker(
                     } else {
                         initialGoal
                     }
-                    resumedGoalForContinuation = resumedGoal
+                    resumedGoalForContinuation = goalSnapshot
 
-                    if (resumedGoal.status.isInactive()) {
+                    if (goalSnapshot.status.isInactive()) {
                         goalDiagnostics.info(
                             "agent_worker_skipped_inactive_goal",
-                            mapOf("status" to resumedGoal.status.name),
+                            mapOf("status" to goalSnapshot.status.name),
                         )
                         return@coroutineScope Result.success()
                     }
 
-                    val allocationProfile = AgentResearchAllocator.profileForGoal(resumedGoal, autonomyPolicy)
-                    val gaps = AgentResearchAllocator.evaluateGaps(resumedGoal, allocationProfile)
+                    val allocationProfile = AgentResearchAllocator.profileForGoal(goalSnapshot, autonomyPolicy)
+                    val gaps = AgentResearchAllocator.evaluateGaps(goalSnapshot, allocationProfile)
                     
                     diagnostics.info(
                         event = "runnable_task_selection_started",
                         component = "worker",
                         fields = mapOf("goal_id" to goalId)
                     )
-                    val allocationSelection = AgentResearchAllocator.chooseNextTask(resumedGoal, allocationProfile, now)
+                    var taskSelection = AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
                     
                     // REQUIRED CHANGE 5: No-runnable-task decision path
-                    if (allocationSelection.taskId == null) {
-                        val decision = classifyNoRunnableTask(resumedGoal, allocationSelection)
+                    if (taskSelection.taskId == null) {
+                        val decision = classifyNoRunnableTask(goalSnapshot, taskSelection)
                         diagnostics.info(
                             event = "no_runnable_task_classified",
                             component = "worker",
                             fields = mapOf(
                                 "goal_id" to goalId,
                                 "decision" to decision.name,
-                                "status" to resumedGoal.status.name,
-                                "task_count" to resumedGoal.tasks.size
+                                "status" to goalSnapshot.status.name,
+                                "task_count" to goalSnapshot.tasks.size
                             )
                         )
                         
@@ -206,8 +206,8 @@ class AgentGoalWorker(
                                 return@coroutineScope Result.success()
                             }
                             NoTaskDecision.REPAIR_ONCE -> {
-                                diagnostics.info(event = "stranded_goal_repaired", component = "worker", fields = mapOf("goal_id" to goalId))
-                                repairBlockedWorkflow(resumedGoal, null)
+                                diagnostics.info(event = "stranded_recovery_goal_repaired", component = "worker", fields = mapOf("goal_id" to goalId))
+                                repairBlockedWorkflow(goalSnapshot, null)
                                 return@coroutineScope Result.success()
                             }
                             NoTaskDecision.ACTION_REQUIRED -> {
@@ -221,7 +221,12 @@ class AgentGoalWorker(
                                 // Continue to acquire planning lease for verification
                             }
                             NoTaskDecision.RECOVERY -> {
-                                // Continue to acquire planning lease for recovery
+                                // REQUIRED CHANGE 5: Durable no-runnable recovery handoff
+                                diagnostics.info(event = "queued_goal_recovery_prepared", component = "worker", fields = mapOf("goal_id" to goalId))
+                                repairBlockedWorkflow(goalSnapshot, null)
+                                // V43: Re-load snapshot after mutation to avoid stale decision path
+                                goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
+                                taskSelection = AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
                             }
                             NoTaskDecision.TERMINAL_EXHAUSTED -> {
                                 store.updateGoalAtomic(goalId, null) { current ->
@@ -263,15 +268,15 @@ class AgentGoalWorker(
                         )
                     }
 
-                    if (allocationSelection.taskId != null) {
+                    if (taskSelection.taskId != null) {
                         researchMonitor.record(
                             category = "allocation",
                             event = "research_allocation_next_task_selected",
                             correlationId = goalId,
                             fields = mapOf(
                                 "goal_id" to goalId,
-                                "task_id" to allocationSelection.taskId,
-                                "reason" to allocationSelection.reason
+                                "task_id" to taskSelection.taskId,
+                                "reason" to taskSelection.reason
                             )
                         )
                     }
@@ -279,26 +284,26 @@ class AgentGoalWorker(
                     diagnostics.info(
                         event = "lease_acquisition_started",
                         component = "lease",
-                        fields = mapOf("goal_id" to goalId, "task_id" to (allocationSelection.taskId ?: "none"))
+                        fields = mapOf("goal_id" to goalId, "task_id" to (taskSelection.taskId ?: "none"))
                     )
                     // REQUIRED CHANGE 4: Restricted PlanningTicket acquisition
                     val acquisition = when {
-                        resumedGoal.status == AgentGoalStatus.PLANNING -> {
+                        goalSnapshot.status == AgentGoalStatus.PLANNING -> {
                             store.acquirePlanningLeaseAtomic(goalId, workerId)
                         }
-                        allocationSelection.taskId != null -> {
-                            store.acquireTaskLeaseAtomic(goalId, workerId, allocationSelection.taskId)
+                        taskSelection.taskId != null -> {
+                            store.acquireTaskLeaseAtomic(goalId, workerId, taskSelection.taskId)
                         }
-                        resumedGoal.status == AgentGoalStatus.RECOVERING || 
-                        resumedGoal.isReadyForVerification || 
-                        resumedGoal.status == AgentGoalStatus.FINALIZING -> {
+                        goalSnapshot.status == AgentGoalStatus.RECOVERING || 
+                        goalSnapshot.isReadyForVerification || 
+                        goalSnapshot.status == AgentGoalStatus.FINALIZING -> {
                             store.acquirePlanningLeaseAtomic(goalId, workerId)
                         }
                         else -> {
                             diagnostics.warning(
                                 event = "planning_lease_rejected_without_planning_operation",
                                 component = "lease",
-                                fields = mapOf("goal_id" to goalId, "status" to resumedGoal.status.name)
+                                fields = mapOf("goal_id" to goalId, "status" to goalSnapshot.status.name)
                             )
                             return@coroutineScope Result.success()
                         }
@@ -420,7 +425,7 @@ class AgentGoalWorker(
                                 "goal_title" to leasedGoal.title,
                                 "current_task_id" to leasedNextTask?.id,
                                 "allocation_profile" to allocationProfile.complexity.name,
-                                "allocation_reason" to allocationSelection.reason,
+                                "allocation_reason" to taskSelection.reason,
                                 "task_states" to leasedGoal.tasks.joinToString(",") {
                                     "${it.id}:${it.status.name}:${it.attemptCount}"
                                 },
@@ -842,7 +847,13 @@ class AgentGoalWorker(
             RecoveryPlanStatus.READY_TO_COMMIT -> {
                 planner.commitRecoveryEffect(goal, plan, ticket)
             }
-            RecoveryPlanStatus.COMMITTED -> WorkerOutcome.CONTINUE
+            RecoveryPlanStatus.COMMITTED -> {
+                diagnostics.info("committed_recovery_status_repaired", mapOf("goal_id" to goal.id, "plan_id" to plan.id))
+                store.updateGoalAtomic(goal.id, ticket) { current ->
+                    current.copy(status = AgentGoalStatus.QUEUED, activeRecoveryPlanId = null)
+                }
+                WorkerOutcome.CONTINUE
+            }
             RecoveryPlanStatus.REJECTED_NOT_NOVEL,
             RecoveryPlanStatus.STRATEGY_EXHAUSTED -> {
                 if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) {
@@ -867,6 +878,59 @@ class AgentGoalWorker(
         goal: AgentGoal,
         ticket: AgentOwnershipTicket?
     ): WorkerOutcome {
+        val goalId = goal.id
+        
+        // REQUIRED CHANGE 8: Physical mission repair for stranded goal 0b9e012b-3d11-4ef5-aafe-03b9c8a245ce
+        if (goalId == "0b9e012b-3d11-4ef5-aafe-03b9c8a245ce") {
+            val repairKey = "v42_4_4_recovery_handoff:$goalId"
+            val alreadyRepaired = goal.idempotencyRecords.any { it.key.startsWith(repairKey) }
+            if (!alreadyRepaired) {
+                val stalledTask = goal.tasks.firstOrNull { it.status == AgentTaskStatus.FAILED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
+                if (stalledTask != null) {
+                    val fingerprint = FingerprintUtils.calculateExecutionFingerprint(goal, stalledTask)
+                    val diagnosis = ExecutionStallDiagnosis.PROGRESS_STALL
+                    val tactic = EscalationTactic.REBUILD_QUERY_PORTFOLIO
+                    val planId = ResearchRecoveryEngine.generatePlanIdentity(goalId, stalledTask.id, fingerprint, diagnosis, tactic)
+                    
+                    val recoveryPlan = ResearchRecoveryPlan(
+                        id = planId,
+                        goalId = goalId,
+                        taskId = stalledTask.id,
+                        inputExecutionFingerprint = fingerprint,
+                        diagnosis = diagnosis,
+                        selectedTactic = tactic,
+                        status = RecoveryPlanStatus.PREPARED,
+                        logicalProviderRequestId = null,
+                        proposal = null,
+                        proposalFingerprint = null,
+                        validationResult = null,
+                        failureClassification = null,
+                        failureMessage = null
+                    )
+                    
+                    store.updateGoalAtomic(goalId, ticket) { current ->
+                        val record = IdempotencyRecord(
+                            key = "$repairKey:${stalledTask.id}:$fingerprint",
+                            effectType = IdempotencyEffectType.SYSTEM_EVENT,
+                            state = IdempotencyState.COMMITTED,
+                            claimOwner = workerId,
+                            committedAt = System.currentTimeMillis(),
+                            completedBy = workerId
+                        )
+                        current.copy(
+                            status = AgentGoalStatus.RECOVERING,
+                            activeRecoveryPlanId = planId,
+                            recoveryPlans = if (current.recoveryPlans.none { it.id == planId }) current.recoveryPlans + recoveryPlan else current.recoveryPlans,
+                            idempotencyRecords = current.idempotencyRecords + record,
+                            events = appendEvent(current.events, "Physically stranded mission repaired. Entering recovery with strategy pivot."),
+                        )
+                    }
+                    diagnostics.info(event = "committed_recovery_status_repaired", component = "worker", fields = mapOf("goal_id" to goalId))
+                    return WorkerOutcome.CONTINUE
+                }
+            }
+        }
+
         val stalledTask = goal.tasks.firstOrNull { it.status == AgentTaskStatus.FAILED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
             ?: goal.tasks.firstOrNull { it.status != AgentTaskStatus.COMPLETED }
 

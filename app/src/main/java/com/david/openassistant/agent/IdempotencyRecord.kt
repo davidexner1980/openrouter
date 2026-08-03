@@ -13,6 +13,7 @@ enum class IdempotencyEffectType {
     MONITOR_TERMINAL_EVENT,
     BODY_BUILDER_PROPOSAL_RESULT,
     SYSTEM_REPAIR,
+    SYSTEM_EVENT,
 }
 
 enum class IdempotencyState {

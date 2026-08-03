@@ -354,6 +354,7 @@ class AgentPlanner(
 
             // Novelty validation
             if (!ResearchRecoveryEngine.validateNovelty(proposal, goal.recoveryPlans)) {
+                diagnostics.info("recovery_transition_rejected", mapOf("goal_id" to goal.id, "plan_id" to plan.id, "reason" to "NOT_NOVEL"))
                 store.updateGoalAtomic(goal.id, ticket) { current ->
                     current.copy(
                         recoveryPlans = current.recoveryPlans.map { p ->
@@ -456,8 +457,20 @@ class AgentPlanner(
                 },
                 idempotencyRecords = current.idempotencyRecords + accountingRecord,
                 activeRecoveryPlanId = null,
-                events = appendEvent(current.events, "Tactic pivot committed: ${plan.selectedTactic.name}.")
-            ).withAdditionalUsage(plan.accountingSummary?.totalTokens, plan.accountingSummary?.costUsd)
+                events = appendEvent(current.events, "Tactic pivot committed: ${plan.selectedTactic.name}."),
+            ).withAdditionalUsage(plan.accountingSummary?.totalTokens, plan.accountingSummary?.costUsd).also {
+                diagnostics.info(
+                    event = "recovery_transition_committed",
+                    component = "recovery",
+                    fields = mapOf(
+                        "goal_id" to goal.id,
+                        "task_id" to taskId,
+                        "plan_id" to plan.id,
+                        "tactic" to plan.selectedTactic.name,
+                        "new_status" to AgentGoalStatus.QUEUED.name
+                    )
+                )
+            }
         }
         return WorkerOutcome.CONTINUE
     }
@@ -549,6 +562,7 @@ class AgentPlanner(
             )
 
             current.copy(
+                status = AgentGoalStatus.QUEUED,
                 researchCycles = updatedCycles,
                 objectiveRevisions = current.objectiveRevisions + nextRevision,
                 activeResearchCycleId = nextCycleId,
@@ -561,7 +575,19 @@ class AgentPlanner(
                 activeRecoveryPlanId = null,
                 events = appendEvent(current.events, "Cycle $nextCycleOrdinal advanced with refined objective."),
                 error = null
-            ).withAdditionalUsage(plan.accountingSummary?.totalTokens, plan.accountingSummary?.costUsd)
+            ).withAdditionalUsage(plan.accountingSummary?.totalTokens, plan.accountingSummary?.costUsd).also {
+                diagnostics.info(
+                    event = "recovery_transition_committed",
+                    component = "recovery",
+                    fields = mapOf(
+                        "goal_id" to goal.id,
+                        "plan_id" to plan.id,
+                        "tactic" to EscalationTactic.CYCLE_ADVANCE.name,
+                        "new_status" to AgentGoalStatus.QUEUED.name,
+                        "new_cycle_ordinal" to nextCycleOrdinal
+                    )
+                )
+            }
         }
         return WorkerOutcome.CONTINUE
     }

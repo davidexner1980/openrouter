@@ -31,9 +31,15 @@ enum class AgentGoalStatus {
     REQUIRES_USER_CLARIFICATION,
     FINALIZING,
     RESEARCH_CYCLES_EXHAUSTED,
-    /** Parseable mission record whose execution-critical provenance is missing or invalid. */
+/** Parseable mission record whose execution-critical provenance is missing or invalid. */
     CORRUPT_OR_INCOMPLETE_MISSION,
 }
+
+/**
+ * Thrown when an internal lifecycle transition or durable commit fails,
+ * distinct from a provider or network failure.
+ */
+class InternalLifecycleException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
     AgentGoalStatus.WAITING_FOR_CREDENTIAL,

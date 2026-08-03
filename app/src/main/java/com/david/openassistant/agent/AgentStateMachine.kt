@@ -21,6 +21,7 @@ object AgentStateMachine {
             AgentGoalStatus.BLOCKED,
             AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+            AgentGoalStatus.RECOVERING,
         ),
         AgentGoalStatus.QUEUED to setOf(
             AgentGoalStatus.RUNNING,
@@ -34,6 +35,7 @@ object AgentStateMachine {
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+            AgentGoalStatus.RECOVERING,
         ),
         AgentGoalStatus.RUNNING to setOf(
             AgentGoalStatus.QUEUED,
@@ -47,6 +49,7 @@ object AgentStateMachine {
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+            AgentGoalStatus.RECOVERING,
         ),
         AgentGoalStatus.VERIFYING to setOf(
             AgentGoalStatus.QUEUED,
@@ -64,6 +67,19 @@ object AgentStateMachine {
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
             AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
+            AgentGoalStatus.RECOVERING,
+        ),
+        AgentGoalStatus.RECOVERING to setOf(
+            AgentGoalStatus.QUEUED,
+            AgentGoalStatus.WAITING_FOR_NETWORK,
+            AgentGoalStatus.WAITING_FOR_CREDENTIAL,
+            AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
+            AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+            AgentGoalStatus.FAILED,
+            AgentGoalStatus.CANCELLING,
+            AgentGoalStatus.CANCELLED,
+            AgentGoalStatus.FINALIZING,
         ),
         AgentGoalStatus.WAITING_FOR_CREDENTIAL to setOf(
             AgentGoalStatus.PLANNING,
@@ -140,7 +156,26 @@ object AgentStateMachine {
         ),
         AgentGoalStatus.CANCELLED to emptySet(),
         AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION to emptySet(),
+        AgentGoalStatus.REJECTED to emptySet(),
+        AgentGoalStatus.BLOCKED_NEEDS_ACTION to setOf(
+            AgentGoalStatus.QUEUED,
+            AgentGoalStatus.CANCELLED,
+            AgentGoalStatus.FINALIZING,
+            AgentGoalStatus.CANCELLING,
+        ),
+        AgentGoalStatus.WAITING_FOR_USER to setOf(
+            AgentGoalStatus.QUEUED,
+            AgentGoalStatus.CANCELLED,
+            AgentGoalStatus.FINALIZING,
+            AgentGoalStatus.CANCELLING,
+        ),
+        AgentGoalStatus.RESEARCHING to setOf(AgentGoalStatus.QUEUED), // Intermediate states
+        AgentGoalStatus.RETRIEVING to setOf(AgentGoalStatus.QUEUED),
+        AgentGoalStatus.EXTRACTING to setOf(AgentGoalStatus.QUEUED),
+        AgentGoalStatus.VALIDATING to setOf(AgentGoalStatus.QUEUED),
+        AgentGoalStatus.SYNTHESIZING to setOf(AgentGoalStatus.QUEUED),
     )
+
 
     fun canTransition(from: AgentGoalStatus, to: AgentGoalStatus): Boolean {
         if (from == to) return true

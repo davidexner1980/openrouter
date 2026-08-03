@@ -136,7 +136,7 @@ class V42DuplicateGuardTest {
 
         val outcome = executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
 
-        assertEquals(WorkerOutcome.DONE, outcome)
+        assertEquals(WorkerOutcome.CONTINUE, outcome)
         
         val freshGoal = store.loadSnapshot().goals.first { it.id == goalId }
         val freshTask = freshGoal.tasks.first { it.id == taskId }
@@ -144,9 +144,10 @@ class V42DuplicateGuardTest {
         assertEquals(0, freshGoal.attempts.size) 
         assertEquals(1, freshTask.attemptCount)
         assertEquals(0, freshTask.lifetimeAttemptCount)
-        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, freshTask.status)
+        assertEquals(AgentGoalStatus.RECOVERING, freshGoal.status)
         assertEquals(0, server.requestCount)
-        assertTrue(freshGoal.events.any { it.message.contains("identical context fingerprint detected") })
+        assertTrue(freshGoal.events.any { it.message.contains("Identical context detected") })
+        assertNotNull(freshGoal.activeRecoveryPlanId)
     }
 
     @Test
@@ -302,12 +303,12 @@ class V42DuplicateGuardTest {
 
         val outcome = executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
 
-        // Should be suppressed and return DONE
-        assertEquals(WorkerOutcome.DONE, outcome)
+        // Should be suppressed and return CONTINUE
+        assertEquals(WorkerOutcome.CONTINUE, outcome)
         assertEquals(0, server.requestCount)
         
         val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        val finalTask = finalGoal.tasks.first { it.id == taskId }
-        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, finalTask.status)
+        assertEquals(AgentGoalStatus.RECOVERING, finalGoal.status)
+        assertNotNull(finalGoal.activeRecoveryPlanId)
     }
 }

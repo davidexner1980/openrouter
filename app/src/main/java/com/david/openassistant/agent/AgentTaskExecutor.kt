@@ -72,14 +72,59 @@ class AgentTaskExecutor internal constructor(
 
         if (freshTask.lastRequestFingerprint == currentFingerprint && freshTask.attemptCount >= 1 && !isAuthorizedRetry) {
             taskDiagnostics.warning("identical_context_pre_dispatch_suppressed", mapOf("fingerprint" to currentFingerprint))
-            store.commitTaskResultAtomic(ticket) { current ->
-                current.copy(
-                    status = AgentGoalStatus.PAUSED,
-                    tasks = current.tasks.map { if (it.id == task.id) it.copy(status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, failureClass = "STRUCTURED_SYNTHESIS_DEFICIT") else it },
-                    events = appendEvent(current.events, "Execution paused: identical context fingerprint detected. Awaiting new evidence or user intervention.")
-                )
+            
+            // REQUIRED CHANGE 6: Replace machine pause with adaptive recovery preparation
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                val stalledTask = current.tasks.firstOrNull { it.id == task.id } ?: return@updateGoalAtomic current
+                val diagnosis = ExecutionStallDiagnosis.REPEATED_CONTEXT
+                val tactic = ResearchRecoveryEngine.selectTactic(current, stalledTask, diagnosis)
+                
+                if (tactic == EscalationTactic.NONE || tactic == EscalationTactic.ASK_USER) {
+                    // Fallback to PAUSED only if no recovery tactic is available
+                    diagnostics.info("duplicate_context_strategy_exhausted", mapOf("goal_id" to goal.id, "task_id" to task.id))
+                    current.copy(
+                        status = AgentGoalStatus.PAUSED,
+                        tasks = current.tasks.map { if (it.id == task.id) it.copy(status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, failureClass = "STRUCTURED_SYNTHESIS_DEFICIT") else it },
+                        events = appendEvent(current.events, "Execution paused: identical context fingerprint detected and no materially novel tactic remains.")
+                    )
+                } else {
+                    val planId = ResearchRecoveryEngine.generatePlanIdentity(current.id, stalledTask.id, currentFingerprint, diagnosis, tactic)
+                    val recoveryPlan = ResearchRecoveryPlan(
+                        id = planId,
+                        goalId = current.id,
+                        taskId = stalledTask.id,
+                        inputExecutionFingerprint = currentFingerprint,
+                        diagnosis = diagnosis,
+                        selectedTactic = tactic,
+                        status = RecoveryPlanStatus.PREPARED,
+                        logicalProviderRequestId = null,
+                        proposal = null,
+                        proposalFingerprint = null,
+                        validationResult = null,
+                        failureClassification = null,
+                        failureMessage = null
+                    )
+                    diagnostics.info(
+                        event = "duplicate_context_recovery_prepared",
+                        component = "recovery",
+                        fields = mapOf(
+                            "goal_id" to current.id,
+                            "task_id" to stalledTask.id,
+                            "plan_id" to planId,
+                            "diagnosis" to diagnosis.name,
+                            "tactic" to tactic.name,
+                            "fingerprint" to currentFingerprint
+                        )
+                    )
+                    current.copy(
+                        status = AgentGoalStatus.RECOVERING,
+                        activeRecoveryPlanId = planId,
+                        recoveryPlans = if (current.recoveryPlans.none { it.id == planId }) current.recoveryPlans + recoveryPlan else current.recoveryPlans,
+                        events = appendEvent(current.events, "Identical context detected. Prepared adaptive recovery tactic: ${tactic.name}.")
+                    )
+                }
             }
-            return WorkerOutcome.DONE
+            return WorkerOutcome.CONTINUE
         }
 
         val leaseAttemptId = ticket.attemptId
@@ -195,8 +240,8 @@ class AgentTaskExecutor internal constructor(
         val councilModelId = AgentCouncilPolicy.selectModel(councilRole, profile, startedGoal.executionModelId)
 
         val timer = taskDiagnostics.startTimer("agent_milestone_execution_duration")
-        return try {
-            val result = client.executeTask(
+        val result = try {
+            val r = client.executeTask(
                 apiKey = apiKey,
                 modelId = councilModelId,
                 goal = startedGoal,
@@ -226,14 +271,32 @@ class AgentTaskExecutor internal constructor(
                 models = models
             )
             timer.stop(mapOf("status" to "success"))
-            persistTaskResult(startedGoal, freshTask, attempt, result, ticket, taskDiagnostics)
+            r
         } catch (error: CancellationException) {
             timer.stop(mapOf("status" to "cancelled"))
             taskDiagnostics.info("agent_milestone_cancelled")
             throw error
         } catch (error: Throwable) {
             timer.stop(mapOf("status" to "failed", "error_type" to error::class.java.simpleName))
-            persistTaskFailure(freshGoal.id, freshTask.id, agentAttemptId, error, currentFingerprint, ticket, models, taskDiagnostics)
+            return persistTaskFailure(freshGoal.id, freshTask.id, agentAttemptId, error, currentFingerprint, ticket, models, taskDiagnostics)
+        }
+
+        return try {
+            persistTaskResult(startedGoal, freshTask, attempt, result, ticket, taskDiagnostics)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            taskDiagnostics.error("internal_result_commit_failed", error)
+            diagnostics.info("internal_failure_not_classified_as_provider", mapOf("goal_id" to freshGoal.id, "task_id" to freshTask.id, "error" to error.message))
+            // REQUIRED CHANGE 2: Internal commit failures must not be sent to provider recovery
+            store.updateGoalAtomic(freshGoal.id, ticket) { current ->
+                current.copy(
+                    status = AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+                    error = "Internal result commit failed: ${error.message}",
+                    events = appendEvent(current.events, "Internal failure during result commit: ${error.message}. Provider work was successful but local persistence failed.")
+                )
+            }
+            WorkerOutcome.DONE
         }
     }
 
@@ -1055,6 +1118,22 @@ class AgentTaskExecutor internal constructor(
             val tactic = ResearchRecoveryEngine.selectTactic(current, currentTask, stallDiagnosis)
             if (tactic != EscalationTactic.ASK_USER && tactic != EscalationTactic.NONE) {
                 val planId = ResearchRecoveryEngine.generatePlanIdentity(current.id, currentTask.id, currentFingerprint, stallDiagnosis, tactic)
+                diagnostics.info(
+                    event = "recovery_transition_prepared",
+                    component = "recovery",
+                    fields = mapOf(
+                        "goal_id" to current.id,
+                        "task_id" to currentTask.id,
+                        "plan_id" to planId,
+                        "cycle_id" to (current.activeResearchCycleId ?: "none"),
+                        "prior_status" to current.status.name,
+                        "new_status" to AgentGoalStatus.RECOVERING.name,
+                        "diagnosis" to stallDiagnosis.name,
+                        "tactic" to tactic.name,
+                        "fingerprint" to currentFingerprint,
+                        "request_count" to currentTask.attemptCount
+                    )
+                )
                 ResearchRecoveryPlan(
                     id = planId,
                     goalId = current.id,

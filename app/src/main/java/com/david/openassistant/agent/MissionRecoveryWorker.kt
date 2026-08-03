@@ -20,31 +20,56 @@ class MissionRecoveryWorker(
         var recoveredCount = 0
 
         snapshot.goals.forEach { goal ->
-            if (goal.status.isTerminal()) return@forEach
+            if (goal.status.isFinalTerminalStatus()) return@forEach
 
             val lease = goal.executionLease
             val isStale = AgentLeasePolicy.isStale(lease, now)
-            val shouldRecover = when {
-                goal.status == AgentGoalStatus.WAITING_FOR_NETWORK -> {
-                    goal.nextRetryAt != null && now >= goal.nextRetryAt
+            
+            // REQUIRED CHANGE 7: Watchdog must respect durable intent
+            val isRecoverableStatus = when (goal.status) {
+                AgentGoalStatus.RUNNING,
+                AgentGoalStatus.VERIFYING,
+                AgentGoalStatus.PLANNING,
+                AgentGoalStatus.RECOVERING -> true
+                AgentGoalStatus.QUEUED -> true
+                AgentGoalStatus.WAITING_FOR_NETWORK -> goal.nextRetryAt != null && now >= goal.nextRetryAt
+                else -> {
+                    if (goal.status == AgentGoalStatus.PAUSED && (lease == null || isStale)) {
+                        diagnostics.info("watchdog_skipped_user_paused_goal", mapOf("goal_id" to goal.id))
+                    }
+                    false // DO NOT recover PAUSED, WAITING_FOR_CREDENTIAL, etc.
                 }
-                lease == null -> true
-                isStale -> true
-                else -> false
             }
 
-            if (shouldRecover) {
-                diagnostics.info("mission_recovery_triggered", mapOf(
-                    "goal_id" to goal.id,
-                    "status" to goal.status.name,
-                    "lease_stale" to isStale
-                ))
-                store.updateGoal(goal.id) { current ->
-                    AgentLifecycleReducer.resume(
-                        current,
-                        reason = if (goal.status == AgentGoalStatus.WAITING_FOR_NETWORK) ResumeReason.NETWORK_RESTORED else ResumeReason.STALE_LEASE_RECOVERY,
-                        message = if (goal.status == AgentGoalStatus.WAITING_FOR_NETWORK) "Automatically resumed mission after network wait." else "Recovered a stale or stranded mission lease."
-                    )
+            val shouldRecover = isRecoverableStatus && (lease == null || isStale)
+
+                if (shouldRecover) {
+                    diagnostics.info("mission_recovery_triggered", mapOf(
+                        "goal_id" to goal.id,
+                        "status" to goal.status.name,
+                        "lease_stale" to isStale
+                    ))
+                    
+                    store.updateGoal(goal.id) { current ->
+                    if (current.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                        AgentLifecycleReducer.resume(
+                            current,
+                            reason = ResumeReason.NETWORK_RESTORED,
+                            message = "Automatically resumed mission after network wait."
+                        )
+                    } else if (current.status in setOf(AgentGoalStatus.RUNNING, AgentGoalStatus.VERIFYING, AgentGoalStatus.RECOVERING)) {
+                        // Targeted recovery for interrupted active work
+                        val recovered = AgentLifecycleReducer.recoverInterruptedWork(current, now)
+                        recovered.copy(
+                            events = appendEvent(recovered.events, "Watchdog recovered an active goal with a stale or missing lease."),
+                            lastResumeReason = ResumeReason.STALE_LEASE_RECOVERY
+                        ).also {
+                            diagnostics.info("watchdog_recovered_active_goal", mapOf("goal_id" to goal.id, "prior_status" to current.status.name))
+                        }
+                    } else {
+                        // QUEUED or other recoverable status
+                        current
+                    }
                 }
                 scheduler.enqueue(goal.id, replace = false)
                 recoveredCount++
@@ -53,12 +78,4 @@ class MissionRecoveryWorker(
 
         return Result.success()
     }
-
-    private fun AgentGoalStatus.isTerminal(): Boolean = this in setOf(
-        AgentGoalStatus.COMPLETED,
-        AgentGoalStatus.CANCELLED,
-        AgentGoalStatus.CANCELLING,
-        AgentGoalStatus.REJECTED,
-        AgentGoalStatus.FAILED // Legacy
-    )
 }
