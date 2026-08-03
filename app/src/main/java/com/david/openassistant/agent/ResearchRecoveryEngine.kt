@@ -136,7 +136,7 @@ object ResearchRecoveryEngine {
             .toSet()
 
         val newQueries = proposal.newQueryPortfolio.map { it.lowercase().trim() }
-        val hasNovelQuery = newQueries.any { it !in previousQueries && it.length > 5 }
+        val hasNovelQuery = newQueries.any { it !in previousQueries && it.isNotEmpty() }
 
         val previousGaps = committedProposals.map { it.specificUnresolvedGap.lowercase().trim() }.toSet()
         val hasNovelGap = proposal.specificUnresolvedGap.lowercase().trim() !in previousGaps

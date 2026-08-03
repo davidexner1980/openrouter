@@ -203,6 +203,7 @@ class AgentPlanner(
                     tasks = tasks,
                     acceptanceCriteria = filteredGoalCriteria,
                     evidence = appendEvidence(baseUpdated.evidence, planEvidence),
+                    investigationMap = plan.investigationMap ?: bootstrapInvestigationMap(baseUpdated, plan),
                     idempotencyRecords = baseUpdated.idempotencyRecords + accountingRecord,
                     attempts = current.attempts.map { existing ->
                         if (existing.id == attempt.id) {
@@ -272,6 +273,33 @@ class AgentPlanner(
         } catch (error: Throwable) {
             persistPlanningFailure(goal.id, attempt.id, error, ticket, models)
         }
+    }
+
+    private fun bootstrapInvestigationMap(goal: AgentGoal, draft: AgentPlanDraft): InvestigationMap {
+        val entities = mutableListOf<EntityRecord>()
+        goal.objectiveContract?.primarySubject?.let { subject ->
+            entities.add(EntityRecord(canonicalName = subject, type = "Subject", confidence = 0.5))
+        }
+        
+        val gaps = draft.objectiveContract?.strongAnchors?.map { anchor ->
+            InformationGap(
+                description = "Confirm material identity and context for anchor: $anchor",
+                impactOnFinalAnswer = "Material anchor resolution required for root objective fidelity.",
+                status = GapStatus.OPEN
+            )
+        }.orEmpty() + goal.evidenceRequirements.map { req ->
+            InformationGap(
+                description = req,
+                impactOnFinalAnswer = "Explicit evidence requirement from goal definition.",
+                status = GapStatus.OPEN
+            )
+        }
+
+        return InvestigationMap(
+            entities = entities,
+            gaps = gaps,
+            lastCheckpointAt = System.currentTimeMillis()
+        )
     }
 
     suspend fun generateRecoveryProposal(

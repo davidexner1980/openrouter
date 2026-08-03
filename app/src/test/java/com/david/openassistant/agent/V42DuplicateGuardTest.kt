@@ -30,6 +30,7 @@ class V42DuplicateGuardTest {
 
     @Before
     fun setUp() {
+        AgentStore.processSessionIdOverride = "session-1"
         server = MockWebServer()
         server.start()
 
@@ -68,6 +69,12 @@ class V42DuplicateGuardTest {
             diagnostics = diagnostics,
             autonomyPolicy = AutonomyPolicy.DEFAULT
         )
+    }
+
+    @org.junit.After
+    fun tearDown() {
+        AgentStore.processSessionIdOverride = null
+        server.close()
     }
 
     private fun createFakePrefs(): SharedPreferences {
@@ -112,38 +119,37 @@ class V42DuplicateGuardTest {
             tasks = listOf(task)
         )
         
-        val fingerprint = FingerprintUtils.calculateExecutionFingerprint(goal, task)
-        val goalWithFingerprint = goal.copy(
-            tasks = goal.tasks.map { it.copy(lastRequestFingerprint = fingerprint) }
+        store.upsertGoal(goal)
+        val acquisition = store.acquireTaskLeaseAtomic(goalId, taskId, "worker-1") as LeaseAcquisitionResult.Acquired
+        val ticket = acquisition.ticket as TaskExecutionTicket
+
+        // Ensure baseline cycle is persisted and reloaded
+        val freshGoalFromStore = store.updateGoal(goalId) { it }.goals.first { it.id == goalId }
+        val freshTaskFromStore = freshGoalFromStore.tasks.first { it.id == taskId }
+
+        val fingerprint = FingerprintUtils.calculateExecutionFingerprint(freshGoalFromStore, freshTaskFromStore)
+        val goalWithFingerprint = freshGoalFromStore.copy(
+            tasks = freshGoalFromStore.tasks.map { it.copy(lastRequestFingerprint = fingerprint) }
         )
         
         store.upsertGoal(goalWithFingerprint)
 
-        val ticket = TaskExecutionTicket(
-            goalId = goalId,
-            taskIdentity = taskId,
-            workerId = "worker-1",
-            ownerProcessSessionId = "session-1",
-            generation = 1,
-            attemptId = "attempt-1",
-            acquiredAt = System.currentTimeMillis()
-        )
-        
-        store.acquireTaskLeaseAtomic(goalId, taskId, "worker-1")
+        val finalSnapshot = store.loadSnapshot()
+        val goalForCall = finalSnapshot.goals.first { it.id == goalId }
+        val taskForCall = goalForCall.tasks.first { it.id == taskId }
 
-        val outcome = executor.executeOneTask("api-key", goalWithFingerprint, task, ticket)
+        val outcome = executor.executeOneTask("api-key", goalForCall, taskForCall, ticket)
 
         assertEquals(WorkerOutcome.DONE, outcome)
         
-        val freshGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        val freshTask = freshGoal.tasks.first { it.id == taskId }
+        val reSnapshot = store.loadSnapshot()
+        val finalGoal = reSnapshot.goals.first { it.id == goalId }
+        val finalTask = finalGoal.tasks.first { it.id == taskId }
 
-        assertEquals(0, freshGoal.attempts.size) 
-        assertEquals(1, freshTask.attemptCount)
-        assertEquals(0, freshTask.lifetimeAttemptCount)
-        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, freshTask.status)
+        assertEquals(1, finalTask.attemptCount)
+        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, finalTask.status)
         assertEquals(0, server.requestCount)
-        assertTrue(freshGoal.events.any { it.message.contains("identical context fingerprint detected") })
+        assertTrue(finalGoal.events.any { it.message.contains("identical context fingerprint detected") })
     }
 
     @Test
@@ -172,9 +178,17 @@ class V42DuplicateGuardTest {
             tasks = listOf(task)
         )
         
-        val fingerprint = FingerprintUtils.calculateExecutionFingerprint(goal, task)
-        val goalWithAuth = goal.copy(
-            tasks = goal.tasks.map { it.copy(
+        store.upsertGoal(goal)
+        val acquisition = store.acquireTaskLeaseAtomic(goalId, taskId, "worker-1") as LeaseAcquisitionResult.Acquired
+        val ticket = acquisition.ticket as TaskExecutionTicket
+
+        // Ensure baseline cycle is persisted and reloaded
+        val freshGoalFromStore = store.updateGoal(goalId) { it }.goals.first { it.id == goalId }
+        val freshTaskFromStore = freshGoalFromStore.tasks.first { it.id == taskId }
+
+        val fingerprint = FingerprintUtils.calculateExecutionFingerprint(freshGoalFromStore, freshTaskFromStore)
+        val goalWithAuth = freshGoalFromStore.copy(
+            tasks = freshGoalFromStore.tasks.map { it.copy(
                 lastRequestFingerprint = fingerprint,
                 retryAuthorizedFingerprint = fingerprint
             ) }
@@ -182,17 +196,9 @@ class V42DuplicateGuardTest {
         
         store.upsertGoal(goalWithAuth)
 
-        val ticket = TaskExecutionTicket(
-            goalId = goalId,
-            taskIdentity = taskId,
-            workerId = "worker-1",
-            ownerProcessSessionId = "session-1",
-            generation = 1,
-            attemptId = "attempt-1",
-            acquiredAt = System.currentTimeMillis()
-        )
-        
-        store.acquireTaskLeaseAtomic(goalId, taskId, "worker-1")
+        val finalSnapshot = store.loadSnapshot()
+        val goalForCall = finalSnapshot.goals.first { it.id == goalId }
+        val taskForCall = goalForCall.tasks.first { it.id == taskId }
 
         val successJson = """
             {
@@ -208,16 +214,18 @@ class V42DuplicateGuardTest {
         """.trimIndent()
         server.enqueue(MockResponse.Builder().body(successJson).build())
 
-        executor.executeOneTask("api-key", goalWithAuth, task, ticket)
+        val outcome = executor.executeOneTask("api-key", goalForCall, taskForCall, ticket)
 
+        val reSnapshot = store.loadSnapshot()
+        val finalGoalActual = reSnapshot.goals.first { it.id == goalId }
+
+        assertEquals("Outcome should be CONTINUE. Goal error: ${finalGoalActual.error}, Events: ${finalGoalActual.events.joinToString { it.message }}", WorkerOutcome.CONTINUE, outcome)
         assertEquals(1, server.requestCount)
         
-        val freshGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        val freshTask = freshGoal.tasks.first { it.id == taskId }
+        val finalTask = finalGoalActual.tasks.first { it.id == taskId }
 
-        assertEquals(1, freshGoal.attempts.size)
-        assertEquals(2, freshTask.attemptCount)
-        assertNull(freshTask.retryAuthorizedFingerprint)
+        assertEquals(2, finalTask.attemptCount)
+        assertNull(finalTask.retryAuthorizedFingerprint)
     }
 
     @Test

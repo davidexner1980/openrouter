@@ -13,6 +13,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.fail
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -227,7 +228,7 @@ class Slice1LifecycleTest {
             exchangeOutcome = ExchangeOutcome.ACTIVE,
         )
         val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-        assertEquals(CreateAttemptResult.InvalidLeaseOrGoalState, res)
+        assertTrue(res is CreateAttemptResult.InvalidLeaseOrGoalState)
     }
 
     @Test
@@ -245,7 +246,7 @@ class Slice1LifecycleTest {
             exchangeOutcome = ExchangeOutcome.RESPONSE_SUCCESS, // Not ACTIVE
         )
         val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-        assertEquals(CreateAttemptResult.InvalidLeaseOrGoalState, res)
+        assertTrue(res is CreateAttemptResult.InvalidLeaseOrGoalState)
     }
 
     @Test
@@ -264,7 +265,7 @@ class Slice1LifecycleTest {
             exchangeOutcome = ExchangeOutcome.ACTIVE,
         )
         val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-        assertEquals(CreateAttemptResult.InvalidLeaseOrGoalState, res)
+        assertTrue(res is CreateAttemptResult.InvalidLeaseOrGoalState)
     }
 
     @Test
@@ -283,7 +284,7 @@ class Slice1LifecycleTest {
             exchangeOutcome = ExchangeOutcome.ACTIVE,
         )
         val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-        assertEquals(CreateAttemptResult.InvalidLeaseOrGoalState, res)
+        assertTrue(res is CreateAttemptResult.InvalidLeaseOrGoalState)
     }
 
     @Test
@@ -302,7 +303,7 @@ class Slice1LifecycleTest {
             exchangeOutcome = ExchangeOutcome.ACTIVE,
         )
         val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-        assertEquals(CreateAttemptResult.InvalidLeaseOrGoalState, res)
+        assertTrue(res is CreateAttemptResult.InvalidLeaseOrGoalState)
     }
 
     @Test
@@ -321,7 +322,7 @@ class Slice1LifecycleTest {
             exchangeOutcome = ExchangeOutcome.ACTIVE,
         )
         val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-        assertEquals(CreateAttemptResult.InvalidLeaseOrGoalState, res)
+        assertTrue(res is CreateAttemptResult.InvalidLeaseOrGoalState)
     }
 
     @Test
@@ -341,7 +342,7 @@ class Slice1LifecycleTest {
             exchangeOutcome = ExchangeOutcome.ACTIVE,
         )
         val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-        assertEquals(CreateAttemptResult.InvalidLeaseOrGoalState, res)
+        assertTrue(res is CreateAttemptResult.InvalidLeaseOrGoalState)
     }
 
     @Test
@@ -399,7 +400,7 @@ class Slice1LifecycleTest {
                 exchangeOutcome = ExchangeOutcome.ACTIVE,
             )
             val res = store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
-            assertEquals("Failed to reject status $status", CreateAttemptResult.InvalidLeaseOrGoalState, res)
+            assertTrue("Failed to reject status $status", res is CreateAttemptResult.InvalidLeaseOrGoalState)
         }
     }
 
@@ -1276,11 +1277,11 @@ class Slice1LifecycleTest {
         server.enqueue(MockResponse.Builder().code(200).body(validResponseBody).build())
 
         var inTaskExecution = false
-        val initialWriteCount = store.writeCount.get()
+        val initialWriteCount = AgentStore.writeCount.get()
         store.setTestWriterInjection(object : AgentStore.GoalStateWriter {
             override fun write(goal: AgentGoal) {
                 if (inTaskExecution) {
-                    val currentCount = store.writeCount.get()
+                    val currentCount = AgentStore.writeCount.get()
                     if (currentCount == initialWriteCount + 2) { // 1st is ACTIVE, 2nd is Terminal
                         throw IOException("Disk full during terminal write")
                     }

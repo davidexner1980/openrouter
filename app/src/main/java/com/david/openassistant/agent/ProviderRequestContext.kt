@@ -17,7 +17,7 @@ sealed class ProviderRequestContext {
         val parentOperationId: String,
     ) : ProviderRequestContext() {
         fun toTicket(acquiredAt: Long): AgentOwnershipTicket {
-            val session = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
+            val session = AgentStore.getCurrentSessionId()
             return if (taskId != null) {
                 TaskExecutionTicket(goalId, taskId, workerId, session, executionGeneration, attemptId, acquiredAt)
             } else {

@@ -70,6 +70,7 @@ data class AgentStepResult(
     val structuredOutputRepaired: Boolean = false,
     val queryFingerprints: List<String> = emptyList(),
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
+    val newCitations: List<String> = emptyList(),
     val repairLineage: StructureRepairLineage? = null,
 )
 

@@ -92,7 +92,7 @@ class ResearchRecoveryEngineTest {
             newQueryPortfolio = listOf("Q1"),
             followUpRule = null, rationale = "R1", expectedNoveltyDimensions = listOf("D1")
         )
-        val fingerprint = ResearchRecoveryEngine.generateProposalFingerprint(proposal)
+        val fingerprint = FingerprintUtils.calculateProposalFingerprint(proposal)
         
         val plan1 = ResearchRecoveryPlan(
             id = "p1", goalId = "g1", taskId = "t1", inputExecutionFingerprint = "f1",

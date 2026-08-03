@@ -80,6 +80,8 @@ class AgentTaskExecutor internal constructor(
                 )
             }
             return WorkerOutcome.DONE
+        } else if (freshTask.attemptCount >= 1) {
+            taskDiagnostics.info("fingerprint_mismatch", mapOf("expected" to freshTask.lastRequestFingerprint, "actual" to currentFingerprint))
         }
 
         val leaseAttemptId = ticket.attemptId
@@ -573,6 +575,7 @@ class AgentTaskExecutor internal constructor(
                 "structured_output_repaired" to result.structuredOutputRepaired,
             ),
         )
+
         return outcome
     }
 
@@ -928,6 +931,7 @@ class AgentTaskExecutor internal constructor(
         claims: List<AgentClaim>,
         evidenceItem: AgentEvidence,
         priorEvidence: List<AgentEvidence>,
+        sourceReads: List<SourceRead> = emptyList(),
     ): List<AgentClaim> {
         val allEvidence = priorEvidence + evidenceItem
         val validEvidenceIds = allEvidence.mapTo(mutableSetOf()) { it.id }
@@ -938,9 +942,7 @@ class AgentTaskExecutor internal constructor(
                 }
             }
         }
-        val sourceBackedEvidenceIds = allEvidence.asSequence()
-            .filter { it.sources.isNotEmpty() }
-            .mapTo(mutableSetOf()) { it.id }
+        val sourceReadsByCanonicalUrl = sourceReads.associateBy { it.canonicalUrl }
         return claims.map { claim ->
             val explicitlyReferencedEvidenceIds = claim.supportingEvidenceIds.filter(validEvidenceIds::contains)
             val evidenceIds = buildList {
@@ -961,16 +963,20 @@ class AgentTaskExecutor internal constructor(
                 referencedEvidenceIds = explicitlyReferencedEvidenceIds,
                 evidence = allEvidence,
             )
-            val hasMatchedSourceEvidence = evidenceIds.any { evidenceId ->
-                evidenceId in sourceBackedEvidenceIds &&
-                    allEvidence.firstOrNull { it.id == evidenceId }
-                        ?.sources
-                        ?.any { it.url in resolvedSourceUrls }
-                        ?: false
+            
+            // OH-014: Full-Read Requirement Enforcement
+            val hasMatchedFullReadEvidence = evidenceIds.any { evidenceId ->
+                val ev = allEvidence.firstOrNull { it.id == evidenceId }
+                ev != null && ev.sources.any { s ->
+                    val canonical = ResearchQualityGate.canonicalSourceUrl(s.url)
+                    val read = sourceReadsByCanonicalUrl[canonical]
+                    read?.provenance in setOf(SourceReadProvenance.VERIFIED_FETCH, SourceReadProvenance.PROVIDER_EXTRACT)
+                }
             }
+
             val support = when {
                 claim.support == AgentClaimSupport.CONTRADICTED -> claim.support
-                (claim.type == AgentClaimType.FACT) && hasMatchedSourceEvidence -> AgentClaimSupport.SUPPORTED
+                (claim.type == AgentClaimType.FACT) && hasMatchedFullReadEvidence -> AgentClaimSupport.SUPPORTED
                 (claim.type == AgentClaimType.FACT) && evidenceIds.isNotEmpty() -> AgentClaimSupport.PARTIAL
                 claim.support == AgentClaimSupport.UNSUPPORTED && evidenceIds.isNotEmpty() -> AgentClaimSupport.SUPPORTED
                 else -> claim.support
@@ -1123,11 +1129,11 @@ class AgentTaskExecutor internal constructor(
 
         val candidateClaimsForTask = if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
             refineImpreciseClaimSourceSelections(
-                claims = attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence),
+                claims = attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads),
                 evidence = routedCurrent.evidence + candidateEvidenceItem,
             )
         } else {
-            attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence)
+            attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads)
         }
 
         val addedSubstantiveSources = result.sources.any { s -> 
@@ -1189,6 +1195,40 @@ class AgentTaskExecutor internal constructor(
             else -> current.claims
         }
         val mergedClaims = mergeClaims(claimBase, claimsForTask)
+        
+        val updatedMap = routedCurrent.investigationMap?.let { map ->
+            var nextMap = InvestigationMapLogic.updateWithEvidence(map, listOf(evidenceItem), mergedClaims)
+            nextMap = InvestigationMapLogic.extractCitationFollowUps(nextMap, result)
+            
+            val queryOutcome = QueryOutcome(
+                canonicalQuery = result.queryFingerprints.lastOrNull() ?: "unknown",
+                purpose = task.title,
+                relatedGapId = null, // Could be linked if task was gap-closure
+                relatedHypothesisId = null,
+                sourceFamily = researchPassRole(task).name,
+                resultDomains = result.sources.mapNotNull { runCatching { java.net.URI(it.url).host }.getOrNull() }.distinct(),
+                usefulSourceIds = result.sources.map { it.url },
+                evidenceAcceptedIds = claimsForTask.map { it.id },
+                utilityRationale = "Result from task: ${task.title}",
+                cycleId = task.cycleId,
+                tacticId = task.lastTactic
+            )
+            val finalMap = InvestigationMapLogic.recordQueryOutcome(nextMap, queryOutcome)
+
+            diagnostics.info(
+                event = "investigation_map_updated",
+                component = "investigation",
+                fields = mapOf(
+                    "goal_id" to current.id,
+                    "entities_count" to finalMap.entities.size,
+                    "open_gaps" to finalMap.gaps.count { it.status == GapStatus.OPEN },
+                    "hypotheses_count" to finalMap.hypotheses.size,
+                    "new_citations" to result.newCitations.size
+                )
+            )
+            finalMap
+        }
+
         val retainedClaimIds = mergedClaims.mapTo(mutableSetOf()) { it.id }
         val retainedLinks = current.evidenceLinks.asSequence()
             .filterNot { it.claimId in oldClaimIds }
@@ -1285,6 +1325,7 @@ class AgentTaskExecutor internal constructor(
             noProgressCount = if (madeMeaningfulProgress) 0 else routedCurrent.noProgressCount + 1,
             finalValidationResult = if (nextStatus == AgentGoalStatus.COMPLETED) "Acceptance criteria passed." else routedCurrent.finalValidationResult,
             tasks = updatedTasks,
+            investigationMap = updatedMap ?: routedCurrent.investigationMap,
             attempts = retainAttempts(
                 routedCurrent.attempts.map { existing ->
                     if (existing.id == attemptId) {

@@ -101,6 +101,7 @@ data class AgentGoal(
     val researchCycles: List<ResearchCycle> = emptyList(),
     val objectiveRevisions: List<ObjectiveRevision> = emptyList(),
     val activeResearchCycleId: String? = null,
+    val investigationMap: InvestigationMap? = null,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)
