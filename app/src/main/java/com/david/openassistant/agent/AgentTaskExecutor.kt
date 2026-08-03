@@ -79,13 +79,16 @@ class AgentTaskExecutor internal constructor(
                 val diagnosis = ExecutionStallDiagnosis.REPEATED_CONTEXT
                 val tactic = ResearchRecoveryEngine.selectTactic(current, stalledTask, diagnosis)
                 
-                if (tactic == EscalationTactic.NONE || tactic == EscalationTactic.ASK_USER) {
-                    // Fallback to PAUSED only if no recovery tactic is available
-                    diagnostics.info("duplicate_context_strategy_exhausted", mapOf("goal_id" to goal.id, "task_id" to task.id))
+                if (tactic == EscalationTactic.NONE || tactic == EscalationTactic.ASK_USER || tactic == EscalationTactic.MARK_EXHAUSTED) {
+                    val (newStatus, eventMessage) = when (tactic) {
+                        EscalationTactic.ASK_USER -> AgentGoalStatus.REQUIRES_USER_CLARIFICATION to "Execution blocked: identical context fingerprint detected. User clarification required."
+                        else -> AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED to "Execution finished: research strategies exhausted for the current objective."
+                    }
+                    diagnostics.info("duplicate_context_strategy_exhausted", mapOf("goal_id" to goal.id, "task_id" to task.id, "final_tactic" to tactic.name))
                     current.copy(
-                        status = AgentGoalStatus.PAUSED,
+                        status = newStatus,
                         tasks = current.tasks.map { if (it.id == task.id) it.copy(status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, failureClass = "STRUCTURED_SYNTHESIS_DEFICIT") else it },
-                        events = appendEvent(current.events, "Execution paused: identical context fingerprint detected and no materially novel tactic remains.")
+                        events = appendEvent(current.events, eventMessage)
                     )
                 } else {
                     val planId = ResearchRecoveryEngine.generatePlanIdentity(current.id, stalledTask.id, currentFingerprint, diagnosis, tactic)

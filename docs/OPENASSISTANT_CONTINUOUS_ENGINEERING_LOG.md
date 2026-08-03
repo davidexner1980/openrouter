@@ -19,7 +19,7 @@
 | [OI-002] | planning_lease_rejected_without_planning_operation | Closed | High |
 | [OI-003] | identical_context_pre_dispatch_suppressed | Closed | High |
 | [OI-004] | Repeated stale or stranded mission recovery without progress | Closed | High |
-| [OI-005] | Machine-generated duplicate context changing the mission to PAUSED | Open | Medium |
+| [OI-005] | Machine-generated duplicate context changing the mission to PAUSED | Closed | Medium |
 | [OI-006] | Watchdog automatically resuming a user-paused mission | Closed | High |
 
 ---
@@ -186,7 +186,7 @@ REPRODUCED
 ### Repository
 - Branch: main
 - Starting commit: 1d427ff8d2a366a2bc38f2d497d75afdee42b4e6
-- Run commit: SELF — commit containing this journal entry
+- Run commit: 65050bf080cfef5425877c546e2a1d28657fc92a
 - Commit message: Continuous improvement CE-20260803-0637-1d427ff8: generalize active phase handling in recovery watchdog and remove hardcoded repairs
 
 ### Selected Scope
@@ -267,7 +267,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 65050bf080cfef5425877c546e2a1d28657fc92a
-- Run commit: SELF — commit containing this journal entry
+- Run commit: 802f345d8d994fe085028f5ffc017d3cbdd9252f
 - Commit message: Continuous improvement CE-20260803-0748-65050bf0: break identical context loops by integrating recovery strategy into execution fingerprint and prompt
 
 ### Selected Scope
@@ -300,7 +300,7 @@ JVM VERIFIED
 ### Verification
 - Baseline commands: .\gradlew.bat testDebugUnitTest
 - Baseline results: PASSED (572 tests)
-- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.DuplicateContextRecoveryTest"
+- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.DuplicateContextFallbackTest"
 - Focused results: PASSED
 - Total: 572
 - Passed: 572
@@ -328,3 +328,80 @@ JVM VERIFIED
 ### Recommended Next Pass
 - Next scope: Address [OI-005] (Machine-generated duplicate context changing the mission to PAUSED).
 - Supporting evidence: AgentTaskExecutor still falls back to PAUSED if `selectTactic` returns NONE.
+
+---
+
+## Run CE-20260803-1227-802f345d — 2026-08-03T12:27:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 802f345d8d994fe085028f5ffc017d3cbdd9252f
+- Run commit: SELF — commit containing this journal entry
+- Commit message: Continuous improvement CE-20260803-1227-802f345d: replace untruthful machine-generated PAUSED status with RESEARCH_CYCLES_EXHAUSTED or REQUIRES_USER_CLARIFICATION
+
+### Selected Scope
+- Problem: When a research stall was detected (identical context fingerprint) and all recovery tactics were exhausted, the system defaulted to `PAUSED` status. This was untruthful as it implied user intervention rather than system exhaustion or a need for clarification.
+- Why selected: Addressed [OI-005] to improve lifecycle truth and research robustness.
+- Correct owner: AgentTaskExecutor, ResearchRecoveryEngine, AgentGoalWorker.
+- Protected behavior: [PB-002] User pause must be durable across restarts.
+
+### Evidence and Reproduction
+- Original symptom: Logs and mission state showed `PAUSED` after repeated `identical_context_pre_dispatch_suppressed` warnings without user action.
+- Evidence source: Static trace in `AgentTaskExecutor.kt` showed hardcoded fallback to `AgentGoalStatus.PAUSED`.
+- Automated reproduction: `DuplicateContextFallbackTest.kt` verified that missions now transition to truthful statuses when tactics are depleted.
+
+### Acceptance Criteria
+- `ResearchRecoveryEngine.selectTactic` MUST include `ASK_USER` and `MARK_EXHAUSTED` as fallbacks.
+- `AgentTaskExecutor` MUST map `ASK_USER` to `REQUIRES_USER_CLARIFICATION`.
+- `AgentTaskExecutor` MUST map `MARK_EXHAUSTED` or `NONE` to `RESEARCH_CYCLES_EXHAUSTED`.
+- `AgentGoalWorker` MUST apply similar truthful mappings in its repair logic.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/ResearchRecoveryEngine.kt (Updated `selectTactic` to include `ASK_USER` and `MARK_EXHAUSTED` fallbacks)
+    - app/src/main/java/com/david/openassistant/agent/AgentTaskExecutor.kt (Mapped exhausted tactics to truthful statuses)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Updated `repairBlockedWorkflow` with truthful status mapping)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/DuplicateContextFallbackTest.kt (New: verified truthful status transitions)
+- Behavior changed: Missions no longer enter a deceptive `PAUSED` state when automated recovery fails; they now clearly state if cycles are exhausted or user clarification is needed.
+- Behavior preserved: User-initiated pause remains durable and distinct from these machine-generated states.
+
+### Verification
+- Baseline commands: .\gradlew.bat testDebugUnitTest
+- Baseline results: PASSED (572 tests)
+- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.DuplicateContextFallbackTest"
+- Focused results: PASSED (2 tests)
+- Full unit command: .\gradlew.bat testDebugUnitTest
+- Total: 574
+- Passed: 574
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known risks: None identified.
+- Unverified behavior: Exact UI rendering of the new terminal/blocked states (unit tested via status logic).
+
+### Repository Hygiene
+- git diff --check: Passed
+- Generated-file scan: Clean
+- Large-file scan: Clean
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility (logic only, no schema changes).
+
+### Open Issues Updated
+- Closed: [OI-005]
+
+### Recommended Next Pass
+- Next scope: Improve objective fidelity [PB-001] by implementing objective-drift detection during multi-stage research.
+- Supporting evidence: Static trace in `AgentPlanner` showing potential for operational plans to drift from root objective.

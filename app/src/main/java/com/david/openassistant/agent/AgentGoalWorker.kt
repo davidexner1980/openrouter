@@ -885,15 +885,23 @@ class AgentGoalWorker(
             val diagnosis = ResearchRecoveryEngine.diagnoseStall(goal, stalledTask, goal.freeOnly, false)
             if (diagnosis != ExecutionStallDiagnosis.NONE) {
                 val tactic = ResearchRecoveryEngine.selectTactic(goal, stalledTask, diagnosis)
-                if (tactic == EscalationTactic.MARK_EXHAUSTED) {
+                if (tactic == EscalationTactic.MARK_EXHAUSTED || tactic == EscalationTactic.NONE) {
                     store.updateGoalAtomic(goal.id, ticket) { current ->
                         current.copy(
                             status = AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
-                            events = appendEvent(current.events, "Research cycles exhausted. No materially novel strategy remains.")
+                            events = appendEvent(current.events, "Research strategies exhausted for the current objective.")
                         )
                     }
                     return WorkerOutcome.DONE
-                } else if (tactic != EscalationTactic.NONE && tactic != EscalationTactic.ASK_USER) {
+                } else if (tactic == EscalationTactic.ASK_USER) {
+                    store.updateGoalAtomic(goal.id, ticket) { current ->
+                        current.copy(
+                            status = AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
+                            events = appendEvent(current.events, "Research stall detected. User clarification required.")
+                        )
+                    }
+                    return WorkerOutcome.DONE
+                } else {
                     val fingerprint = FingerprintUtils.calculateExecutionFingerprint(goal, stalledTask)
                     val planId = ResearchRecoveryEngine.generatePlanIdentity(goal.id, stalledTask.id, fingerprint, diagnosis, tactic)
                     

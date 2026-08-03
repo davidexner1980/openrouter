@@ -84,10 +84,16 @@ object ResearchRecoveryEngine {
         val withinCycleTactic = candidates.firstOrNull { it !in attemptedTactics }
         if (withinCycleTactic != null) return withinCycleTactic
 
-        // V42.4: Removed fixed cycleCount < 3 limit.
         // If all within-cycle tactics are exhausted, we attempt cycle advancement.
-        // Exhaustion will be determined by the novelty and fidelity of the resulting proposal.
-        return EscalationTactic.CYCLE_ADVANCE
+        if (EscalationTactic.CYCLE_ADVANCE !in attemptedTactics) {
+            return EscalationTactic.CYCLE_ADVANCE
+        }
+
+        if (EscalationTactic.ASK_USER !in attemptedTactics) {
+            return EscalationTactic.ASK_USER
+        }
+
+        return EscalationTactic.MARK_EXHAUSTED
     }
 
     private fun ExecutionStallDiagnosis.toTactic(): EscalationTactic = when(this) {
