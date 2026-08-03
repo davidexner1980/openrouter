@@ -8,6 +8,21 @@ package com.david.openassistant.agent
  * updates can be persisted without inventing a new lifecycle transition.
  */
 object AgentStateMachine {
+    private val activeStateTransitions: Set<AgentGoalStatus> = setOf(
+        AgentGoalStatus.QUEUED,
+        AgentGoalStatus.VERIFYING,
+        AgentGoalStatus.WAITING_FOR_CREDENTIAL,
+        AgentGoalStatus.WAITING_FOR_NETWORK,
+        AgentGoalStatus.PAUSED,
+        AgentGoalStatus.CANCELLED,
+        AgentGoalStatus.FAILED,
+        AgentGoalStatus.FINALIZING,
+        AgentGoalStatus.CANCELLING,
+        AgentGoalStatus.BLOCKED,
+        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+        AgentGoalStatus.RECOVERING,
+    )
+
     private val allowedTransitions: Map<AgentGoalStatus, Set<AgentGoalStatus>> = mapOf(
         AgentGoalStatus.PLANNING to setOf(
             AgentGoalStatus.FINALIZING,
@@ -37,20 +52,12 @@ object AgentStateMachine {
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
             AgentGoalStatus.RECOVERING,
         ),
-        AgentGoalStatus.RUNNING to setOf(
-            AgentGoalStatus.QUEUED,
-            AgentGoalStatus.VERIFYING,
-            AgentGoalStatus.WAITING_FOR_CREDENTIAL,
-            AgentGoalStatus.WAITING_FOR_NETWORK,
-            AgentGoalStatus.PAUSED,
-            AgentGoalStatus.CANCELLED,
-            AgentGoalStatus.FAILED,
-            AgentGoalStatus.FINALIZING,
-            AgentGoalStatus.CANCELLING,
-            AgentGoalStatus.BLOCKED,
-            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
-            AgentGoalStatus.RECOVERING,
-        ),
+        AgentGoalStatus.RUNNING to activeStateTransitions,
+        AgentGoalStatus.RESEARCHING to activeStateTransitions,
+        AgentGoalStatus.RETRIEVING to activeStateTransitions,
+        AgentGoalStatus.EXTRACTING to activeStateTransitions,
+        AgentGoalStatus.VALIDATING to activeStateTransitions,
+        AgentGoalStatus.SYNTHESIZING to activeStateTransitions,
         AgentGoalStatus.VERIFYING to setOf(
             AgentGoalStatus.QUEUED,
             AgentGoalStatus.WAITING_FOR_CREDENTIAL,
@@ -169,11 +176,6 @@ object AgentStateMachine {
             AgentGoalStatus.FINALIZING,
             AgentGoalStatus.CANCELLING,
         ),
-        AgentGoalStatus.RESEARCHING to setOf(AgentGoalStatus.QUEUED), // Intermediate states
-        AgentGoalStatus.RETRIEVING to setOf(AgentGoalStatus.QUEUED),
-        AgentGoalStatus.EXTRACTING to setOf(AgentGoalStatus.QUEUED),
-        AgentGoalStatus.VALIDATING to setOf(AgentGoalStatus.QUEUED),
-        AgentGoalStatus.SYNTHESIZING to setOf(AgentGoalStatus.QUEUED),
     )
 
 

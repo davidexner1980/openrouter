@@ -134,31 +134,13 @@ object MissionUiLogic {
         
         // A worker is truly active only if a fresh lease exists OR WorkManager reports it as running,
         // OR an exchange is active (unsettled), and status suggests active processing
-        val isWorkerTrulyActive = (hasActiveLease || isWorkManagerRunning || hasUnsettledExchange) && (
-            goal.status == AgentGoalStatus.PLANNING ||
-                goal.status == AgentGoalStatus.QUEUED ||
-                goal.status == AgentGoalStatus.RUNNING ||
-                goal.status == AgentGoalStatus.VERIFYING
-            )
+        val isWorkerTrulyActive = (hasActiveLease || isWorkManagerRunning || hasUnsettledExchange) &&
+            goal.status.isActivePhase()
         
-        val isTerminal = goal.status in setOf(
-            AgentGoalStatus.COMPLETED,
-            AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-            AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-            AgentGoalStatus.CANCELLED,
-            AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-            AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-            AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-            AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
-        )
+        val isTerminal = goal.status.isFinalTerminalStatus()
 
         // A mission is stranded if its status is active but no worker is heartbeating
-        val isStranded = !hasActiveLease && (
-            goal.status == AgentGoalStatus.PLANNING ||
-                goal.status == AgentGoalStatus.QUEUED ||
-                goal.status == AgentGoalStatus.RUNNING ||
-                goal.status == AgentGoalStatus.VERIFYING
-            )
+        val isStranded = !hasActiveLease && goal.status.isActivePhase()
 
         return buildSet {
             // Only show PAUSE if a worker is actually heartbeating

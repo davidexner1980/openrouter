@@ -64,6 +64,19 @@ fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
     AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
 )
 
+fun AgentGoalStatus.isActivePhase(): Boolean = this in setOf(
+    AgentGoalStatus.PLANNING,
+    AgentGoalStatus.QUEUED,
+    AgentGoalStatus.RUNNING,
+    AgentGoalStatus.RESEARCHING,
+    AgentGoalStatus.RETRIEVING,
+    AgentGoalStatus.EXTRACTING,
+    AgentGoalStatus.VALIDATING,
+    AgentGoalStatus.SYNTHESIZING,
+    AgentGoalStatus.VERIFYING,
+    AgentGoalStatus.RECOVERING,
+)
+
 enum class AgentTaskStatus {
     PLANNED,
     QUEUED,

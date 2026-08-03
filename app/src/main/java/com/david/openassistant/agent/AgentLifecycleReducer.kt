@@ -16,15 +16,21 @@ object AgentLifecycleReducer {
             .filter { it.status == AgentTaskStatus.RUNNING }
             .mapTo(mutableSetOf()) { it.id }
         val verificationInterrupted = goal.status == AgentGoalStatus.VERIFYING
-        if (runningTaskIds.isEmpty() && !verificationInterrupted) return goal
+        val intermediateStateInterrupted = goal.status in setOf(
+            AgentGoalStatus.RESEARCHING,
+            AgentGoalStatus.RETRIEVING,
+            AgentGoalStatus.EXTRACTING,
+            AgentGoalStatus.VALIDATING,
+            AgentGoalStatus.SYNTHESIZING
+        )
+
+        if (runningTaskIds.isEmpty() && !verificationInterrupted && !intermediateStateInterrupted) return goal
 
         return goal.copy(
-            status = when (goal.status) {
-                AgentGoalStatus.RUNNING,
-                AgentGoalStatus.VERIFYING,
-                -> AgentGoalStatus.QUEUED
-
-                else -> goal.status
+            status = if (goal.status.isActivePhase() && goal.status != AgentGoalStatus.PLANNING && goal.status != AgentGoalStatus.RECOVERING) {
+                AgentGoalStatus.QUEUED
+            } else {
+                goal.status
             },
             tasks = goal.tasks.map { task ->
                 if (task.id in runningTaskIds) {
@@ -56,6 +62,8 @@ object AgentLifecycleReducer {
                         "Recovered interrupted verification and ${runningTaskIds.size} milestone(s); work was safely re-queued."
                     verificationInterrupted ->
                         "Recovered an interrupted verification pass; verification was safely re-queued."
+                    intermediateStateInterrupted ->
+                        "Recovered an interrupted research phase (${goal.status.name}); work was safely re-queued."
                     else ->
                         "Recovered ${runningTaskIds.size} interrupted milestone(s) from the durable checkpoint."
                 },
@@ -68,11 +76,7 @@ object AgentLifecycleReducer {
         now: Long = System.currentTimeMillis(),
         reason: String = "Goal paused by the user.",
     ): AgentGoal {
-        if (goal.status !in setOf(
-                AgentGoalStatus.PLANNING,
-                AgentGoalStatus.QUEUED,
-                AgentGoalStatus.RUNNING,
-                AgentGoalStatus.VERIFYING,
+        if (!goal.status.isActivePhase() && goal.status !in setOf(
                 AgentGoalStatus.WAITING_FOR_CREDENTIAL,
                 AgentGoalStatus.WAITING_FOR_NETWORK,
             )
@@ -103,19 +107,8 @@ object AgentLifecycleReducer {
         reason: ResumeReason = ResumeReason.USER_RESUME,
         message: String = "Goal resumed by the user.",
     ): AgentGoal {
-        if (goal.status !in setOf(
-                AgentGoalStatus.PAUSED,
-                AgentGoalStatus.FAILED,
-                AgentGoalStatus.BLOCKED,
-                AgentGoalStatus.WAITING_FOR_CREDENTIAL,
-                AgentGoalStatus.WAITING_FOR_NETWORK,
-                AgentGoalStatus.PLANNING,
-                AgentGoalStatus.QUEUED,
-                AgentGoalStatus.RUNNING,
-                AgentGoalStatus.VERIFYING,
-                AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
-            )
-        ) return goal
+        if (goal.status.isFinalTerminalStatus()) return goal
+
         val resumedStatus = if (goal.tasks.isEmpty()) AgentGoalStatus.PLANNING else AgentGoalStatus.QUEUED
         val restartsCorrectionWindow = goal.status in setOf(AgentGoalStatus.PAUSED, AgentGoalStatus.FAILED, AgentGoalStatus.BLOCKED)
         return goal.copy(
