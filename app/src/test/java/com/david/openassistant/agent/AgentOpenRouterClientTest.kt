@@ -131,6 +131,28 @@ class AgentOpenRouterClientTest {
     }
 
     @Test
+    fun toolSignatureNormalizationHandlesSearchAndFetchVariants() {
+        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("normalizedToolCallSignature", com.david.openassistant.domain.tools.OpenRouterToolCall::class.java)
+        method.isAccessible = true
+        
+        fun getSig(name: String, args: String): String {
+            return method.invoke(client, com.david.openassistant.domain.tools.OpenRouterToolCall("id", name, args)) as String
+        }
+        
+        // Fetch normalization
+        assertEquals("public_web_fetch:https://example.com/", getSig("public_web_fetch", "{\"url\":\"https://example.com\"}"))
+        assertEquals("public_web_fetch:https://example.com/", getSig("public_web_fetch", "{\"url\":\"https://www.example.com/\"}"))
+        
+        // Search normalization
+        assertEquals("public_web_search:test", getSig("public_web_search", "{\"query\":\"Test \"}"))
+        assertEquals("public_web_search:test", getSig("public_web_search", "{\"query\":\"test\"}"))
+        
+        // Argument ordering doesn't affect signature
+        assertEquals("public_web_search:1|test", getSig("public_web_search", "{\"query\":\"test\", \"page\": 1}"))
+        assertEquals("public_web_search:1|test", getSig("public_web_search", "{\"page\": 1, \"query\":\"test\"}"))
+    }
+
+    @Test
     fun buildEvidenceContextPrunesUnverifiedUrlsForSynthesis() {
         val verifiedUrl = "https://verified.com"
         val unverifiedUrl = "https://unverified.com"

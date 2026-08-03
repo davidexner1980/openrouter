@@ -22,6 +22,10 @@ import com.david.openassistant.domain.tools.ToolValidationException
 import java.io.IOException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -3700,11 +3704,21 @@ class AgentOpenRouterClient internal constructor(
         goal: AgentGoal? = null,
         maxAttempts: Int = 3,
     ): RawAgentResponse {
+        val toolExecutionCache = ConcurrentHashMap<String, String>()
         val candidates = originalPayload.researchToolCompatibilityCandidates()
         var lastError: Throwable? = null
         candidates.forEachIndexed { index, candidate ->
             try {
-                val response = executeToolAwareWithChoiceFallback(apiKey, candidate.payload, generation, onProgress, requestContext, goal, maxAttempts)
+                val response = executeToolAwareWithChoiceFallback(
+                    apiKey = apiKey,
+                    payload = candidate.payload,
+                    generation = generation,
+                    onProgress = onProgress,
+                    requestContext = requestContext,
+                    goal = goal,
+                    maxAttempts = maxAttempts,
+                    toolExecutionCache = toolExecutionCache,
+                )
                 if (index == 0) return response
                 return response.copy(
                     toolExecutions = listOf(
@@ -3739,20 +3753,22 @@ class AgentOpenRouterClient internal constructor(
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
         maxAttempts: Int = 3,
-    ): RawAgentResponse = runCatching { executeToolAwareJsonRequest(apiKey, payload, generation, onProgress, requestContext, goal, maxAttempts) }
-        .recoverCatching { error ->
-            if (!payload.has("tool_choice") || !error.isToolChoiceCompatibilityError()) throw error
-            executeToolAwareJsonRequest(
-                apiKey,
-                JSONObject(payload.toString()).also(::relaxRequiredFunctionToolChoice),
-                generation,
-                onProgress,
-                requestContext,
-                goal,
-                maxAttempts
-            )
-        }
-        .getOrThrow()
+        toolExecutionCache: ConcurrentHashMap<String, String>,
+    ): RawAgentResponse = runCatching {
+        executeToolAwareJsonRequest(apiKey, payload, generation, onProgress, requestContext, goal, maxAttempts, toolExecutionCache)
+    }.recoverCatching { error ->
+        if (!payload.has("tool_choice") || !error.isToolChoiceCompatibilityError()) throw error
+        executeToolAwareJsonRequest(
+            apiKey,
+            JSONObject(payload.toString()).also(::relaxRequiredFunctionToolChoice),
+            generation,
+            onProgress,
+            requestContext,
+            goal,
+            maxAttempts,
+            toolExecutionCache,
+        )
+    }.getOrThrow()
 
     private data class ResearchToolCandidate(
         val label: String,
@@ -3823,6 +3839,7 @@ class AgentOpenRouterClient internal constructor(
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
         maxAttempts: Int = 3,
+        priorOutputsBySignature: ConcurrentHashMap<String, String>,
     ): RawAgentResponse {
         val runtime = toolRuntime ?: return executeJsonRequest(apiKey, originalPayload, generation, requestContext, maxAttempts)
         val guardedModelId = goal?.let { AgentRoutingPolicy.guardModel(it, originalPayload.optString("model")) }
@@ -3851,7 +3868,6 @@ class AgentOpenRouterClient internal constructor(
         var webFetchRequests = 0
         var discoveredLeads = 0
 
-        val priorOutputsBySignature = linkedMapOf<String, String>()
         var previousToolCallSignatures: List<String>? = null
         var repeatedNoProgressCycles = 0
         var round = 0
@@ -4029,7 +4045,7 @@ class AgentOpenRouterClient internal constructor(
                     }
 
                     val currentToolCallSignatures = acceptedCalls.map { (_, call) ->
-                        "${call.name}:${call.argumentsJson.trim()}"
+                        normalizedToolCallSignature(call)
                     }
                     repeatedNoProgressCycles = if (currentToolCallSignatures == previousToolCallSignatures) {
                         repeatedNoProgressCycles + 1
@@ -4061,162 +4077,194 @@ class AgentOpenRouterClient internal constructor(
                             .put("role", "assistant")
                             .put("tool_calls", acceptedCallJson),
                     )
-                    val executableCalls = allowedLocalToolCalls(
+                    val executableCallsLimit = allowedLocalToolCalls(
                         requestedCalls = acceptedCalls.size,
                         totalAcceptedCalls = totalAcceptedCalls,
                     )
-                    acceptedCalls.forEachIndexed { index, (providerCall, call) ->
-                        val signature = "${call.name}:${call.argumentsJson.trim()}"
-                        var cacheSuccessfulOutput = false
-                        val rawOutputJson = if (index >= executableCalls) {
-                            "{\"status\":\"skipped\",\"reason\":\"bounded local-tool budget reached\"}"
-                        } else {
-                            totalAcceptedCalls += 1
-                            val priorOutput = priorOutputsBySignature[signature]
-                            if (priorOutput != null) {
-                                executions += AgentToolExecution(
-                                    toolName = "cached_${call.name}",
-                                    summary = "Reused the prior '${call.name}' result for an identical tool request.",
-                                    succeeded = true,
-                                )
-                                priorOutput
-                            } else {
-                                try {
-                                    diagnostics?.info(
-                                        event = "tool_call_started",
-                                        component = "tool",
-                                        fields = mapOf(
-                                            "goal_id" to goal?.id,
-                                            "task_id" to requestContext.taskId,
-                                            "tool_call_id" to call.id,
-                                            "tool_name" to call.name
-                                        )
-                                    )
-                                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                                        diagnostics?.contentPreview(
-                                            kind = "tool_input",
-                                            content = call.argumentsJson,
-                                            goalId = goal?.id,
-                                            taskId = requestContext.taskId,
-                                            exchangeId = call.id,
-                                            extraFields = mapOf("tool_name" to call.name)
-                                        )
-                                    }
-
-                                    val result = runtime.execute(
-                                        call = call,
-                                        apiKey = apiKey,
-                                        modelId = resolvedModel ?: payload.optString("model"),
-                                        goal = goal,
-                                    )
-                                    
-                                    diagnostics?.info(
-                                        event = "tool_call_completed",
-                                        component = "tool",
-                                        fields = mapOf(
-                                            "goal_id" to goal?.id,
-                                            "task_id" to requestContext.taskId,
-                                            "tool_call_id" to call.id,
-                                            "tool_name" to call.name,
-                                            "duration_ms" to result.durationMs,
-                                            "result_size" to result.outputJson.length
-                                        )
-                                    )
-                                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
-                                        diagnostics?.contentPreview(
-                                            kind = "tool_result",
-                                            content = result.outputJson,
-                                            goalId = goal?.id,
-                                            taskId = requestContext.taskId,
-                                            exchangeId = call.id,
-                                            extraFields = mapOf("tool_name" to call.name)
-                                        )
-                                    }
-                                    
-                                    promptTokens += result.promptTokens
-                                    completionTokens += result.completionTokens
-                                    totalTokens += result.totalTokens
-                                    totalCost += result.costUsd
-                                    webSearchRequests += result.webSearchRequests
-                                    if (call.name == "public_web_fetch") webFetchRequests += 1
-                                    val toolCitations = parseToolSourceCitations(result.outputJson)
-                                    if (call.name == "public_web_fetch") {
-                                        val payload = runCatching { JSONObject(result.outputJson) }.getOrNull()
-                                        discoveredLeads += payload?.optJSONArray("discovered_leads")?.length() ?: 0
-                                    }
-                                    executions += AgentToolExecution(
-                                        toolName = call.name,
-                                        summary = buildString {
-                                            if (providerCall.name != call.name) {
-                                                append("Recovered provider tool alias '${providerCall.name}' as '${call.name}'. ")
-                                            }
-                                            append(result.displaySummary)
-                                        }.take(600),
-                                        succeeded = true,
-                                    )
-                                    toolCitations.forEach { source ->
-                                        preserveSource(
-                                            source = source,
-                                            successfulFetch = call.name == "public_web_fetch",
-                                        )
-                                    }
-                                    cacheSuccessfulOutput = true
-                                    result.outputJson
-                                } catch (error: Throwable) {
-                                    val messageText = error.toAgentFailureMessage("Local tool execution failed.").take(1_000)
-                                    executions += AgentToolExecution(
-                                        toolName = call.name,
-                                        summary = messageText,
-                                        succeeded = false,
-                                    )
-                                    permanentFailedFetchUrl(call, error)?.let { failedUrl ->
-                                        rejectUnavailableSource(failedUrl)
-                                        if (goal != null && error is com.david.openassistant.domain.tools.PdfUnsupportedException) {
-                                            store?.updateGoal(goal.id) { current ->
-                                                if (current.blockedSources.any { it.canonicalUrl == failedUrl }) {
-                                                    current
-                                                } else {
-                                                    val record = BlockedSourceRecord(
-                                                        canonicalDocumentId = null, // Could derive from URL if needed
-                                                        canonicalUrl = failedUrl,
-                                                        routeKind = "PDF",
-                                                        failureClass = "PDF_UNSUPPORTED",
-                                                        sourceTaskId = requestContext.taskId
+                    val roundExecutionLock = Mutex()
+                    val roundExecutionJobs = ConcurrentHashMap<String, Deferred<String>>()
+                    
+                    coroutineScope {
+                        acceptedCalls.mapIndexed { index, (providerCall, call) ->
+                            async {
+                                val signature = normalizedToolCallSignature(call)
+                                val rawOutputJson = if (index >= executableCallsLimit) {
+                                    "{\"status\":\"skipped\",\"reason\":\"bounded local-tool budget reached\"}"
+                                } else {
+                                    val priorOutput = priorOutputsBySignature[signature]
+                                    if (priorOutput != null) {
+                                        roundExecutionLock.withLock {
+                                            totalAcceptedCalls += 1
+                                            executions += AgentToolExecution(
+                                                toolName = "cached_${call.name}",
+                                                summary = "Reused the prior '${call.name}' result for an identical tool request.",
+                                                succeeded = true,
+                                            )
+                                        }
+                                        priorOutput
+                                    } else {
+                                        // Handle intra-round parallel deduplication
+                                        roundExecutionJobs.getOrPut(signature) {
+                                            async {
+                                                try {
+                                                    diagnostics?.info(
+                                                        event = "tool_call_started",
+                                                        component = "tool",
+                                                        fields = mapOf(
+                                                            "goal_id" to goal?.id,
+                                                            "task_id" to requestContext.taskId,
+                                                            "tool_call_id" to call.id,
+                                                            "tool_name" to call.name
+                                                        )
                                                     )
-                                                    current.copy(blockedSources = current.blockedSources + record)
+                                                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                                                        diagnostics?.contentPreview(
+                                                            kind = "tool_input",
+                                                            content = call.argumentsJson,
+                                                            goalId = goal?.id,
+                                                            taskId = requestContext.taskId,
+                                                            exchangeId = call.id,
+                                                            extraFields = mapOf("tool_name" to call.name)
+                                                        )
+                                                    }
+
+                                                    val result = runtime.execute(
+                                                        call = call,
+                                                        apiKey = apiKey,
+                                                        modelId = resolvedModel ?: payload.optString("model"),
+                                                        goal = goal,
+                                                    )
+                                                    
+                                                    diagnostics?.info(
+                                                        event = "tool_call_completed",
+                                                        component = "tool",
+                                                        fields = mapOf(
+                                                            "goal_id" to goal?.id,
+                                                            "task_id" to requestContext.taskId,
+                                                            "tool_call_id" to call.id,
+                                                            "tool_name" to call.name,
+                                                            "duration_ms" to result.durationMs,
+                                                            "result_size" to result.outputJson.length
+                                                        )
+                                                    )
+                                                    if (researchMonitor?.status()?.detailedContentCaptureEnabled == true) {
+                                                        diagnostics?.contentPreview(
+                                                            kind = "tool_result",
+                                                            content = result.outputJson,
+                                                            goalId = goal?.id,
+                                                            taskId = requestContext.taskId,
+                                                            exchangeId = call.id,
+                                                            extraFields = mapOf("tool_name" to call.name)
+                                                        )
+                                                    }
+                                                    
+                                                    val toolCitations = parseToolSourceCitations(result.outputJson)
+                                                    roundExecutionLock.withLock {
+                                                        totalAcceptedCalls += 1
+                                                        promptTokens += result.promptTokens
+                                                        completionTokens += result.completionTokens
+                                                        totalTokens += result.totalTokens
+                                                        totalCost += result.costUsd
+                                                        webSearchRequests += result.webSearchRequests
+                                                        if (call.name == "public_web_fetch") webFetchRequests += 1
+                                                        if (call.name == "public_web_fetch") {
+                                                            val fetchPayload = runCatching { JSONObject(result.outputJson) }.getOrNull()
+                                                            discoveredLeads += fetchPayload?.optJSONArray("discovered_leads")?.length() ?: 0
+                                                        }
+                                                        executions += AgentToolExecution(
+                                                            toolName = call.name,
+                                                            summary = buildString {
+                                                                if (providerCall.name != call.name) {
+                                                                    append("Recovered provider tool alias '${providerCall.name}' as '${call.name}'. ")
+                                                                }
+                                                                append(result.displaySummary)
+                                                            }.take(600),
+                                                            succeeded = true,
+                                                        )
+                                                        toolCitations.forEach { source ->
+                                                            preserveSource(
+                                                                source = source,
+                                                                successfulFetch = call.name == "public_web_fetch",
+                                                            )
+                                                        }
+                                                        priorOutputsBySignature[signature] = result.outputJson
+                                                    }
+                                                    result.outputJson
+                                                } catch (error: Throwable) {
+                                                    val messageText = error.toAgentFailureMessage("Local tool execution failed.").take(1_000)
+                                                    roundExecutionLock.withLock {
+                                                        totalAcceptedCalls += 1
+                                                        executions += AgentToolExecution(
+                                                            toolName = call.name,
+                                                            summary = messageText,
+                                                            succeeded = false,
+                                                        )
+                                                        permanentFailedFetchUrl(call, error)?.let { failedUrl ->
+                                                            rejectUnavailableSource(failedUrl)
+                                                            if (goal != null && error is com.david.openassistant.domain.tools.PdfUnsupportedException) {
+                                                                store?.updateGoal(goal.id) { current ->
+                                                                    if (current.blockedSources.any { it.canonicalUrl == failedUrl }) {
+                                                                        current
+                                                                    } else {
+                                                                        val record = BlockedSourceRecord(
+                                                                            canonicalDocumentId = null,
+                                                                            canonicalUrl = failedUrl,
+                                                                            routeKind = "PDF",
+                                                                            failureClass = "PDF_UNSUPPORTED",
+                                                                            sourceTaskId = requestContext.taskId
+                                                                        )
+                                                                        current.copy(blockedSources = current.blockedSources + record)
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    JSONObject()
+                                                        .put("status", "error")
+                                                        .put("tool_name", providerCall.name)
+                                                        .put("error", messageText)
+                                                        .toString()
                                                 }
+                                            }
+                                        }.await().also { 
+                                            // Record "reused" execution for duplicate calls in the same round
+                                            val firstIndex = acceptedCalls.indexOfFirst { normalizedToolCallSignature(it.second) == signature }
+                                            if (index > firstIndex) {
+                                                 roundExecutionLock.withLock {
+                                                     executions += AgentToolExecution(
+                                                         toolName = "reused_${call.name}",
+                                                         summary = "Reused the concurrent result from an identical '${call.name}' request in this round.",
+                                                         succeeded = true,
+                                                     )
+                                                 }
                                             }
                                         }
                                     }
-                                    JSONObject()
-                                        .put("status", "error")
-                                        .put("tool_name", providerCall.name)
-                                        .put("error", messageText)
-                                        .toString()
+                                }
+                                
+                                val remainingRecords = acceptedCalls.size - index - 1
+                                val availableForResult = (
+                                    MAX_LOCAL_TOOL_TRANSCRIPT_CHARS -
+                                        toolTranscriptCharacters -
+                                        (remainingRecords * MIN_RESERVED_TOOL_RESULT_CHARS)
+                                    ).coerceAtLeast(0)
+                                val outputJson = boundedLocalToolResult(
+                                    rawResult = rawOutputJson,
+                                    remainingTranscriptCharacters = availableForResult,
+                                ).ifBlank { "{}" }
+                                
+                                roundExecutionLock.withLock {
+                                    toolTranscriptCharacters += outputJson.length
+                                    messages.put(
+                                        JSONObject()
+                                            .put("role", "tool")
+                                            .put("tool_call_id", call.id)
+                                            .put("name", providerCall.name)
+                                            .put("content", outputJson),
+                                    )
                                 }
                             }
-                        }
-                        val remainingRecords = acceptedCalls.size - index - 1
-                        val availableForResult = (
-                            MAX_LOCAL_TOOL_TRANSCRIPT_CHARS -
-                                toolTranscriptCharacters -
-                                (remainingRecords * MIN_RESERVED_TOOL_RESULT_CHARS)
-                            ).coerceAtLeast(0)
-                        val outputJson = boundedLocalToolResult(
-                            rawResult = rawOutputJson,
-                            remainingTranscriptCharacters = availableForResult,
-                        ).ifBlank { "{}" }
-                        toolTranscriptCharacters += outputJson.length
-                        if (cacheSuccessfulOutput) {
-                            priorOutputsBySignature[signature] = outputJson
-                        }
-                        messages.put(
-                            JSONObject()
-                                .put("role", "tool")
-                                .put("tool_call_id", call.id)
-                                .put("name", providerCall.name)
-                                .put("content", outputJson),
-                        )
+                        }.awaitAll()
                     }
                     payload.put("messages", messages)
                     // A specific function choice applies only to the recovery's
@@ -5396,6 +5444,21 @@ class AgentOpenRouterClient internal constructor(
                 )
             }
         }
+    }
+
+    private fun normalizedToolCallSignature(call: com.david.openassistant.domain.tools.OpenRouterToolCall): String {
+        val args = runCatching { JSONObject(call.argumentsJson) }.getOrNull()
+        if (args == null) return "${call.name}:${call.argumentsJson.trim()}"
+        val keys = args.keys().asSequence().sorted().toList()
+        val normalizedArgs = keys.joinToString("|") { key ->
+            val value = args.optString(key).trim()
+            when {
+                call.name == "public_web_fetch" && key == "url" -> ResearchQualityGate.canonicalSourceUrl(value)
+                call.name == "public_web_search" && key == "query" -> value.lowercase(Locale.US)
+                else -> value
+            }
+        }
+        return "${call.name}:$normalizedArgs"
     }
 
     private fun isFreeOnlyModel(modelId: String): Boolean =
