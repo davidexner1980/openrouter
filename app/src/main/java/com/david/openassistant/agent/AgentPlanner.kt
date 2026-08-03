@@ -96,6 +96,20 @@ class AgentPlanner(
                 requestContext = missionContext,
             )
             currentCoroutineContext().ensureActive()
+
+            // V43: Objective drift detection
+            val driftReport = AgentDriftAuditor.evaluateDrift(plan.objectiveContract, plan)
+            if (driftReport.isDrifted) {
+                diagnostics.info(
+                    "plan_drift_detected",
+                    mapOf(
+                        "goal_id" to goal.id,
+                        "severity" to driftReport.driftSeverity,
+                        "missing_anchors" to driftReport.missingAnchors.joinToString(",")
+                    )
+                )
+            }
+
             val cycleId = goal.activeResearchCycleId ?: ResearchRecoveryEngine.generateCycleIdentity(goal.id, 1)
             val tasks = plan.tasks.mapIndexed { index, draft ->
                 AgentCapabilityRegistry.requireAllowed(draft.capability)
@@ -194,12 +208,18 @@ class AgentPlanner(
                     completedBy = ticket.workerId
                 )
 
+                val isExtremeDrift = driftReport.isDrifted && driftReport.driftSeverity > 0.7
+
                 baseUpdated.copy(
                     title = plan.title.ifBlank { current.title },
                     objective = plan.objective,
                     finalOutputDescription = plan.finalOutputDescription,
                     objectiveContract = plan.objectiveContract,
-                    status = AgentGoalStatus.QUEUED,
+                    status = if (isExtremeDrift) AgentGoalStatus.REQUIRES_USER_CLARIFICATION else AgentGoalStatus.QUEUED,
+                    requiresUserClarification = isExtremeDrift,
+                    clarificationDetails = if (isExtremeDrift) {
+                        "Significant objective drift detected. ${driftReport.explanation}"
+                    } else current.clarificationDetails,
                     tasks = tasks,
                     acceptanceCriteria = filteredGoalCriteria,
                     evidence = appendEvidence(baseUpdated.evidence, planEvidence),
@@ -228,7 +248,13 @@ class AgentPlanner(
                     },
                     events = appendEvent(
                         current.events,
-                        "Plan validated with ${tasks.size} measurable milestones. Execution will continue until verified completion, explicit cancellation, or a credential wait state.",
+                        if (isExtremeDrift) {
+                            "Planning blocked due to extreme objective drift (${(driftReport.driftSeverity * 100).toInt()}%). ${driftReport.explanation}"
+                        } else if (driftReport.isDrifted) {
+                            "Plan validated with ${(driftReport.driftSeverity * 100).toInt()}% drift detected. ${driftReport.explanation}"
+                        } else {
+                            "Plan validated with ${tasks.size} measurable milestones. Execution will continue until verified completion, explicit cancellation, or a credential wait state."
+                        }
                     ),
                     error = null,
                 )
@@ -336,6 +362,20 @@ class AgentPlanner(
 
             currentCoroutineContext().ensureActive()
 
+            // V43: Recovery drift detection
+            val driftReport = AgentDriftAuditor.evaluateRecoveryDrift(goal.objectiveContract, proposal)
+            if (driftReport.isDrifted) {
+                diagnostics.info(
+                    "recovery_drift_detected",
+                    mapOf(
+                        "goal_id" to goal.id,
+                        "plan_id" to plan.id,
+                        "severity" to driftReport.driftSeverity,
+                        "missing_anchors" to driftReport.missingAnchors.joinToString(",")
+                    )
+                )
+            }
+
             val proposalFingerprint = FingerprintUtils.calculateProposalFingerprint(proposal)
             
             // Pre-calculate authorized retry fingerprint for tactic pivot
@@ -372,10 +412,18 @@ class AgentPlanner(
             }
 
             store.updateGoalAtomic(goal.id, ticket) { current ->
+                val isExtremeDrift = driftReport.isDrifted && driftReport.driftSeverity > 0.8
                 current.copy(
+                    requiresUserClarification = isExtremeDrift,
+                    clarificationDetails = if (isExtremeDrift) {
+                        "Significant recovery drift detected. ${driftReport.explanation}"
+                    } else current.clarificationDetails,
+                    events = if (driftReport.isDrifted) {
+                        appendEvent(current.events, "Recovery drift detected (${(driftReport.driftSeverity * 100).toInt()}%). ${driftReport.explanation}")
+                    } else current.events,
                     recoveryPlans = current.recoveryPlans.map { p ->
                         if (p.id == plan.id) p.copy(
-                            status = RecoveryPlanStatus.READY_TO_COMMIT,
+                            status = if (isExtremeDrift) RecoveryPlanStatus.FAILED_NEEDS_ACTION else RecoveryPlanStatus.READY_TO_COMMIT,
                             proposal = proposal,
                             proposalFingerprint = proposalFingerprint,
                             accountingSummary = summary,

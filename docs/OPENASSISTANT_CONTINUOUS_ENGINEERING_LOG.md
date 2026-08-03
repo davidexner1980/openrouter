@@ -21,6 +21,7 @@
 | [OI-004] | Repeated stale or stranded mission recovery without progress | Closed | High |
 | [OI-005] | Machine-generated duplicate context changing the mission to PAUSED | Closed | Medium |
 | [OI-006] | Watchdog automatically resuming a user-paused mission | Closed | High |
+| [OI-007] | Objective drift during multi-stage research | Closed | Medium |
 
 ---
 
@@ -342,7 +343,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 802f345d8d994fe085028f5ffc017d3cbdd9252f
-- Run commit: SELF — commit containing this journal entry
+- Run commit: 50a329f8f1caca7249a68f0fa9ff6facca03878d
 - Commit message: Continuous improvement CE-20260803-1227-802f345d: replace untruthful machine-generated PAUSED status with RESEARCH_CYCLES_EXHAUSTED or REQUIRES_USER_CLARIFICATION
 
 ### Selected Scope
@@ -405,3 +406,81 @@ JVM VERIFIED
 ### Recommended Next Pass
 - Next scope: Improve objective fidelity [PB-001] by implementing objective-drift detection during multi-stage research.
 - Supporting evidence: Static trace in `AgentPlanner` showing potential for operational plans to drift from root objective.
+
+---
+
+## Run CE-20260803-1509-50a329f8 — 2026-08-03T15:09:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 50a329f8f1caca7249a68f0fa9ff6facca03878d
+- Run commit: SELF — commit containing this journal entry
+- Commit message: Continuous improvement CE-20260803-1509-50a329f8: implement automated objective-drift detection and enforcement
+
+### Selected Scope
+- Problem: Research missions can drift away from the original user objective during complex planning or recovery phases, leading to irrelevant results or wasted resources.
+- Why selected: Addressed [OI-007] and strengthened [PB-001] Objective Fidelity.
+- Correct owner: AgentDriftAuditor, AgentPlanner.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+
+### Evidence and Reproduction
+- Original symptom: Static trace in `AgentPlanner` showed that new plan revisions and recovery proposals were accepted without verifying alignment with the initial `ObjectiveContract`.
+- Evidence source: Audit of `AgentPlanner.kt` and `AgentGoalModels.kt`.
+- Automated reproduction: `DriftDetectionTest.kt` verified that plans missing critical anchors are correctly identified as drifted.
+- Root cause: Lack of an automated auditor to enforce semantic alignment with the root objective anchors.
+
+### Acceptance Criteria
+- Create `AgentDriftAuditor` for anchor-based drift detection.
+- Integrate auditor into `AgentPlanner.plan` for initial and revised planning.
+- Integrate auditor into `AgentPlanner.generateRecoveryProposal` for recovery tactics.
+- Detect drift if > 30% of anchors are missing in plans, or > 50% in recovery proposals.
+- Transition mission to `REQUIRES_USER_CLARIFICATION` if drift exceeds 70% severity.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentDriftAuditor.kt (New: drift detection logic)
+    - app/src/main/java/com/david/openassistant/agent/AgentPlanner.kt (Integrated auditor, added drift events and blocking)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/DriftDetectionTest.kt (New: verified drift detection rules)
+- Behavior changed: Missions now automatically monitor for semantic drift. Extreme drift is blocked, requiring user clarification.
+- Behavior preserved: Stable missions continue without interruption.
+
+### Verification
+- Baseline commands: .\gradlew.bat testDebugUnitTest
+- Baseline results: PASSED (574 tests)
+- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.DriftDetectionTest"
+- Focused results: PASSED (4 tests)
+- Full unit command: .\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+- Total: 578
+- Passed: 578
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known risks: Anchor matching might be too strict for very broad objectives (mitigated by word boundary matching).
+- Unverified behavior: Real-world drift examples from diverse LLM responses (unit tested with simulated drifted plans).
+
+### Repository Hygiene
+- git diff --check: Passed
+- Generated-file scan: Clean
+- Large-file scan: Clean
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility (pure logic addition).
+
+### Open Issues Updated
+- Closed: [OI-007]
+
+### Recommended Next Pass
+- Next scope: Improve evidence provenance [PB-001] by implementing automated citation-chain validation.
+- Supporting evidence: Static trace in `AgentOpenRouterClient` showing that citations are extracted but their "up-stream" provenance is not always validated against the full source content.
