@@ -19,18 +19,45 @@ class AgentStoreMigrationTest {
         val goalsDir = File(tempDir, "agent_runtime_v2/goals").apply { mkdirs() }
         
         val goalId = "stuck-v41-real"
-        val v41Json = JSONObject()
+        val cycleId = "cycle-1"
+        val revId = "rev-1"
+        val v41JsonDraft = JSONObject()
             .put("storage_version", 11)
             .put("id", goalId)
             .put("conversation_id", "conv-1")
             .put("user_request", "Stuck request")
             .put("title", "Stuck Title")
             .put("objective", "Stuck Objective")
+            .put("final_output_description", "Output")
             .put("status", "PAUSED")
             .put("planner_model_id", "model")
             .put("execution_model_id", "model")
+            .put("active_research_cycle_id", cycleId)
+            .put("objective_revisions", JSONArray().put(JSONObject()
+                .put("id", revId)
+                .put("ordinal", 1)
+                .put("immutable_root_objective_fingerprint", "fp")
+                .put("operational_objective", "Stuck Objective")
+                .put("revision_reason", "initial")
+                .put("revision_fingerprint", "fp")
+            ))
+            .put("research_cycles", JSONArray().put(JSONObject()
+                .put("id", cycleId)
+                .put("ordinal", 1)
+                .put("status", "ACTIVE")
+                .put("objective_revision_id", revId)
+                .put("strategy_fingerprint", "fp")
+                .put("query_portfolio_fingerprint", "fp")
+                .put("accepted_evidence_fingerprint", "fp")
+                .put("unresolved_gap_fingerprint", "fp")
+            ))
             .put("tasks", JSONArray().put(JSONObject()
                 .put("id", "task-1")
+                .put("cycle_id", cycleId)
+                .put("order", 0)
+                .put("title", "Stuck Task")
+                .put("instructions", "Do research")
+                .put("capability", "REASON")
                 .put("status", "BLOCKED_WITH_PARTIAL_EVIDENCE")
                 .put("failure_class", "STRUCTURED_SYNTHESIS_DEFICIT")
                 .put("attempt_count", 1)
@@ -38,6 +65,7 @@ class AgentStoreMigrationTest {
             ))
             .put("attempts", JSONArray().put(JSONObject()
                 .put("id", "att-1")
+                .put("task_id", "task-1")
                 .put("status", "RUNNING")
                 .put("model_id", "model")
                 .put("started_at", System.currentTimeMillis())
@@ -47,13 +75,19 @@ class AgentStoreMigrationTest {
                 .put("message", "identical context fingerprint detected")
             ))
 
-        File(goalsDir, "$goalId.goal.json").writeText(v41Json.toString())
-
         val store = AgentStore(tempDir)
+        val decodeMethod = AgentStore::class.java.getDeclaredMethod("decodeGoal", JSONObject::class.java)
+        decodeMethod.isAccessible = true
+        val draftGoal = decodeMethod.invoke(store, v41JsonDraft) as AgentGoal
+        val fp = FingerprintUtils.calculateExecutionFingerprint(draftGoal, draftGoal.tasks.first())
+        v41JsonDraft.getJSONArray("tasks").getJSONObject(0).put("last_request_fingerprint", fp)
+
+        File(goalsDir, "$goalId.goal.json").writeText(v41JsonDraft.toString())
+
         val snapshot = store.loadSnapshot()
         val decodedGoal = snapshot.goals.first { it.id == goalId }
 
-        assertEquals(AgentGoalStatus.QUEUED, decodedGoal.status)
+        assertEquals("Decoded goal error: ${decodedGoal.error}", AgentGoalStatus.QUEUED, decodedGoal.status)
         val task = decodedGoal.tasks.first()
         assertEquals(AgentTaskStatus.QUEUED, task.status)
         assertEquals(0, task.attemptCount) // Counter corrected
@@ -71,6 +105,182 @@ class AgentStoreMigrationTest {
         val eventCount = decodedGoal.events.size
         val snapshot2 = store.loadSnapshot()
         assertEquals(eventCount, snapshot2.goals.first { it.id == goalId }.events.size)
+    }
+
+    @Test
+    fun v41MigrationSkippedWhenProviderDispatchPresent() {
+        val tempDir = Files.createTempDirectory("agentstore_v41_dispatch").toFile()
+        val goalsDir = File(tempDir, "agent_runtime_v2/goals").apply { mkdirs() }
+        
+        val goalId = "stuck-v41-dispatched"
+        val v41Json = JSONObject()
+            .put("storage_version", 11)
+            .put("id", goalId)
+            .put("conversation_id", "conv-1")
+            .put("user_request", "Dispatched request")
+            .put("status", "PAUSED")
+            .put("planner_model_id", "model")
+            .put("execution_model_id", "model")
+            .put("tasks", JSONArray().put(JSONObject()
+                .put("id", "task-1")
+                .put("status", "BLOCKED_WITH_PARTIAL_EVIDENCE")
+                .put("failure_class", "STRUCTURED_SYNTHESIS_DEFICIT")
+            ))
+            .put("request_attempts", JSONArray().put(JSONObject()
+                .put("exchange_id", "ex-1")
+                .put("task_id", "task-1")
+                .put("transport_stage", "REQUEST_BODY_STARTED")
+            ))
+            .put("events", JSONArray().put(JSONObject()
+                .put("id", "event-1")
+                .put("message", "identical context fingerprint detected")
+            ))
+
+        File(goalsDir, "$goalId.goal.json").writeText(v41Json.toString())
+
+        val store = AgentStore(tempDir)
+        val decodedGoal = store.loadSnapshot().goals.first { it.id == goalId }
+
+        assertEquals(AgentGoalStatus.PAUSED, decodedGoal.status)
+        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, decodedGoal.tasks.first().status)
+    }
+
+    @Test
+    fun v41MigrationSkippedWhenLaterUserPausePresent() {
+        val tempDir = Files.createTempDirectory("agentstore_v41_userpause").toFile()
+        val goalsDir = File(tempDir, "agent_runtime_v2/goals").apply { mkdirs() }
+        
+        val goalId = "stuck-v41-userpause"
+        val v41Json = JSONObject()
+            .put("storage_version", 11)
+            .put("id", goalId)
+            .put("conversation_id", "conv-1")
+            .put("user_request", "User paused request")
+            .put("status", "PAUSED")
+            .put("planner_model_id", "model")
+            .put("execution_model_id", "model")
+            .put("tasks", JSONArray().put(JSONObject()
+                .put("id", "task-1")
+                .put("status", "BLOCKED_WITH_PARTIAL_EVIDENCE")
+                .put("failure_class", "STRUCTURED_SYNTHESIS_DEFICIT")
+            ))
+            .put("events", JSONArray()
+                .put(JSONObject().put("message", "identical context fingerprint detected"))
+                .put(JSONObject().put("message", "Goal paused by the user."))
+            )
+
+        File(goalsDir, "$goalId.goal.json").writeText(v41Json.toString())
+
+        val store = AgentStore(tempDir)
+        val decodedGoal = store.loadSnapshot().goals.first { it.id == goalId }
+
+        assertEquals(AgentGoalStatus.PAUSED, decodedGoal.status)
+        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, decodedGoal.tasks.first().status)
+    }
+
+    @Test
+    fun v41MigrationPreservesUnrelatedRunningAttempts() {
+        val tempDir = Files.createTempDirectory("agentstore_v41_unrelated").toFile()
+        val goalsDir = File(tempDir, "agent_runtime_v2/goals").apply { mkdirs() }
+        
+        val goalId = "stuck-v41-unrelated"
+        val cycleId = ResearchRecoveryEngine.generateCycleIdentity(goalId, 1)
+        val v41JsonDraft = JSONObject()
+            .put("storage_version", 11)
+            .put("id", goalId)
+            .put("conversation_id", "conv-1")
+            .put("user_request", "Unrelated attempt request")
+            .put("title", "Title")
+            .put("objective", "Obj")
+            .put("final_output_description", "Out")
+            .put("status", "PAUSED")
+            .put("planner_model_id", "model")
+            .put("execution_model_id", "model")
+            .put("tasks", JSONArray()
+                .put(JSONObject()
+                    .put("id", "task-1")
+                    .put("cycle_id", cycleId)
+                    .put("order", 0)
+                    .put("title", "Task 1")
+                    .put("instructions", "Ins 1")
+                    .put("capability", "REASON")
+                    .put("status", "BLOCKED_WITH_PARTIAL_EVIDENCE")
+                    .put("failure_class", "STRUCTURED_SYNTHESIS_DEFICIT")
+                    .put("attempt_count", 1)
+                )
+                .put(JSONObject()
+                    .put("id", "task-2")
+                    .put("cycle_id", cycleId)
+                    .put("order", 1)
+                    .put("title", "Task 2")
+                    .put("instructions", "Ins 2")
+                    .put("capability", "REASON")
+                    .put("status", "QUEUED")
+                    .put("attempt_count", 0)
+                )
+            )
+            .put("attempts", JSONArray()
+                .put(JSONObject().put("id", "att-1").put("task_id", "task-1").put("status", "RUNNING").put("model_id", "model"))
+                .put(JSONObject().put("id", "att-2").put("task_id", "task-2").put("status", "RUNNING").put("model_id", "model"))
+            )
+            .put("events", JSONArray().put(JSONObject()
+                .put("id", "event-1")
+                .put("message", "identical context fingerprint detected")
+            ))
+
+        val store = AgentStore(tempDir)
+        val decodeMethod = AgentStore::class.java.getDeclaredMethod("decodeGoal", JSONObject::class.java)
+        decodeMethod.isAccessible = true
+        val draftGoal = decodeMethod.invoke(store, v41JsonDraft) as AgentGoal
+        val fp1 = FingerprintUtils.calculateExecutionFingerprint(draftGoal, draftGoal.tasks.first { it.id == "task-1" })
+        v41JsonDraft.getJSONArray("tasks").getJSONObject(0).put("last_request_fingerprint", fp1)
+
+        File(goalsDir, "$goalId.goal.json").writeText(v41JsonDraft.toString())
+
+        val snapshot = store.loadSnapshot()
+        val decodedGoal = snapshot.goals.first { it.id == goalId }
+
+        assertEquals(AgentGoalStatus.QUEUED, decodedGoal.status)
+        assertEquals(AgentTaskStatus.QUEUED, decodedGoal.tasks.first { it.id == "task-1" }.status)
+        assertEquals(0, decodedGoal.tasks.first { it.id == "task-1" }.attemptCount)
+        assertEquals(0, decodedGoal.tasks.first { it.id == "task-2" }.attemptCount) // Unrelated task counter NOT changed
+        
+        assertEquals(AgentAttemptStatus.FAILED, decodedGoal.attempts.first { it.id == "att-1" }.status)
+        assertEquals(AgentAttemptStatus.RUNNING, decodedGoal.attempts.first { it.id == "att-2" }.status) // Unrelated running attempt preserved
+    }
+
+    @Test
+    fun v41MigrationSkippedWhenTaskHasCompletedResult() {
+        val tempDir = Files.createTempDirectory("agentstore_v41_result").toFile()
+        val goalsDir = File(tempDir, "agent_runtime_v2/goals").apply { mkdirs() }
+        
+        val goalId = "stuck-v41-result"
+        val v41Json = JSONObject()
+            .put("storage_version", 11)
+            .put("id", goalId)
+            .put("conversation_id", "conv-1")
+            .put("user_request", "Result present request")
+            .put("status", "PAUSED")
+            .put("planner_model_id", "model")
+            .put("execution_model_id", "model")
+            .put("tasks", JSONArray().put(JSONObject()
+                .put("id", "task-1")
+                .put("status", "BLOCKED_WITH_PARTIAL_EVIDENCE")
+                .put("failure_class", "STRUCTURED_SYNTHESIS_DEFICIT")
+                .put("output_evidence_id", "ev-123")
+            ))
+            .put("events", JSONArray().put(JSONObject()
+                .put("id", "event-1")
+                .put("message", "identical context fingerprint detected")
+            ))
+
+        File(goalsDir, "$goalId.goal.json").writeText(v41Json.toString())
+
+        val store = AgentStore(tempDir)
+        val decodedGoal = store.loadSnapshot().goals.first { it.id == goalId }
+
+        assertEquals(AgentGoalStatus.PAUSED, decodedGoal.status)
+        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, decodedGoal.tasks.first().status)
     }
 
     @Test

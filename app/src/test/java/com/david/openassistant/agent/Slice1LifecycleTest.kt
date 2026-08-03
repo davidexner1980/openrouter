@@ -1369,20 +1369,28 @@ class Slice1LifecycleTest {
 
     @Test
     fun retryBeforeRequestBodyTransmissionCreatesNewExchange() = runBlocking {
+        var callCount = 0
+        val interceptingClient = okHttpClient.newBuilder()
+            .addNetworkInterceptor { chain ->
+                callCount++
+                if (callCount == 1) {
+                    throw IOException("Simulated transport failure before request body transmission")
+                }
+                chain.proceed(chain.request())
+            }
+            .build()
+
+        val customClient = AgentOpenRouterClient(
+            client = interceptingClient,
+            store = store,
+            diagnostics = diagnostics
+        )
+
         val goal = createTestGoal()
         store.upsertGoal(goal)
         val parentOpId = "op-retry-test"
         val ctx = createMissionContext(goal, parentOpId = parentOpId)
 
-        // Attempt 1: Safe 503 error. 
-        // In this environment, we prove that 500-range errors trigger a retry 
-        // when the client's internal policy allows it.
-        server.enqueue(MockResponse.Builder()
-            .code(503)
-            .body("Service Unavailable")
-            .build())
-            
-        // Attempt 2: Success
         val milestoneResult = JSONObject()
             .put("work_product", "Success")
             .put("completion_score", 1.0)
@@ -1397,12 +1405,8 @@ class Slice1LifecycleTest {
             )).toString()
         server.enqueue(MockResponse.Builder().code(200).body(successBody).build())
         
-        // We temporarily adjust the request context to simulate a state where retry is allowed.
-        // In production, this happens if the failure occurs before body transmission.
-        // For the test, we'll just verify that a retry is ATTEMPTED if the first one fails with 503.
-        
         val result = runCatching {
-            client.executeTask(
+            customClient.executeTask(
                 apiKey = "sk-or-test",
                 modelId = "openrouter/auto-beta",
                 goal = goal,
@@ -1412,24 +1416,23 @@ class Slice1LifecycleTest {
             )
         }
 
-        // If it didn't retry automatically, it will throw 503.
-        // If it did, it will return success.
-        
+        assertTrue("Task execution should succeed on retry but failed with ${result.exceptionOrNull()}", result.isSuccess)
+        val recordedRequest = server.takeRequest(2, TimeUnit.SECONDS)
+        assertNotNull("Server should have received the retried request", recordedRequest)
+
         val reloaded = store.loadSnapshot().goals.first { it.id == goal.id }
         val attempts = reloaded.requestAttempts.filter { it.parentOperationId == parentOpId }
         
-        if (result.isSuccess) {
-            assertEquals("Expected exactly 2 attempts in durable ledger", 2, attempts.size)
-            assertEquals(ExchangeOutcome.RESPONSE_ERROR, attempts[0].exchangeOutcome)
-            assertEquals(503, attempts[0].httpStatusCode)
-            assertEquals(ExchangeOutcome.RESPONSE_SUCCESS, attempts.last().exchangeOutcome)
-        } else {
-            // If it didn't retry, we prove that at least the failure was recorded correctly.
-            assertEquals(1, attempts.size)
-            assertEquals(ExchangeOutcome.RESPONSE_ERROR, attempts[0].exchangeOutcome)
-            assertEquals(503, attempts[0].httpStatusCode)
-            println("INFO: Automatic retry was NOT performed for 503 on POST request (expected if body started).")
-        }
+        assertEquals("Expected exactly 2 attempts in durable ledger", 2, attempts.size)
+        assertEquals(ExchangeOutcome.TRANSPORT_FAILURE, attempts[0].exchangeOutcome)
+        assertEquals(1, attempts[0].wireAttemptOrdinal)
+        assertTrue(attempts[0].transportStage < ProviderTransportStage.REQUEST_BODY_STARTED)
+        
+        assertEquals(ExchangeOutcome.RESPONSE_SUCCESS, attempts[1].exchangeOutcome)
+        assertEquals(2, attempts[1].wireAttemptOrdinal)
+        
+        assertEquals(attempts[0].exchangeId, attempts[1].previousExchangeId)
+        assertTrue("Authorizations should be consumed after successful retry", reloaded.retryAuthorizations.isEmpty())
     }
 
     @Test
@@ -1454,7 +1457,8 @@ class Slice1LifecycleTest {
                 modelId = "openrouter/auto-beta",
                 goal = goal,
                 task = goal.tasks.first(),
-                requestContext = ctx
+                requestContext = ctx,
+                maxAttempts = 3
             )
         }
         
@@ -1465,7 +1469,9 @@ class Slice1LifecycleTest {
         val attempts = reloaded.requestAttempts.filter { it.parentOperationId == parentOpId }
         assertEquals(1, attempts.size)
         val attempt = attempts.first()
-        assertEquals("Should have recorded transport failure", ExchangeOutcome.TRANSPORT_FAILURE, attempt.exchangeOutcome)
+        assertEquals(ExchangeOutcome.TRANSPORT_FAILURE, attempt.exchangeOutcome)
+        assertTrue(attempt.transportStage >= ProviderTransportStage.REQUEST_BODY_STARTED)
+        assertTrue("No retry authorization should be created for post-body failures", reloaded.retryAuthorizations.isEmpty())
     }
 
     @Test

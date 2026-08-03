@@ -1115,19 +1115,38 @@ class AgentStore private constructor(
             activeResearchCycleId = json.optNullableString("active_research_cycle_id"),
         )
 
+        val machinePauseIdx = restoredEvents.indexOfLast { 
+            it.message.contains("identical context fingerprint detected", ignoreCase = true) 
+        }
+        val hasLaterUserPause = machinePauseIdx != -1 && restoredEvents.subList(machinePauseIdx + 1, restoredEvents.size).any {
+            (it.message.contains("user", ignoreCase = true) && it.message.contains("pause", ignoreCase = true)) ||
+            it.message.contains("Paused by the user", ignoreCase = true)
+        }
+
+        val affectedTasks = goalBeforeCycles.tasks.filter { task ->
+            task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE &&
+            task.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT" &&
+            task.outputEvidenceId == null &&
+            task.lastRequestFingerprint != null &&
+            task.lastRequestFingerprint == FingerprintUtils.calculateExecutionFingerprint(goalBeforeCycles, task) &&
+            goalBeforeCycles.attempts.any { it.taskId == task.id && it.status == AgentAttemptStatus.RUNNING } &&
+            goalBeforeCycles.requestAttempts.none { req ->
+                req.taskId == task.id && req.transportStage >= ProviderTransportStage.REQUEST_BODY_STARTED
+            }
+        }
+
+        val affectedTaskIds = affectedTasks.map { it.id }.toSet()
+
         val isStuckV41 = storedVersion < 13 && 
             (restoredStatus == AgentGoalStatus.PAUSED || restoredStatus == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE) &&
-            storedTasks.any { it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && it.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT" } &&
-            restoredEvents.any { it.message.contains("identical context fingerprint detected") } &&
-            goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration_v2" }
+            machinePauseIdx != -1 &&
+            !hasLaterUserPause &&
+            goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration_v2" } &&
+            affectedTaskIds.isNotEmpty()
 
         val migratedGoal = if (isStuckV41) {
             val repairedTasks = goalBeforeCycles.tasks.map { task ->
-                if (task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && task.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT") {
-                    // Correct counters: if it was suppressed pre-dispatch, the attempt that led to suppression
-                    // might have incremented counts. We decrement if they are > 0 to allow the task to run.
-                    // Actually, re-queuing is enough if we authorize the retry fingerprint, 
-                    // but the prompt says "correct only counters created by the false pre-dispatch attempt".
+                if (affectedTaskIds.contains(task.id)) {
                     task.copy(
                         status = AgentTaskStatus.QUEUED,
                         failureClass = null,
@@ -1137,11 +1156,15 @@ class AgentStore private constructor(
                 } else task
             }
             
-            // Close dangling RUNNING attempts
-            val repairedAttempts = goalBeforeCycles.attempts.map {
-                if (it.status == AgentAttemptStatus.RUNNING) {
-                    it.copy(status = AgentAttemptStatus.FAILED, error = "Attempt closed by migration (V41 stuck state).", finishedAt = System.currentTimeMillis())
-                } else it
+            // Close dangling RUNNING attempts associated ONLY with affected tasks
+            val repairedAttempts = goalBeforeCycles.attempts.map { att ->
+                if (att.status == AgentAttemptStatus.RUNNING && affectedTaskIds.contains(att.taskId)) {
+                    att.copy(
+                        status = AgentAttemptStatus.FAILED, 
+                        error = "Attempt closed by migration (V41 stuck state).", 
+                        finishedAt = System.currentTimeMillis()
+                    )
+                } else att
             }
 
             val migrationRecord = IdempotencyRecord(

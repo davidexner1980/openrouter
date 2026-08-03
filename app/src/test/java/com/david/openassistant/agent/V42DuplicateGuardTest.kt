@@ -241,6 +241,20 @@ class V42DuplicateGuardTest {
     }
 
     @Test
+    fun testCosmeticChangePreservesFingerprint() {
+        val task = AgentTask(id = "t1", order = 0, title = "T", instructions = "Instructions  with  extra  space", capability = AgentCapability.REASON)
+        val goal = AgentGoal(id = "g1", conversationId = "c1", userRequest = "R", title = "G", objective = "O", finalOutputDescription = "D", status = AgentGoalStatus.RUNNING, plannerModelId = "m", executionModelId = "m", tasks = listOf(task))
+        
+        val fp1 = FingerprintUtils.calculateExecutionFingerprint(goal, task)
+        
+        val task2 = task.copy(instructions = "Instructions with extra space")
+        val goal2 = goal.copy(tasks = listOf(task2))
+        val fp2 = FingerprintUtils.calculateExecutionFingerprint(goal2, task2)
+        
+        assertEquals(fp1, fp2)
+    }
+
+    @Test
     fun testUnauthorizedRetryWithMismatchedFingerprintRejectsExecution() = runBlocking {
         val goalId = UUID.randomUUID().toString()
         val taskId = "task-1"
