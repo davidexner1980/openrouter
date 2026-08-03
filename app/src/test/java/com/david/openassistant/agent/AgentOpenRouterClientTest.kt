@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.TimeUnit
 
@@ -127,5 +128,72 @@ class AgentOpenRouterClientTest {
 
         val normalized = method.invoke(client, valid) as JSONObject
         assertEquals(1, normalized.getJSONArray("messages").length())
+    }
+
+    @Test
+    fun buildEvidenceContextPrunesUnverifiedUrlsForSynthesis() {
+        val verifiedUrl = "https://verified.com"
+        val unverifiedUrl = "https://unverified.com"
+        
+        val evidence = AgentEvidence(
+            kind = AgentEvidenceKind.WEB_RESEARCH,
+            title = "Test Evidence",
+            summary = "Test summary",
+            content = "Test content",
+            sources = listOf(
+                AgentSourceCitation("Verified", verifiedUrl),
+                AgentSourceCitation("Unverified", unverifiedUrl)
+            )
+        )
+        
+        val goal = AgentGoal(
+            conversationId = "conv-1",
+            userRequest = "Test",
+            title = "Test",
+            objective = "Test",
+            finalOutputDescription = "Test",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "model-1",
+            executionModelId = "model-1",
+            tasks = emptyList(),
+            sourceReads = listOf(
+                SourceRead(
+                    id = "read-1",
+                    url = verifiedUrl,
+                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(verifiedUrl),
+                    httpCode = 200,
+                    contentType = "text/html",
+                    content = "Verified content",
+                    sourceRole = "PRIMARY",
+                    authorityScore = 100,
+                    provenance = SourceReadProvenance.VERIFIED_FETCH,
+                    readAt = 0L
+                )
+            )
+        )
+        
+        val synthesisTask = AgentTask(
+            id = "task-1",
+            title = "Synthesis Task",
+            instructions = "Synthesize",
+            capability = AgentCapability.SYNTHESIZE,
+            order = 0
+        )
+        
+        val researchTask = AgentTask(
+            id = "task-2",
+            title = "Research Task",
+            instructions = "Research",
+            capability = AgentCapability.DEEP_RESEARCH,
+            order = 1
+        )
+        
+        val synthesisContext = client.buildEvidenceContext(goal, synthesisTask, listOf(evidence))
+        assertTrue("Synthesis should include verified URL", synthesisContext.contains(verifiedUrl))
+        assertFalse("Synthesis should prune unverified URL", synthesisContext.contains(unverifiedUrl))
+        
+        val researchContext = client.buildEvidenceContext(goal, researchTask, listOf(evidence))
+        assertTrue("Research should include verified URL", researchContext.contains(verifiedUrl))
+        assertTrue("Research should include unverified URL", researchContext.contains(unverifiedUrl))
     }
 }

@@ -1128,6 +1128,36 @@ class AgentOpenRouterClient internal constructor(
             planTemporalScopeIsCurrent(request, completePlanText)
     }
 
+    internal fun buildEvidenceContext(goal: AgentGoal, task: AgentTask, priorEvidence: List<AgentEvidence>): String {
+        val sourceReadsByCanonicalUrl = goal.sourceReads.associateBy { it.canonicalUrl }
+        return priorEvidence
+            .joinToString("\n\n") { evidence ->
+                buildString {
+                    appendLine("[evidence_id=${evidence.id}; kind=${evidence.kind.name.lowercase()}]")
+                    appendLine(evidence.title)
+                    appendLine(evidence.content.take(MAX_EVIDENCE_CHARS_PER_ITEM))
+                    if (evidence.sources.isNotEmpty()) {
+                        val sourcesToPresent = if (task.capability == AgentCapability.SYNTHESIZE) {
+                            evidence.sources.filter { source ->
+                                val canonical = ResearchQualityGate.canonicalSourceUrl(source.url)
+                                val read = sourceReadsByCanonicalUrl[canonical]
+                                read?.provenance in setOf(SourceReadProvenance.VERIFIED_FETCH, SourceReadProvenance.PROVIDER_EXTRACT)
+                            }
+                        } else {
+                            evidence.sources
+                        }
+                        if (sourcesToPresent.isNotEmpty()) {
+                            appendLine("Preserved source URLs:")
+                            sourcesToPresent.take(15).forEach { source ->
+                                appendLine("- ${source.title.take(MAX_SOURCE_TITLE_CHARS)}: ${source.url}")
+                            }
+                        }
+                    }
+                }
+            }
+            .ifBlank { "No prior evidence is available." }
+    }
+
     suspend fun executeTask(
         apiKey: String,
         modelId: String,
@@ -1147,21 +1177,7 @@ class AgentOpenRouterClient internal constructor(
         val executionStrategy = selectAgentExecutionStrategy(goal, task)
         val allocationProfile = AgentResearchAllocator.profileForGoal(goal, autonomyPolicy)
         val researchBudget = AgentResearchAllocator.budgetForTask(goal, task, allocationProfile)
-        val evidenceContext = priorEvidence
-            .joinToString("\n\n") { evidence ->
-                buildString {
-                    appendLine("[evidence_id=${evidence.id}; kind=${evidence.kind.name.lowercase()}]")
-                    appendLine(evidence.title)
-                    appendLine(evidence.content.take(MAX_EVIDENCE_CHARS_PER_ITEM))
-                    if (evidence.sources.isNotEmpty()) {
-                        appendLine("Preserved source URLs:")
-                        evidence.sources.take(15).forEach { source ->
-                            appendLine("- ${source.title.take(MAX_SOURCE_TITLE_CHARS)}: ${source.url}")
-                        }
-                    }
-                }
-            }
-            .ifBlank { "No prior evidence is available." }
+        val evidenceContext = buildEvidenceContext(goal, task, priorEvidence)
 
         val isConstructionFailure = task.lastError?.let { error ->
             val lower = error.lowercase(Locale.US)
