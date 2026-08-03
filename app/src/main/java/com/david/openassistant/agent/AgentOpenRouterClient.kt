@@ -700,6 +700,20 @@ class AgentOpenRouterClient internal constructor(
             appendLine("Available Evidence Context:")
             evidence.forEach { item ->
                 appendLine("- [${item.kind}] ${item.title}: ${item.summary}")
+                if (plan.selectedTactic == EscalationTactic.FOLLOW_CITATIONS) {
+                    val explicitUrls = item.sources.mapTo(mutableSetOf()) { it.url }
+                    val embeddedLinks = recoverHttpsSourceCitations(item.content).filter { it.url !in explicitUrls }
+                    if (embeddedLinks.isNotEmpty()) {
+                        appendLine("  Embedded cross-domain citations found in this content:")
+                        embeddedLinks.take(5).forEach { link ->
+                            appendLine("  - ${link.url}")
+                        }
+                    }
+                }
+            }
+            if (plan.selectedTactic == EscalationTactic.FOLLOW_CITATIONS) {
+                appendLine()
+                appendLine("INSTRUCTION: The selected tactic is FOLLOW_CITATIONS. You MUST include exact URLs from the 'Embedded cross-domain citations' above in your new_query_portfolio to fetch and explore out-of-domain sources. The system supports direct URL fetching when you provide an exact URL as a search query.")
             }
         }
 
