@@ -17,6 +17,7 @@ object FingerprintUtils {
         encoder.append("task_id", task.id)
         encoder.append("capability", task.capability.name)
         encoder.append("instructions", task.instructions)
+        task.lastRecoveryStrategy?.let { encoder.append("recovery_strategy", it) }
         encoder.append("objective", goal.objective)
         
         goal.objectiveContract?.let { contract ->

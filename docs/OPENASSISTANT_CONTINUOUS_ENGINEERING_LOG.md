@@ -17,7 +17,7 @@
 | :--- | :--- | :--- | :--- |
 | [OI-001] | Illegal agent goal transition: RUNNING -> RECOVERING | Closed | High |
 | [OI-002] | planning_lease_rejected_without_planning_operation | Closed | High |
-| [OI-003] | identical_context_pre_dispatch_suppressed | Open | Medium |
+| [OI-003] | identical_context_pre_dispatch_suppressed | Closed | High |
 | [OI-004] | Repeated stale or stranded mission recovery without progress | Closed | High |
 | [OI-005] | Machine-generated duplicate context changing the mission to PAUSED | Open | Medium |
 | [OI-006] | Watchdog automatically resuming a user-paused mission | Closed | High |
@@ -251,5 +251,80 @@ REPRODUCED
 - Reprioritized: None
 
 ### Recommended Next Pass
-- Next scope: Address [OI-003] (identical_context_pre_dispatch_suppressed) to improve research quality.
-- Supporting evidence: Frequent warnings in logs during research loops.
+- Next scope: Address [OI-005] (Machine-generated duplicate context changing the mission to PAUSED).
+- Supporting evidence: Static trace in AgentTaskExecutor showing fallback to PAUSED when recovery fails.
+
+---
+
+## Run CE-20260803-0748-65050bf0 — 2026-08-03T07:48:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 65050bf080cfef5425877c546e2a1d28657fc92a
+- Run commit: SELF — commit containing this journal entry
+- Commit message: Continuous improvement CE-20260803-0748-65050bf0: break identical context loops by integrating recovery strategy into execution fingerprint and prompt
+
+### Selected Scope
+- Problem: Research missions could get stuck in an infinite loop of suppressed "identical context" requests. Even after a recovery tactic (like changing the query angle) was chosen, the next request's input fingerprint remained identical, re-triggering the safety guard.
+- Why selected: Addressed [OI-003] to improve research robustness and break stalls.
+- Correct owner: FingerprintUtils, EvidenceContextSelector, AgentOpenRouterClient.
+- Protected behavior: [PB-003] Provider requests must be registered before dispatch.
+
+### Evidence and Reproduction
+- Original symptom: Logs showed repeated `identical_context_pre_dispatch_suppressed` warnings for the same task attempt after recovery was attempted.
+- Evidence source: Static trace showed `calculateExecutionFingerprint` lacked any representation of the current recovery strategy.
+- Automated reproduction: `DuplicateContextRecoveryTest.kt` verified that adding a recovery strategy now changes the fingerprint.
+
+### Acceptance Criteria
+- `FingerprintUtils` MUST include `lastRecoveryStrategy` in the execution fingerprint.
+- `EvidenceContextSelector` SHOULD use `lastRecoveryStrategy` to influence evidence ranking.
+- `AgentOpenRouterClient` MUST include the recovery pivot explicitly in the model prompt.
+- Suppression guard must NOT trigger if a recovery strategy has been applied since the last attempt.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/FingerprintUtils.kt (Included recovery strategy in FP)
+    - app/src/main/java/com/david/openassistant/agent/EvidenceContextSelector.kt (Included recovery strategy in ranking query)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Added RECOVERY STRATEGY PIVOT block to prompt)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/DuplicateContextRecoveryTest.kt (New: verified FP uniqueness)
+- Behavior changed: Missions now successfully pivot and bypass the identical-context guard after a research recovery tactic is committed.
+- Behavior preserved: The safety guard still prevents redundant identical requests if NO recovery strategy has been applied.
+
+### Verification
+- Baseline commands: .\gradlew.bat testDebugUnitTest
+- Baseline results: PASSED (572 tests)
+- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.DuplicateContextRecoveryTest"
+- Focused results: PASSED
+- Total: 572
+- Passed: 572
+- Failed: 0
+
+### Risks
+- Known risks: None identified.
+- Unverified behavior: Exact model response to the new prompt pivot (tested via logic trace).
+
+### Repository Hygiene
+- git diff --check: Passed
+- Generated-file scan: Clean
+- Large-file scan: Clean
+- Secret scan: Passed (reviewed GREP results)
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility (property added to existing data class).
+
+### Open Issues Updated
+- Closed: [OI-003]
+- Still open: [OI-005]
+
+### Recommended Next Pass
+- Next scope: Address [OI-005] (Machine-generated duplicate context changing the mission to PAUSED).
+- Supporting evidence: AgentTaskExecutor still falls back to PAUSED if `selectTactic` returns NONE.

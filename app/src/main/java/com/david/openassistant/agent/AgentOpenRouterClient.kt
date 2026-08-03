@@ -1260,6 +1260,12 @@ class AgentOpenRouterClient internal constructor(
             appendLine("MILESTONE BOUNDARY:")
             appendLine(milestoneBoundaryInstruction(task.capability))
             appendLine("The overall objective and durable plan are context only. Grade completion solely against this milestone's acceptance criteria.")
+            task.lastRecoveryStrategy?.takeIf { it.isNotBlank() }?.let { recovery ->
+                appendLine()
+                appendLine("RECOVERY STRATEGY PIVOT:")
+                appendLine(recovery)
+                appendLine("An earlier attempt stalled. You MUST follow this specific recovery angle to break the loop.")
+            }
             task.lastError?.takeIf { it.isNotBlank() }?.let { previousFailure ->
                 appendLine()
                 appendLine("PREVIOUS ATTEMPT DID NOT PASS:")

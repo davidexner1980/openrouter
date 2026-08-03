@@ -37,7 +37,7 @@ object EvidenceContextSelector {
         }
         
         val queryTerms = tokenize(
-            listOf(goal.userRequest, goal.objective, task.title, task.instructions)
+            listOf(goal.userRequest, goal.objective, task.title, task.instructions, task.lastRecoveryStrategy ?: "")
                 .joinToString(" "),
         )
         
