@@ -18,9 +18,9 @@
 | [OI-001] | Illegal agent goal transition: RUNNING -> RECOVERING | Closed | High |
 | [OI-002] | planning_lease_rejected_without_planning_operation | Closed | High |
 | [OI-003] | identical_context_pre_dispatch_suppressed | Open | Medium |
-| [OI-004] | Repeated stale or stranded mission recovery without progress | Open | High |
+| [OI-004] | Repeated stale or stranded mission recovery without progress | Closed | High |
 | [OI-005] | Machine-generated duplicate context changing the mission to PAUSED | Open | Medium |
-| [OI-006] | Watchdog automatically resuming a user-paused mission | Open | High |
+| [OI-006] | Watchdog automatically resuming a user-paused mission | Closed | High |
 
 ---
 
@@ -166,6 +166,87 @@ VERIFIED
 
 ### Open Issues Updated
 - Closed: [OI-001]
+- Added: None
+- Reprioritized: None
+
+### Recommended Next Pass
+- Next scope: Address [OI-003] (identical_context_pre_dispatch_suppressed) to improve research quality.
+- Supporting evidence: Frequent warnings in logs during research loops.
+
+---
+
+## Run CE-20260803-0637-1d427ff8 — 2026-08-03T06:37:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+REPRODUCED
+
+### Repository
+- Branch: main
+- Starting commit: 1d427ff8d2a366a2bc38f2d497d75afdee42b4e6
+- Run commit: SELF — commit containing this journal entry
+- Commit message: Continuous improvement CE-20260803-0637-1d427ff8: generalize active phase handling in recovery watchdog and remove hardcoded repairs
+
+### Selected Scope
+- Problem: Missions were becoming "stranded" in new granular research states (RESEARCHING, etc.) because the recovery watchdog and continuation logic used hardcoded lists of active states that were not updated.
+- Why selected: Addressed [OI-004] and verified [OI-006]. Strengthened lifecycle durability [PB-002].
+- Correct owner: MissionRecoveryWorker, AgentGoalWorker, OpenAssistantViewModel.
+- Protected behavior: [PB-002] User pause must be durable across restarts.
+
+### Evidence and Reproduction
+- Original symptom: Missions stuck in "RESEARCHING..." or "RETRIEVING..." indefinitely after app restart or process death.
+- Evidence source: Static trace of MissionRecoveryWorker and AgentGoalWorker showed hardcoded status checks.
+- Automated reproduction: WatchdogLifecycleTest.kt reproduced the bug where RESEARCHING goals were not recoverable.
+- Root cause: Lifecycle states added in CE-20260803-0630-a7a69825 were not integrated into the watchdog and continuation schedulers.
+
+### Acceptance Criteria
+- Watchdog must recover all active phases (isActivePhase() == true).
+- Watchdog must skip all inactive phases (including PAUSED).
+- Continuation scheduler must handle all active phases.
+- Startup recovery must handle all active phases.
+- Remove hardcoded mission-specific repair logic.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/MissionRecoveryWorker.kt (Generalized recovery check)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Generalized continuation check, removed hardcoded repair)
+    - app/src/main/java/com/david/openassistant/OpenAssistantViewModel.kt (Updated recovery filters and imports)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/WatchdogLifecycleTest.kt (New: verified watchdog intent)
+- Behavior changed: All active lifecycle phases are now correctly recovered from stalls or interruptions. User-paused missions remain durably paused.
+- Behavior preserved: Terminal states and user intent priority.
+
+### Verification
+- Baseline commands: .\gradlew.bat testDebugUnitTest
+- Baseline results: PASSED (567 tests)
+- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.WatchdogLifecycleTest"
+- Focused results: PASSED
+- Full unit command: .\gradlew.bat testDebugUnitTest
+- Total: 571
+- Passed: 571
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known risks: None identified.
+- Unverified behavior: Physical device behavior of WorkManager (unit tested via logic traces).
+
+### Repository Hygiene
+- git diff --check: Passed
+- Generated-file scan: Clean
+- Large-file scan: Clean
+- Secret scan: Clean
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility (No schema changes).
+
+### Open Issues Updated
+- Closed: [OI-004], [OI-006]
 - Added: None
 - Reprioritized: None
 

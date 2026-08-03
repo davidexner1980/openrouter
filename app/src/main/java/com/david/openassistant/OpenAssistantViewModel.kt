@@ -18,6 +18,8 @@ import com.david.openassistant.ui.RequestDiagnostics
 import com.david.openassistant.ui.RequestStatus
 import com.david.openassistant.ui.ToolExecutionEvidence
 import com.david.openassistant.agent.AgentGoal
+import com.david.openassistant.agent.isActivePhase
+import com.david.openassistant.agent.isInactive
 import com.david.openassistant.agent.AgentGoalStatus
 import com.david.openassistant.agent.AgentLeasePolicy
 import com.david.openassistant.agent.AgentLifecycleReducer
@@ -345,14 +347,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     if (restored.apiKey != null) {
                         val now = System.currentTimeMillis()
                         restored.agents.goals
-                            .filter { goal ->
-                                goal.status in setOf(
-                                    AgentGoalStatus.PLANNING,
-                                    AgentGoalStatus.QUEUED,
-                                    AgentGoalStatus.RUNNING,
-                                    AgentGoalStatus.VERIFYING,
-                                )
-                            }
+                            .filter { goal -> goal.status.isActivePhase() }
                             .forEach { goal ->
                                 val hasFreshLease = goal.executionLease
                                     ?.let { lease -> !AgentLeasePolicy.isStale(lease, now) }
@@ -1077,7 +1072,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
 
     fun pauseAgentGoal(goalId: String) {
         val goal = agentSnapshot.goals.firstOrNull { it.id == goalId } ?: return
-        if (goal.status !in setOf(AgentGoalStatus.PLANNING, AgentGoalStatus.QUEUED, AgentGoalStatus.RUNNING, AgentGoalStatus.VERIFYING)) return
+        if (!goal.status.isActivePhase()) return
         viewModelScope.launch {
             agentInteractor.updateGoal(goalId) { current -> AgentLifecycleReducer.pause(current) }
             agentInteractor.cancel(goalId)
@@ -2673,14 +2668,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     }
             }
             agentInteractor.loadSnapshot().goals
-                .filter { goal ->
-                    goal.status in setOf(
-                        AgentGoalStatus.PLANNING,
-                        AgentGoalStatus.QUEUED,
-                        AgentGoalStatus.RUNNING,
-                        AgentGoalStatus.VERIFYING,
-                    )
-                }
+                .filter { goal -> goal.status.isActivePhase() }
                 .forEach { goal -> agentInteractor.enqueue(goal.id) }
         }
     }

@@ -787,7 +787,7 @@ class AgentGoalWorker(
 
     private fun enqueueContinuationIfActive(goalId: String, fingerprint: String? = null) {
         val latest = findGoal(goalId) ?: return
-        if (latest.status in setOf(AgentGoalStatus.PLANNING, AgentGoalStatus.QUEUED, AgentGoalStatus.RUNNING, AgentGoalStatus.VERIFYING)) {
+        if (latest.status.isActivePhase()) {
             val generation = latest.executionLease?.generation ?: 0
             diagnostics.info(
                 event = "continuation_enqueue_started",
@@ -878,59 +878,6 @@ class AgentGoalWorker(
         goal: AgentGoal,
         ticket: AgentOwnershipTicket?
     ): WorkerOutcome {
-        val goalId = goal.id
-        
-        // REQUIRED CHANGE 8: Physical mission repair for stranded goal 0b9e012b-3d11-4ef5-aafe-03b9c8a245ce
-        if (goalId == "0b9e012b-3d11-4ef5-aafe-03b9c8a245ce") {
-            val repairKey = "v42_4_4_recovery_handoff:$goalId"
-            val alreadyRepaired = goal.idempotencyRecords.any { it.key.startsWith(repairKey) }
-            if (!alreadyRepaired) {
-                val stalledTask = goal.tasks.firstOrNull { it.status == AgentTaskStatus.FAILED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
-                if (stalledTask != null) {
-                    val fingerprint = FingerprintUtils.calculateExecutionFingerprint(goal, stalledTask)
-                    val diagnosis = ExecutionStallDiagnosis.PROGRESS_STALL
-                    val tactic = EscalationTactic.REBUILD_QUERY_PORTFOLIO
-                    val planId = ResearchRecoveryEngine.generatePlanIdentity(goalId, stalledTask.id, fingerprint, diagnosis, tactic)
-                    
-                    val recoveryPlan = ResearchRecoveryPlan(
-                        id = planId,
-                        goalId = goalId,
-                        taskId = stalledTask.id,
-                        inputExecutionFingerprint = fingerprint,
-                        diagnosis = diagnosis,
-                        selectedTactic = tactic,
-                        status = RecoveryPlanStatus.PREPARED,
-                        logicalProviderRequestId = null,
-                        proposal = null,
-                        proposalFingerprint = null,
-                        validationResult = null,
-                        failureClassification = null,
-                        failureMessage = null
-                    )
-                    
-                    store.updateGoalAtomic(goalId, ticket) { current ->
-                        val record = IdempotencyRecord(
-                            key = "$repairKey:${stalledTask.id}:$fingerprint",
-                            effectType = IdempotencyEffectType.SYSTEM_EVENT,
-                            state = IdempotencyState.COMMITTED,
-                            claimOwner = workerId,
-                            committedAt = System.currentTimeMillis(),
-                            completedBy = workerId
-                        )
-                        current.copy(
-                            status = AgentGoalStatus.RECOVERING,
-                            activeRecoveryPlanId = planId,
-                            recoveryPlans = if (current.recoveryPlans.none { it.id == planId }) current.recoveryPlans + recoveryPlan else current.recoveryPlans,
-                            idempotencyRecords = current.idempotencyRecords + record,
-                            events = appendEvent(current.events, "Physically stranded mission repaired. Entering recovery with strategy pivot."),
-                        )
-                    }
-                    diagnostics.info(event = "committed_recovery_status_repaired", component = "worker", fields = mapOf("goal_id" to goalId))
-                    return WorkerOutcome.CONTINUE
-                }
-            }
-        }
-
         val stalledTask = goal.tasks.firstOrNull { it.status == AgentTaskStatus.FAILED || it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE }
             ?: goal.tasks.firstOrNull { it.status != AgentTaskStatus.COMPLETED }
 
