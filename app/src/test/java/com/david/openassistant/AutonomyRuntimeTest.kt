@@ -505,6 +505,10 @@ class AutonomyRuntimeTest {
                     "uncertainty, and connects each material statement to the evidence that established it. "
                 ).repeat(4),
             summary = AgentApiSummary(),
+            sources = listOf(
+                AgentSourceCitation("Primary finding", "https://primary.example/finding"),
+                AgentSourceCitation("Secondary detail", "https://secondary.example/detail"),
+            ),
             claims = listOf(
                 AgentClaim(
                     id = "supported-fact",
@@ -558,6 +562,10 @@ class AutonomyRuntimeTest {
         val result = AgentStepResult(
             content = "A complete evidence-based publication with supported findings and bounded uncertainty. ".repeat(12),
             summary = AgentApiSummary(),
+            sources = listOf(
+                AgentSourceCitation("One finding", "https://one.example/finding"),
+                AgentSourceCitation("Two finding", "https://two.example/finding"),
+            ),
             acceptanceChecks = listOf(
                 AgentAcceptanceCheck(
                     criterionId = criterion.id,
@@ -590,6 +598,10 @@ class AutonomyRuntimeTest {
         val result = AgentStepResult(
             content = "Corrected report addressing every finding with verified specifications and complete citations.",
             summary = AgentApiSummary(),
+            sources = listOf(
+                AgentSourceCitation("One corrected", "https://one.example/corrected"),
+                AgentSourceCitation("Two corrected", "https://two.example/corrected"),
+            ),
             claims = factClaims(
                 task.id,
                 "https://one.example/corrected",

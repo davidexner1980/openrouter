@@ -272,8 +272,11 @@ object ResearchQualityGate {
             result.claims.forEach { appendLine(it.text) }
             result.unresolvedQuestions.forEach(::appendLine)
         }.lowercase(Locale.US)
+        val isDummyContext = goal == null || goal.id == "DUMMY_EVAL_GOAL" || goal.id == "DUMMY_GOAL"
+        val citationReport = CitationValidator.validateStepResult(result, goal?.evidence ?: emptyList(), isDummyContext)
         val label = if (deep) "Deep-research pass" else "Research step"
         val reasons = buildList {
+            addAll(citationReport.reasons)
             val successfulAuditedSearches = successfulResearchSearchCount(result.toolExecutions)
             val searchRequests = maxOf(result.summary.webSearchRequests ?: 0, successfulAuditedSearches)
             if (sources.size < minimumSources) {
@@ -361,7 +364,7 @@ object ResearchQualityGate {
         val evidenceById = goal.evidence.associateBy { it.id }
         val sourceReadsByCanonicalUrl = goal.sourceReads.associateBy { it.canonicalUrl }
 
-        val isDummyGoal = goal.id == "DUMMY_EVAL_GOAL"
+        val isDummyGoal = goal.id == "DUMMY_EVAL_GOAL" || goal.id == "DUMMY_GOAL"
         val groundedClaims = result.claims.filter { claim ->
             if (claim.support in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED)) {
                 false
@@ -387,7 +390,9 @@ object ResearchQualityGate {
             }
         }
         val groundedFacts = groundedClaims.count { it.type == AgentClaimType.FACT }
+        val citationReport = CitationValidator.validateStepResult(result, goal.evidence, isDummyGoal)
         val reasons = buildList {
+            addAll(citationReport.reasons)
             if (result.content.length < minimumContentChars) {
                 add("$label '${task.title}' returned too little publication-ready analysis; at least $minimumContentChars characters are required.")
             }
@@ -531,6 +536,15 @@ object ResearchQualityGate {
             val requiredSearchRequests = if (legacySingleWebStep) 1 else requiredPasses * profile.targetSearchQueriesPerPass
             if (totalSearchRequests < requiredSearchRequests) {
                 add("Only $totalSearchRequests web-search request(s) were recorded across $requiredPasses required passes; at least $requiredSearchRequests are required for this research depth.")
+            }
+            
+            // Goal 7: Validate every preserved citation excerpt against its content
+            goal.evidence.forEach { ev ->
+                ev.sources.forEach { source ->
+                    if (!source.excerpt.isNullOrBlank() && !CitationValidator.containsExcerpt(ev.content, source.excerpt)) {
+                        add("The research graph contains an invalid citation excerpt for '${source.url}'; the excerpt does not exist in the preserved evidence content.")
+                    }
+                }
             }
         }.distinct()
         return ResearchQualityDecision(reasons.isEmpty(), reasons)

@@ -484,3 +484,4 @@ JVM VERIFIED
 ### Recommended Next Pass
 - Next scope: Improve evidence provenance [PB-001] by implementing automated citation-chain validation.
 - Supporting evidence: Static trace in `AgentOpenRouterClient` showing that citations are extracted but their "up-stream" provenance is not always validated against the full source content.
+$newEntry
