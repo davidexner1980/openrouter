@@ -92,7 +92,7 @@ class ResearchRecoveryEngineTest {
             newQueryPortfolio = listOf("Q1"),
             followUpRule = null, rationale = "R1", expectedNoveltyDimensions = listOf("D1")
         )
-        val fingerprint = ResearchRecoveryEngine.generateProposalFingerprint(proposal)
+        val fingerprint = FingerprintUtils.calculateProposalFingerprint(proposal)
         
         val plan1 = ResearchRecoveryPlan(
             id = "p1", goalId = "g1", taskId = "t1", inputExecutionFingerprint = "f1",
@@ -107,10 +107,10 @@ class ResearchRecoveryEngineTest {
         )
 
         val isNovel = ResearchRecoveryEngine.validateNovelty(proposal, listOf(plan1))
-        assertFalse("Should reject exact duplicate proposal", isNovel)
+        assertEquals("Should reject exact duplicate proposal", false, isNovel)
 
-        val novelProposal = proposal.copy(newQueryPortfolio = listOf("Q2"))
+        val novelProposal = proposal.copy(newQueryPortfolio = listOf("LongerNovelQuery"))
         val isNovel2 = ResearchRecoveryEngine.validateNovelty(novelProposal, listOf(plan1))
-        assertTrue("Should accept proposal with new query", isNovel2)
+        assertEquals("Should accept proposal with new query", true, isNovel2)
     }
 }

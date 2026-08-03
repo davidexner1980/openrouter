@@ -1,25 +1,23 @@
 package com.david.openassistant.agent
 
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
+import org.junit.rules.TemporaryFolder
 import java.io.File
 
-@RunWith(RobolectricTestRunner::class)
 class AgentStoreRecoveryPersistenceTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     private lateinit var store: AgentStore
     private lateinit var tempDir: File
 
     @Before
     fun setup() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        tempDir = File(context.cacheDir, "agent_store_test_${System.currentTimeMillis()}")
-        tempDir.mkdirs()
+        tempDir = tempFolder.newFolder("agent_store_recovery")
         store = AgentStore(tempDir)
     }
 

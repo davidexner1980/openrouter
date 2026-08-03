@@ -4232,6 +4232,7 @@ class AgentOpenRouterClient internal constructor(
                 )
             }
         } catch (error: Throwable) {
+            if (error is TerminalPersistenceException || error is CancellationException) throw error
             buildToolCheckpointResponse(
                 reason = error.toAgentFailureMessage(
                     "A provider call failed after successful tool execution.",

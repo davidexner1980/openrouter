@@ -1,5 +1,8 @@
 /.gradle/
 /.gradle-user-home/
+/.gradle_home/
+/.android/
+/.android-user-home/
 /.idea/
 /.kotlin/
 /.artifacts/
@@ -14,6 +17,16 @@
 /*_TEST_RESULTS*.txt
 /SOURCE_COMPILE_RESULTS*.txt
 *.hprof
+*.apk
+*.aab
+*.apks
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tmp
+*.temp
+*.log
 
 # Google Services
 google-services.json
