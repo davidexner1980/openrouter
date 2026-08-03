@@ -1,5 +1,9 @@
 package com.david.openassistant.agent
 
+import android.content.SharedPreferences
+import com.david.openassistant.domain.AgentInteractor
+import com.david.openassistant.domain.MissionStartResult
+import com.david.openassistant.data.diagnostics.ResearchMonitor
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -7,6 +11,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.nio.file.Files
+import java.io.File
+import kotlinx.coroutines.runBlocking
+import java.lang.reflect.Proxy
 
 class DurableCaseIntegrityTest {
 
@@ -25,19 +32,80 @@ class DurableCaseIntegrityTest {
         assertEquals(setOf(first.id, second.id), reloaded.goals.map { it.id }.toSet())
     }
 
-    @Test
-    fun blankOriginalRequestIsRejectedBeforeGoalPersistence() {
-        val root = Files.createTempDirectory("agent-store-empty-request").toFile()
-        val store = AgentStore(root)
-        val invalid = goal("goal-invalid", "").copy(status = AgentGoalStatus.PLANNING)
+    private fun createFakePrefs(): SharedPreferences {
+        val map = mutableMapOf<String, Any?>()
+        return Proxy.newProxyInstance(
+            SharedPreferences::class.java.classLoader,
+            arrayOf(SharedPreferences::class.java)
+        ) { _, method, args ->
+            when (method.name) {
+                "getString" -> map[args[0] as String] ?: args[1]
+                "getBoolean" -> map[args[0] as String] ?: args[1]
+                "getLong" -> map[args[0] as String] ?: args[1]
+                "getInt" -> map[args[0] as String] ?: args[1]
+                "edit" -> createFakeEditor(map)
+                "registerOnSharedPreferenceChangeListener" -> Unit
+                "unregisterOnSharedPreferenceChangeListener" -> Unit
+                else -> null
+            }
+        } as SharedPreferences
+    }
 
-        try {
-            store.upsertGoal(invalid, select = true)
-            fail("Blank original requests must not be persisted as runnable goals.")
-        } catch (expected: IllegalArgumentException) {
-            assertTrue(expected.message.orEmpty().contains("original user request", ignoreCase = true))
-        }
-        assertTrue(store.loadSnapshot().goals.isEmpty())
+    private fun createFakeEditor(map: MutableMap<String, Any?>): SharedPreferences.Editor {
+        val tempMap = mutableMapOf<String, Any?>()
+        return Proxy.newProxyInstance(
+            SharedPreferences.Editor::class.java.classLoader,
+            arrayOf(SharedPreferences.Editor::class.java)
+        ) { _, method, args ->
+            when (method.name) {
+                "putString" -> { tempMap[args[0] as String] = args[1]; null }
+                "putBoolean" -> { tempMap[args[0] as String] = args[1]; null }
+                "putLong" -> { tempMap[args[0] as String] = args[1]; null }
+                "putInt" -> { tempMap[args[0] as String] = args[1]; null }
+                "remove" -> { tempMap.remove(args[0] as String); null }
+                "clear" -> { tempMap.clear(); null }
+                "commit", "apply" -> { map.putAll(tempMap); true }
+                else -> null
+            }
+        } as SharedPreferences.Editor
+    }
+
+    @Test
+    fun blankOriginalRequestIsRejectedByMissionCreationOwner() = runBlocking {
+        val root = Files.createTempDirectory("agent-interactor-empty-request").toFile()
+        val store = AgentStore(root)
+        val interactor = AgentInteractor(
+            context = null,
+            agentStore = store,
+            agentScheduler = null,
+            boundaryHook = object : MissionStartBoundaryHook {
+                override suspend fun onBoundaryReached(boundary: String, draft: ResearchDraft) {}
+            }
+        )
+        
+        val invalidDraft = ResearchDraft(
+            id = "d1",
+            conversationId = "c1",
+            originalUserRequest = "", // BLANK
+            title = "Title",
+            objective = "Objective",
+            status = ResearchDraftStatus.READY
+        )
+
+        val result = interactor.startMissionFromBrief(
+            draft = invalidDraft,
+            monitor = ResearchMonitor(createFakePrefs(), File(root, "monitor"), File(root, "cache")),
+            hasCredential = true,
+            keyInfo = null,
+            models = emptyList(),
+            selectedModelId = null,
+            routingProfileName = "AUTO",
+            automaticStart = true
+        )
+
+        assertTrue("Expected InvalidMissionData, got $result", result is MissionStartResult.InvalidMissionData)
+        assertEquals("The exact original user request is missing.", (result as MissionStartResult.InvalidMissionData).reason)
+        assertTrue("Store should be empty", store.loadSnapshot().goals.isEmpty())
     }
 
     @Test
@@ -56,11 +124,11 @@ class DurableCaseIntegrityTest {
         encoded.put("title", "")
 
         val decoded = decode.invoke(store, encoded) as AgentGoal
-        assertEquals(AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, decoded.status)
-        assertTrue(decoded.isCorrupt)
-        assertTrue(decoded.error.orEmpty().contains("original user request", ignoreCase = true))
-        assertFalse(decoded.title == "Automated goal")
-        assertFalse(decoded.userRequest == "No conversation provided.")
+        assertEquals("Decoded goal status should be CORRUPT_OR_INCOMPLETE_MISSION", AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, decoded.status)
+        assertTrue("Decoded goal should be marked as corrupt", decoded.isCorrupt)
+        assertTrue("Decoded goal error should contain 'original user request'. Got: ${decoded.error}", decoded.error.orEmpty().contains("original user request", ignoreCase = true))
+        assertFalse("Title should not use placeholder", decoded.title == "Automated goal")
+        assertFalse("User request should not use placeholder", decoded.userRequest == "No conversation provided.")
     }
 
     @Test

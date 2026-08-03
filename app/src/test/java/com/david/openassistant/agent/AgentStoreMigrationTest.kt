@@ -7,13 +7,18 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 import java.util.UUID
 
 class AgentStoreMigrationTest {
 
     @Test
-    fun v41StuckMissionMigratesSafely() {
-        val goalId = "stuck-v41"
+    fun v41StuckMissionMigratesSafelyUsingRealStorageIntegration() {
+        val tempDir = Files.createTempDirectory("agentstore_v41_mig_real").toFile()
+        val goalsDir = File(tempDir, "agent_runtime_v2/goals").apply { mkdirs() }
+        
+        val goalId = "stuck-v41-real"
         val v41Json = JSONObject()
             .put("storage_version", 11)
             .put("id", goalId)
@@ -28,23 +33,44 @@ class AgentStoreMigrationTest {
                 .put("id", "task-1")
                 .put("status", "BLOCKED_WITH_PARTIAL_EVIDENCE")
                 .put("failure_class", "STRUCTURED_SYNTHESIS_DEFICIT")
+                .put("attempt_count", 1)
+                .put("lifetime_attempt_count", 1)
+            ))
+            .put("attempts", JSONArray().put(JSONObject()
+                .put("id", "att-1")
+                .put("status", "RUNNING")
+                .put("model_id", "model")
+                .put("started_at", System.currentTimeMillis())
             ))
             .put("events", JSONArray().put(JSONObject()
                 .put("id", "event-1")
                 .put("message", "identical context fingerprint detected")
             ))
 
-        val tempDir = java.nio.file.Files.createTempDirectory("agentstore_v41_mig").toFile()
+        File(goalsDir, "$goalId.goal.json").writeText(v41Json.toString())
+
         val store = AgentStore(tempDir)
-        val decodeMethod = AgentStore::class.java.getDeclaredMethod("decodeGoal", JSONObject::class.java)
-        decodeMethod.isAccessible = true
-        val decodedGoal = decodeMethod.invoke(store, v41Json) as AgentGoal
+        val snapshot = store.loadSnapshot()
+        val decodedGoal = snapshot.goals.first { it.id == goalId }
 
         assertEquals(AgentGoalStatus.QUEUED, decodedGoal.status)
-        assertEquals(AgentTaskStatus.QUEUED, decodedGoal.tasks.first().status)
-        assertTrue(decodedGoal.events.any { it.message.contains("V41 stuck mission repaired") })
-        assertTrue(decodedGoal.idempotencyRecords.any { it.key == "v41_stuck_migration" })
+        val task = decodedGoal.tasks.first()
+        assertEquals(AgentTaskStatus.QUEUED, task.status)
+        assertEquals(0, task.attemptCount) // Counter corrected
+        assertEquals(0, task.lifetimeAttemptCount) // Counter corrected
+        
+        val attempt = decodedGoal.attempts.first { it.id == "att-1" }
+        assertEquals(AgentAttemptStatus.FAILED, attempt.status) // Dangling attempt closed
+        assertTrue(attempt.error.orEmpty().contains("closed by migration"))
+        
+        assertTrue(decodedGoal.events.any { it.message.contains("Stuck mission repaired") })
+        assertTrue(decodedGoal.idempotencyRecords.any { it.key == "v41_stuck_migration_v2" })
         assertNotNull(decodedGoal.activeResearchCycleId)
+        
+        // Ensure idempotency: reload and check no second repair event added
+        val eventCount = decodedGoal.events.size
+        val snapshot2 = store.loadSnapshot()
+        assertEquals(eventCount, snapshot2.goals.first { it.id == goalId }.events.size)
     }
 
     @Test

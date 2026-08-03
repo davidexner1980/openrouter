@@ -1446,6 +1446,7 @@ class AgentOpenRouterClient internal constructor(
                 )
             }
         } catch (error: Throwable) {
+            if (error is TerminalPersistenceException || error is CancellationException) throw error
             // println("DEBUG: executeTask caught error: $error (type=${error.javaClass.name})")
             buildResearchBootstrapFailureCheckpoint(error, researchBootstrap)
                 ?: throw error.withAgentUsage(researchBootstrap.summary)

@@ -999,6 +999,8 @@ class AgentStore private constructor(
                 Triple(storedFreeOnly, null, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
             storedRoutingStage == AgentRoutingStage.AUTO_BETA ->
                 Triple(false, "AUTO", RoutingPolicyProvenance.LEGACY_EXPLICIT)
+            storedRoutingStage == AgentRoutingStage.FREE ->
+                Triple(true, null, RoutingPolicyProvenance.LEGACY_AMBIGUOUS_SAFETY_LOCK)
             else -> Triple(false, null, RoutingPolicyProvenance.EXPLICIT_USER_SELECTION)
         }
 
@@ -1009,8 +1011,15 @@ class AgentStore private constructor(
         val storedConversationId = json.optString("conversation_id")
         val storedUserRequest = json.optString("user_request")
         val restoredStatus = when {
-            storedConversationId.isBlank() || storedUserRequest.isBlank() -> AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION
+            storedConversationId.isBlank() -> AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION
+            storedUserRequest.isBlank() -> AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION
             else -> storedStatus
+        }
+        val restoredError = if (restoredStatus == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION) {
+            val missing = if (storedConversationId.isBlank()) "conversation ID" else "original user request"
+            "Corrupt or incomplete mission: $missing is missing or blank."
+        } else {
+            normalizedStoredError
         }
         val restoredEvents = json.optJSONArray("events").decodeList(::decodeEvent)
         
@@ -1064,7 +1073,7 @@ class AgentStore private constructor(
             verificationRound = json.optInt("verification_round", 0),
             verificationCorrectionStreak = json.optInt("verification_correction_streak", 0),
             result = json.optNullableString("result"),
-            error = normalizedStoredError,
+            error = restoredError,
             blockedReason = json.optNullableString("blocked_reason"),
             terminalResultDelivered = json.optBoolean("terminal_result_delivered", false),
             nextRetryAt = json.optLongOrNull("next_retry_at"),
@@ -1106,7 +1115,8 @@ class AgentStore private constructor(
             activeResearchCycleId = json.optNullableString("active_research_cycle_id"),
         )
 
-        val isStuckV41 = (restoredStatus == AgentGoalStatus.PAUSED || restoredStatus == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE) &&
+        val isStuckV41 = storedVersion < 13 && 
+            (restoredStatus == AgentGoalStatus.PAUSED || restoredStatus == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE) &&
             storedTasks.any { it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && it.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT" } &&
             restoredEvents.any { it.message.contains("identical context fingerprint detected") } &&
             goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration_v2" }

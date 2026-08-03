@@ -119,19 +119,22 @@ class V42DuplicateGuardTest {
         
         store.upsertGoal(goalWithFingerprint)
 
-        val ticket = TaskExecutionTicket(
+        val acquisition = store.acquireTaskLeaseAtomic(
             goalId = goalId,
-            taskIdentity = taskId,
             workerId = "worker-1",
-            ownerProcessSessionId = "session-1",
-            generation = 1,
-            attemptId = "attempt-1",
-            acquiredAt = System.currentTimeMillis()
+            taskId = taskId
         )
         
-        store.acquireTaskLeaseAtomic(goalId, taskId, "worker-1")
+        val ticket = when (acquisition) {
+            is LeaseAcquisitionResult.Acquired -> acquisition.ticket as TaskExecutionTicket
+            is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.ticket as TaskExecutionTicket
+            else -> fail("Expected task lease acquisition, got $acquisition")
+        } as TaskExecutionTicket
 
-        val outcome = executor.executeOneTask("api-key", goalWithFingerprint, task, ticket)
+        val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
+        val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId }
+
+        val outcome = executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
 
         assertEquals(WorkerOutcome.DONE, outcome)
         
@@ -182,17 +185,20 @@ class V42DuplicateGuardTest {
         
         store.upsertGoal(goalWithAuth)
 
-        val ticket = TaskExecutionTicket(
+        val acquisition = store.acquireTaskLeaseAtomic(
             goalId = goalId,
-            taskIdentity = taskId,
             workerId = "worker-1",
-            ownerProcessSessionId = "session-1",
-            generation = 1,
-            attemptId = "attempt-1",
-            acquiredAt = System.currentTimeMillis()
+            taskId = taskId
         )
         
-        store.acquireTaskLeaseAtomic(goalId, taskId, "worker-1")
+        val ticket = when (acquisition) {
+            is LeaseAcquisitionResult.Acquired -> acquisition.ticket as TaskExecutionTicket
+            is LeaseAcquisitionResult.OrphanReclaimed -> acquisition.ticket as TaskExecutionTicket
+            else -> fail("Expected task lease acquisition, got $acquisition")
+        } as TaskExecutionTicket
+
+        val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
+        val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId }
 
         val successJson = """
             {
@@ -200,15 +206,15 @@ class V42DuplicateGuardTest {
               "choices": [
                 {
                   "message": {
-                    "content": "```json\n{\n  \"work_product\": \"Test result\",\n  \"completion_score\": 1.0,\n  \"claims\": [],\n  \"acceptance_checks\": [],\n  \"unresolved_questions\": []\n}\n```"
+                    "content": "{\"work_product\": \"Test result\", \"completion_score\": 1.0, \"claims\": [], \"acceptance_checks\": [], \"unresolved_questions\": []}"
                   }
                 }
               ]
             }
         """.trimIndent()
-        server.enqueue(MockResponse.Builder().body(successJson).build())
+        server.enqueue(MockResponse.Builder().code(200).body(successJson).build())
 
-        executor.executeOneTask("api-key", goalWithAuth, task, ticket)
+        executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
 
         assertEquals(1, server.requestCount)
         
@@ -235,16 +241,59 @@ class V42DuplicateGuardTest {
     }
 
     @Test
-    fun testCosmeticChangePreservesFingerprint() {
-        val task = AgentTask(id = "t1", order = 0, title = "T", instructions = "Instructions  with  extra  space", capability = AgentCapability.REASON)
-        val goal = AgentGoal(id = "g1", conversationId = "c1", userRequest = "R", title = "G", objective = "O", finalOutputDescription = "D", status = AgentGoalStatus.RUNNING, plannerModelId = "m", executionModelId = "m", tasks = listOf(task))
+    fun testUnauthorizedRetryWithMismatchedFingerprintRejectsExecution() = runBlocking {
+        val goalId = UUID.randomUUID().toString()
+        val taskId = "task-1"
         
-        val fp1 = FingerprintUtils.calculateExecutionFingerprint(goal, task)
+        val task = AgentTask(
+            id = taskId,
+            order = 0,
+            title = "Test Task",
+            instructions = "Instructions",
+            capability = AgentCapability.REASON,
+            attemptCount = 1
+        )
+        val goal = AgentGoal(
+            id = goalId,
+            conversationId = "conv-1",
+            userRequest = "Request",
+            title = "Goal",
+            objective = "Objective",
+            finalOutputDescription = "Output",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "model-1",
+            executionModelId = "model-1",
+            tasks = listOf(task)
+        )
         
-        val task2 = task.copy(instructions = "Instructions with extra space")
-        val goal2 = goal.copy(tasks = listOf(task2))
-        val fp2 = FingerprintUtils.calculateExecutionFingerprint(goal2, task2)
+        val correctFingerprint = FingerprintUtils.calculateExecutionFingerprint(goal, task)
+        val goalWithMismatchAuth = goal.copy(
+            tasks = goal.tasks.map { it.copy(
+                lastRequestFingerprint = correctFingerprint,
+                retryAuthorizedFingerprint = "mismatched-fp"
+            ) }
+        )
         
-        assertEquals(fp1, fp2)
+        store.upsertGoal(goalWithMismatchAuth)
+
+        val acquisition = store.acquireTaskLeaseAtomic(
+            goalId = goalId,
+            workerId = "worker-1",
+            taskId = taskId
+        )
+        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
+
+        val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
+        val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId }
+
+        val outcome = executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
+
+        // Should be suppressed and return DONE
+        assertEquals(WorkerOutcome.DONE, outcome)
+        assertEquals(0, server.requestCount)
+        
+        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
+        val finalTask = finalGoal.tasks.first { it.id == taskId }
+        assertEquals(AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, finalTask.status)
     }
 }
