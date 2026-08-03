@@ -217,22 +217,6 @@ class RuntimePacketExporter(private val context: Context) {
         put("total_tokens", goal.totalTokens)
         put("total_cost_usd", goal.totalCostUsd)
         put("unfinished_operations", goal.requestAttempts.count { it.exchangeOutcome == ExchangeOutcome.ACTIVE })
-        put("investigation_map_summary", summarizeInvestigationMap(goal.investigationMap))
-    }
-
-    private fun summarizeInvestigationMap(map: InvestigationMap?): JSONObject {
-        if (map == null) return JSONObject()
-        return JSONObject().apply {
-            put("entities_count", map.entities.size)
-            put("resolved_entities", map.entities.count { it.disambiguationStatus == DisambiguationStatus.RESOLVED })
-            put("open_gaps", map.gaps.count { it.status == GapStatus.OPEN })
-            put("resolved_gaps", map.gaps.count { it.status == GapStatus.RESOLVED })
-            put("hypotheses_count", map.hypotheses.size)
-            put("supported_hypotheses", map.hypotheses.count { it.status == HypothesisStatus.SUPPORTED })
-            put("contradicted_hypotheses", map.hypotheses.count { it.status == HypothesisStatus.CONTRADICTED })
-            put("query_outcomes_count", map.queryOutcomes.size)
-            put("last_checkpoint_at", map.lastCheckpointAt)
-        }
     }
 
     private fun calculateProviderAccounting(goals: List<AgentGoal>, monitorData: MonitorData): JSONObject {

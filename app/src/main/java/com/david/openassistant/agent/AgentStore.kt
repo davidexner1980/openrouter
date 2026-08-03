@@ -100,7 +100,6 @@ class AgentStore private constructor(
     }
 
     fun upsertGoal(goal: AgentGoal, select: Boolean = false): AgentSnapshot = synchronized(STORE_LOCK) {
-        require(goal.userRequest.isNotBlank()) { "The original user request must not be blank." }
         migrateLegacyIfNeededLocked()
         val current = loadSnapshotFromFilesLocked()
         writeGoalLocked(goal)
@@ -146,7 +145,7 @@ class AgentStore private constructor(
         val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized RefreshLeaseResult.GoalMissing
         val lease = goal.executionLease ?: return@synchronized RefreshLeaseResult.LeaseLost
 
-        val currentSessionId = getCurrentSessionId()
+        val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
         if (lease.workerId != workerId || lease.attemptId != attemptId || lease.generation != generation || 
             lease.taskId != (taskId ?: "none") || lease.ownerProcessSessionId != currentSessionId
         ) {
@@ -213,7 +212,7 @@ class AgentStore private constructor(
 
         val now = System.currentTimeMillis()
         val existing = goal.executionLease
-        val currentSessionId = getCurrentSessionId()
+        val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
         
         val isStale = AgentLeasePolicy.isStale(existing, now)
         val isLegacy = existing != null && (existing.ownerProcessSessionId.isBlank() || existing.ownerProcessSessionId == "unknown")
@@ -321,15 +320,11 @@ class AgentStore private constructor(
         val goal = current.goals.firstOrNull { it.id == ticket.goalId } ?: return TicketValidationResult.LeaseMissing
         val lease = goal.executionLease ?: return TicketValidationResult.LeaseMissing
 
-        val currentSessionId = getCurrentSessionId()
-
         return when {
             lease.workerId != ticket.workerId -> 
                 TicketValidationResult.Mismatch("WORKER_MISMATCH", "workerId", ticket.workerId, lease.workerId)
             lease.ownerProcessSessionId != ticket.ownerProcessSessionId ->
                 TicketValidationResult.Mismatch("PROCESS_SESSION_MISMATCH", "ownerProcessSessionId", ticket.ownerProcessSessionId, lease.ownerProcessSessionId)
-            lease.ownerProcessSessionId != currentSessionId ->
-                TicketValidationResult.Mismatch("SESSION_ID_MISMATCH", "ownerProcessSessionId", currentSessionId, lease.ownerProcessSessionId)
             lease.generation != ticket.generation ->
                 TicketValidationResult.Mismatch("GENERATION_MISMATCH", "generation", ticket.generation.toString(), lease.generation.toString())
             lease.attemptId != ticket.attemptId ->
@@ -422,11 +417,6 @@ class AgentStore private constructor(
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        val currentSessionId = getCurrentSessionId()
-        if (lease.ownerProcessSessionId != currentSessionId) {
-            return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
-        }
-
         val isTaskBound = context.operation.taskBound
         if (isTaskBound) {
             if (context.taskId == null || lease.taskId != context.taskId || attempt.taskId != context.taskId) {
@@ -506,11 +496,6 @@ class AgentStore private constructor(
         }
 
         if (context.attemptId != lease.attemptId) {
-            return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
-        }
-
-        val currentSessionId = getCurrentSessionId()
-        if (lease.ownerProcessSessionId != currentSessionId) {
             return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
         }
 
@@ -789,24 +774,19 @@ class AgentStore private constructor(
     }
 
     private fun writeGoalLocked(goal: AgentGoal): AgentGoal {
+        writeCount.incrementAndGet()
         testWriterInjection?.write(goal)
         validateGoalIdentityForWrite(goal)
-        writeCount.incrementAndGet()
         goalsDirectory.mkdirs()
         val target = goalFileLocked(goal.id)
-        val atomicFile = AtomicFile(target)
         val encoded = encodeGoal(goal)
         val encodedStr = encoded.toString()
         
         val bytes = encodedStr.toByteArray(StandardCharsets.UTF_8)
-        var output: FileOutputStream? = null
-        try {
-            output = atomicFile.startWrite()
-            output.write(bytes)
-            atomicFile.finishWrite(output)
-        } catch (error: Throwable) {
-            output?.let { atomicFile.failWrite(it) }
-            throw error
+        val temp = File(target.parentFile, target.name + ".tmp")
+        temp.writeBytes(bytes)
+        if (!temp.renameTo(target)) {
+            target.writeBytes(bytes)
         }
 
         val readBack = readGoalLocked(target)
@@ -986,94 +966,13 @@ class AgentStore private constructor(
         json.put("classified_failures", JSONArray(goal.classifiedFailures))
         json.put("lease_generation", goal.leaseGeneration)
         json.put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
-        json.put("recovery_plans", JSONArray().apply { goal.recoveryPlans.forEach { put(encodeRecoveryPlan(it)) } })
+        json.put("recovery_plans", JSONArray(goal.recoveryPlans.map(::encodeRecoveryPlan)))
         json.put("active_recovery_plan_id", goal.activeRecoveryPlanId ?: JSONObject.NULL)
-        json.put("research_cycles", JSONArray().apply { goal.researchCycles.forEach { put(encodeResearchCycle(it)) } })
-        json.put("objective_revisions", JSONArray().apply { goal.objectiveRevisions.forEach { put(encodeObjectiveRevision(it)) } })
+        json.put("research_cycles", JSONArray(goal.researchCycles.map(::encodeResearchCycle)))
+        json.put("objective_revisions", JSONArray(goal.objectiveRevisions.map(::encodeObjectiveRevision)))
         json.put("active_research_cycle_id", goal.activeResearchCycleId ?: JSONObject.NULL)
-        json.put("investigation_map", goal.investigationMap?.let(::encodeInvestigationMap) ?: JSONObject.NULL)
         return json
     }
-
-    private fun encodeInvestigationMap(map: InvestigationMap): JSONObject = JSONObject()
-        .put("entities", JSONArray().apply { map.entities.forEach { put(encodeEntity(it)) } })
-        .put("gaps", JSONArray().apply { map.gaps.forEach { put(encodeGap(it)) } })
-        .put("hypotheses", JSONArray().apply { map.hypotheses.forEach { put(encodeHypothesis(it)) } })
-        .put("source_targets", JSONArray().apply { map.sourceTargets.forEach { put(encodeSourceTarget(it)) } })
-        .put("query_outcomes", JSONArray().apply { map.queryOutcomes.forEach { put(encodeQueryOutcome(it)) } })
-        .put("last_checkpoint_at", map.lastCheckpointAt)
-
-    private fun encodeEntity(entity: EntityRecord): JSONObject = JSONObject()
-        .put("id", entity.id)
-        .put("canonical_name", entity.canonicalName)
-        .put("aliases", JSONArray(entity.aliases))
-        .put("type", entity.type ?: JSONObject.NULL)
-        .put("parent_organizations", JSONArray(entity.parentOrganizations))
-        .put("product_relationships", JSONArray(entity.productRelationships))
-        .put("version_relationships", JSONArray(entity.versionRelationships))
-        .put("geographic_scope", entity.geographicScope ?: JSONObject.NULL)
-        .put("temporal_validity", entity.temporalValidity ?: JSONObject.NULL)
-        .put("disambiguation_status", entity.disambiguationStatus.name)
-        .put("supporting_evidence_ids", JSONArray(entity.supportingEvidenceIds))
-        .put("rejected_interpretations", JSONArray(entity.rejectedInterpretations))
-        .put("confidence", entity.confidence)
-        .put("last_updated_at", entity.lastUpdatedAt)
-
-    private fun encodeGap(gap: InformationGap): JSONObject = JSONObject()
-        .put("id", gap.id)
-        .put("description", gap.description)
-        .put("impact_on_final_answer", gap.impactOnFinalAnswer)
-        .put("related_acceptance_criterion_id", gap.relatedAcceptanceCriterionId ?: JSONObject.NULL)
-        .put("related_entity_ids", JSONArray(gap.relatedEntityIds))
-        .put("required_evidence_type", gap.requiredEvidenceType ?: JSONObject.NULL)
-        .put("preferred_source_families", JSONArray(gap.preferredSourceFamilies))
-        .put("answer_changing_threshold", gap.answerChangingThreshold ?: JSONObject.NULL)
-        .put("status", gap.status.name)
-        .put("attempts_made", gap.attemptsMade)
-        .put("blocking_reason", gap.blockingReason ?: JSONObject.NULL)
-        .put("resolution_evidence_ids", JSONArray(gap.resolutionEvidenceIds))
-
-    private fun encodeHypothesis(hypothesis: Hypothesis): JSONObject = JSONObject()
-        .put("id", hypothesis.id)
-        .put("statement", hypothesis.statement)
-        .put("related_gap_id", hypothesis.relatedGapId ?: JSONObject.NULL)
-        .put("supporting_evidence_ids", JSONArray(hypothesis.supportingEvidenceIds))
-        .put("contradicting_evidence_ids", JSONArray(hypothesis.contradictingEvidenceIds))
-        .put("falsifiers", JSONArray(hypothesis.falsifiers))
-        .put("confidence", hypothesis.confidence)
-        .put("status", hypothesis.status.name)
-        .put("last_tested_at", hypothesis.lastTestedAt ?: JSONObject.NULL)
-
-    private fun encodeSourceTarget(target: SourceTarget): JSONObject = JSONObject()
-        .put("id", target.id)
-        .put("source_family", target.sourceFamily)
-        .put("target_identity", target.targetIdentity)
-        .put("rationale", target.rationale ?: JSONObject.NULL)
-        .put("expected_evidence", target.expectedEvidence ?: JSONObject.NULL)
-        .put("authority_expectation", target.authorityExpectation)
-        .put("independence_group_id", target.independenceGroupId ?: JSONObject.NULL)
-        .put("access_status", target.accessStatus ?: JSONObject.NULL)
-        .put("previous_attempts", target.previousAttempts)
-        .put("follow_up_links", JSONArray(target.followUpLinks))
-        .put("priority", target.priority)
-
-    private fun encodeQueryOutcome(outcome: QueryOutcome): JSONObject = JSONObject()
-        .put("id", outcome.id)
-        .put("canonical_query", outcome.canonicalQuery)
-        .put("purpose", outcome.purpose ?: JSONObject.NULL)
-        .put("related_gap_id", outcome.relatedGapId ?: JSONObject.NULL)
-        .put("related_hypothesis_id", outcome.relatedHypothesisId ?: JSONObject.NULL)
-        .put("source_family", outcome.sourceFamily ?: JSONObject.NULL)
-        .put("result_domains", JSONArray(outcome.resultDomains))
-        .put("useful_source_ids", JSONArray(outcome.usefulSourceIds))
-        .put("new_entities_discovered", JSONArray(outcome.newEntitiesDiscovered))
-        .put("new_citations_discovered", JSONArray(outcome.newCitationsDiscovered))
-        .put("new_gaps_created", JSONArray(outcome.newGapsCreated))
-        .put("evidence_accepted_ids", JSONArray(outcome.evidenceAcceptedIds))
-        .put("utility_rationale", outcome.utilityRationale ?: JSONObject.NULL)
-        .put("execution_timestamp", outcome.executionTimestamp)
-        .put("cycle_id", outcome.cycleId ?: JSONObject.NULL)
-        .put("tactic_id", outcome.tacticId ?: JSONObject.NULL)
 
     private fun decodeGoal(json: JSONObject): AgentGoal {
         val legacyCostUsd = json.optDouble("total_cost_usd", 0.0)
@@ -1098,8 +997,6 @@ class AgentStore private constructor(
                 Triple(storedFreeOnly, storedRequestedProfile, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
             storedFreeOnly != null ->
                 Triple(storedFreeOnly, null, json.optEnum("routing_policy_provenance", RoutingPolicyProvenance.EXPLICIT_USER_SELECTION))
-            storedRoutingStage == AgentRoutingStage.FREE ->
-                Triple(true, null, RoutingPolicyProvenance.LEGACY_AMBIGUOUS_SAFETY_LOCK)
             storedRoutingStage == AgentRoutingStage.AUTO_BETA ->
                 Triple(false, "AUTO", RoutingPolicyProvenance.LEGACY_EXPLICIT)
             else -> Triple(false, null, RoutingPolicyProvenance.EXPLICIT_USER_SELECTION)
@@ -1111,9 +1008,9 @@ class AgentStore private constructor(
         val storedTasks = json.optJSONArray("tasks").decodeList(::decodeTask)
         val storedConversationId = json.optString("conversation_id")
         val storedUserRequest = json.optString("user_request")
-        val (restoredStatus, isCorrupt, corruptionError) = when {
-            storedConversationId.isBlank() || storedUserRequest.isBlank() -> Triple(AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, true, "The original user request or conversation ID is missing.")
-            else -> Triple(storedStatus, json.optBoolean("is_corrupt", false), normalizedStoredError)
+        val restoredStatus = when {
+            storedConversationId.isBlank() || storedUserRequest.isBlank() -> AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION
+            else -> storedStatus
         }
         val restoredEvents = json.optJSONArray("events").decodeList(::decodeEvent)
         
@@ -1167,7 +1064,7 @@ class AgentStore private constructor(
             verificationRound = json.optInt("verification_round", 0),
             verificationCorrectionStreak = json.optInt("verification_correction_streak", 0),
             result = json.optNullableString("result"),
-            error = corruptionError,
+            error = normalizedStoredError,
             blockedReason = json.optNullableString("blocked_reason"),
             terminalResultDelivered = json.optBoolean("terminal_result_delivered", false),
             nextRetryAt = json.optLongOrNull("next_retry_at"),
@@ -1183,7 +1080,7 @@ class AgentStore private constructor(
             routeFingerprints = json.optJSONArray("route_fingerprints").decodeList(::decodeRouteFingerprint),
             bodyBuilderClaims = json.optJSONArray("body_builder_claims").decodeList(::decodeBodyBuilderClaim),
             quarantinedRecords = json.optJSONArray("quarantined_records").decodeList(::decodeQuarantinedRecord),
-            isCorrupt = isCorrupt,
+            isCorrupt = json.optBoolean("is_corrupt", false) || restoredStatus == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
             objectiveContract = json.optJSONObject("objective_contract")?.let(::decodeObjectiveContract),
             resolvedResearchRequest = ResolvedResearchRequest.fromJson(json.optJSONObject("resolved_research_request")),
             requiresUserClarification = json.optBoolean("requires_user_clarification", false),
@@ -1207,19 +1104,20 @@ class AgentStore private constructor(
             researchCycles = json.optJSONArray("research_cycles").decodeList(::decodeResearchCycle),
             objectiveRevisions = json.optJSONArray("objective_revisions").decodeList(::decodeObjectiveRevision),
             activeResearchCycleId = json.optNullableString("active_research_cycle_id"),
-            investigationMap = json.optJSONObject("investigation_map")?.let(::decodeInvestigationMap),
         )
 
-        val isStuckV41 = storedVersion <= 12 && (restoredStatus == AgentGoalStatus.PAUSED || restoredStatus == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE) &&
+        val isStuckV41 = (restoredStatus == AgentGoalStatus.PAUSED || restoredStatus == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE) &&
             storedTasks.any { it.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && it.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT" } &&
             restoredEvents.any { it.message.contains("identical context fingerprint detected") } &&
-            goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration" }
+            goalBeforeCycles.idempotencyRecords.none { it.key == "v41_stuck_migration_v2" }
 
         val migratedGoal = if (isStuckV41) {
             val repairedTasks = goalBeforeCycles.tasks.map { task ->
                 if (task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE && task.failureClass == "STRUCTURED_SYNTHESIS_DEFICIT") {
                     // Correct counters: if it was suppressed pre-dispatch, the attempt that led to suppression
                     // might have incremented counts. We decrement if they are > 0 to allow the task to run.
+                    // Actually, re-queuing is enough if we authorize the retry fingerprint, 
+                    // but the prompt says "correct only counters created by the false pre-dispatch attempt".
                     task.copy(
                         status = AgentTaskStatus.QUEUED,
                         failureClass = null,
@@ -1237,7 +1135,7 @@ class AgentStore private constructor(
             }
 
             val migrationRecord = IdempotencyRecord(
-                key = "v41_stuck_migration",
+                key = "v41_stuck_migration_v2",
                 effectType = IdempotencyEffectType.SYSTEM_REPAIR,
                 state = IdempotencyState.COMMITTED,
                 claimOwner = "migration_v42_4",
@@ -1247,7 +1145,7 @@ class AgentStore private constructor(
                 status = AgentGoalStatus.QUEUED,
                 tasks = repairedTasks,
                 attempts = repairedAttempts,
-                events = goalBeforeCycles.events + AgentEvent(message = "V41 stuck mission repaired. Counters corrected and dangling attempts closed."),
+                events = goalBeforeCycles.events + AgentEvent(message = "V42.4: Stuck mission repaired. Counters corrected and dangling attempts closed."),
                 idempotencyRecords = goalBeforeCycles.idempotencyRecords + migrationRecord
             )
         } else goalBeforeCycles
@@ -1256,14 +1154,10 @@ class AgentStore private constructor(
     }
 
     private fun validateAndRepairInvariants(goal: AgentGoal): AgentGoal {
-        if (goal.isCorrupt || goal.userRequest.isBlank()) return goal
-        
         val activeCycleId = goal.activeResearchCycleId
-        if (activeCycleId == null && goal.tasks.isNotEmpty()) {
+        if (activeCycleId == null) {
             return createBaselineCycle(goal)
         }
-        
-        if (activeCycleId == null) return goal
 
         // REQUIRED CHANGE 2: Store Invariant Validation
         // 1. activeResearchCycleId references an existing cycle.
@@ -1502,92 +1396,6 @@ class AgentStore private constructor(
         createdAt = json.optLong("created_at", System.currentTimeMillis())
     )
 
-    private fun decodeInvestigationMap(json: JSONObject): InvestigationMap = InvestigationMap(
-        entities = json.optJSONArray("entities").decodeList(::decodeEntity),
-        gaps = json.optJSONArray("gaps").decodeList(::decodeGap),
-        hypotheses = json.optJSONArray("hypotheses").decodeList(::decodeHypothesis),
-        sourceTargets = json.optJSONArray("source_targets").decodeList(::decodeSourceTarget),
-        queryOutcomes = json.optJSONArray("query_outcomes").decodeList(::decodeQueryOutcome),
-        lastCheckpointAt = json.optLong("last_checkpoint_at", System.currentTimeMillis())
-    )
-
-    private fun decodeEntity(json: JSONObject): EntityRecord = EntityRecord(
-        id = json.getString("id"),
-        canonicalName = json.getString("canonical_name"),
-        aliases = json.optJSONArray("aliases").toStringList(),
-        type = json.optNullableString("type"),
-        parentOrganizations = json.optJSONArray("parent_organizations").toStringList(),
-        productRelationships = json.optJSONArray("product_relationships").toStringList(),
-        versionRelationships = json.optJSONArray("version_relationships").toStringList(),
-        geographicScope = json.optNullableString("geographic_scope"),
-        temporalValidity = json.optNullableString("temporal_validity"),
-        disambiguationStatus = json.optEnum("disambiguation_status", DisambiguationStatus.AMBIGUOUS),
-        supportingEvidenceIds = json.optJSONArray("supporting_evidence_ids").toStringList(),
-        rejectedInterpretations = json.optJSONArray("rejected_interpretations").toStringList(),
-        confidence = json.optDouble("confidence", 0.5),
-        lastUpdatedAt = json.optLong("last_updated_at", System.currentTimeMillis())
-    )
-
-    private fun decodeGap(json: JSONObject): InformationGap = InformationGap(
-        id = json.getString("id"),
-        description = json.getString("description"),
-        impactOnFinalAnswer = json.getString("impact_on_final_answer"),
-        relatedAcceptanceCriterionId = json.optNullableString("related_acceptance_criterion_id"),
-        relatedEntityIds = json.optJSONArray("related_entity_ids").toStringList(),
-        requiredEvidenceType = json.optNullableString("required_evidence_type"),
-        preferredSourceFamilies = json.optJSONArray("preferred_source_families").toStringList(),
-        answerChangingThreshold = json.optNullableString("answer_changing_threshold"),
-        status = json.optEnum("status", GapStatus.OPEN),
-        attemptsMade = json.optInt("attempts_made", 0),
-        blockingReason = json.optNullableString("blocking_reason"),
-        resolutionEvidenceIds = json.optJSONArray("resolution_evidence_ids").toStringList()
-    )
-
-    private fun decodeHypothesis(json: JSONObject): Hypothesis = Hypothesis(
-        id = json.getString("id"),
-        statement = json.getString("statement"),
-        relatedGapId = json.optNullableString("related_gap_id"),
-        supportingEvidenceIds = json.optJSONArray("supporting_evidence_ids").toStringList(),
-        contradictingEvidenceIds = json.optJSONArray("contradicting_evidence_ids").toStringList(),
-        falsifiers = json.optJSONArray("falsifiers").toStringList(),
-        confidence = json.optDouble("confidence", 0.5),
-        status = json.optEnum("status", HypothesisStatus.PROPOSED),
-        lastTestedAt = json.optLongOrNull("last_tested_at")
-    )
-
-    private fun decodeSourceTarget(json: JSONObject): SourceTarget = SourceTarget(
-        id = json.getString("id"),
-        sourceFamily = json.getString("source_family"),
-        targetIdentity = json.getString("target_identity"),
-        rationale = json.optNullableString("rationale"),
-        expectedEvidence = json.optNullableString("expected_evidence"),
-        authorityExpectation = json.optDouble("authority_expectation", 0.5),
-        independenceGroupId = json.optNullableString("independence_group_id"),
-        accessStatus = json.optNullableString("access_status"),
-        previousAttempts = json.optInt("previous_attempts", 0),
-        followUpLinks = json.optJSONArray("follow_up_links").toStringList(),
-        priority = json.optDouble("priority", 0.5)
-    )
-
-    private fun decodeQueryOutcome(json: JSONObject): QueryOutcome = QueryOutcome(
-        id = json.getString("id"),
-        canonicalQuery = json.getString("canonical_query"),
-        purpose = json.optNullableString("purpose"),
-        relatedGapId = json.optNullableString("related_gap_id"),
-        relatedHypothesisId = json.optNullableString("related_hypothesis_id"),
-        sourceFamily = json.optNullableString("source_family"),
-        resultDomains = json.optJSONArray("result_domains").toStringList(),
-        usefulSourceIds = json.optJSONArray("useful_source_ids").toStringList(),
-        newEntitiesDiscovered = json.optJSONArray("new_entities_discovered").toStringList(),
-        newCitationsDiscovered = json.optJSONArray("new_citations_discovered").toStringList(),
-        newGapsCreated = json.optJSONArray("new_gaps_created").toStringList(),
-        evidenceAcceptedIds = json.optJSONArray("evidence_accepted_ids").toStringList(),
-        utilityRationale = json.optNullableString("utility_rationale"),
-        executionTimestamp = json.optLong("execution_timestamp", System.currentTimeMillis()),
-        cycleId = json.optNullableString("cycle_id"),
-        tacticId = json.optNullableString("tactic_id")
-    )
-
     private fun encodeRecoveryPlan(plan: ResearchRecoveryPlan): JSONObject = JSONObject()
         .put("id", plan.id)
         .put("goal_id", plan.goalId)
@@ -1792,7 +1600,7 @@ class AgentStore private constructor(
             recentClaimFingerprints = json.optJSONArray("recent_claim_fingerprints").toStringList(),
             acceptanceCriteria = json.optJSONArray("acceptance_criteria").decodeList(::decodeCriterion),
             acceptanceChecks = json.optJSONArray("acceptance_checks").decodeList(::decodeCheck),
-            progressScore = json.optDouble("progress_score", persistedProgress).coerceIn(0.0, 1.0),
+            progressScore = persistedProgress.coerceIn(0.0, 1.0),
             cooldownUntil = json.optLongOrNull("cooldown_until"),
             startedAt = json.optLongOrNull("started_at"),
             finishedAt = json.optLongOrNull("finished_at"),
@@ -2480,12 +2288,6 @@ class AgentStore private constructor(
     companion object {
         val readCount = AtomicLong(0)
         val writeCount = AtomicLong(0)
-
-        @get:org.jetbrains.annotations.VisibleForTesting
-        @set:org.jetbrains.annotations.VisibleForTesting
-        internal var processSessionIdOverride: String? = null
-
-        internal fun getCurrentSessionId(): String = processSessionIdOverride ?: com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
 
         private const val PREFERENCES_NAME = "openassistant_agent_store"
         const val KEY_SNAPSHOT = "agent_snapshot_v1"

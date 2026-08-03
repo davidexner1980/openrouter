@@ -1,7 +1,6 @@
 package com.david.openassistant.agent
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -99,7 +98,7 @@ class AgentExchangeRaceTest {
             )
             
             // 5. Must be rejected due to ownership loss
-            assertTrue(transitionResult is TransitionOutcomeResult.InvalidLeaseOrGoalState)
+            assertEquals(TransitionOutcomeResult.InvalidLeaseOrGoalState, transitionResult)
         } finally {
             baseDir.deleteRecursively()
         }
