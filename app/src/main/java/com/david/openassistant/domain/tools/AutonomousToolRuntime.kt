@@ -60,7 +60,7 @@ open class AutonomousToolRuntime internal constructor(
         hostedSandboxRuntime!!.cancelActiveCalls()
     }
 
-    fun definitions(): List<SafeToolDefinition> {
+    open fun definitions(): List<SafeToolDefinition> {
         val activeRecipes = recipeStore!!.load()
             .filter { it.status == ToolRecipeStatus.ACTIVE }
             .map(::recipeDefinition)
@@ -74,8 +74,12 @@ open class AutonomousToolRuntime internal constructor(
             activeRecipes
     }
 
-    fun isNetworkAvailable(): Boolean {
+    open fun isNetworkAvailable(): Boolean {
         return com.david.openassistant.agent.AgentOperationalState.isNetworkAvailable(context)
+    }
+
+    open fun isPublicWebConfigured(): Boolean {
+        return researchWebSettings?.load()?.searxngBaseUrl != null
     }
 
     open suspend fun execute(call: OpenRouterToolCall): ToolExecutionResult = execute(

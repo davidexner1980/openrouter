@@ -1283,6 +1283,7 @@ open class AgentOpenRouterClient internal constructor(
                 focusedRecovery = executionStrategy.profile == AgentExecutionProfile.FOCUSED_TOOL,
                 networkAvailable = toolRuntime?.isNetworkAvailable() ?: true,
                 credentialsAvailable = AgentOperationalState.areCredentialsAvailable(apiKey),
+                publicWebConfigured = toolRuntime?.isPublicWebConfigured() ?: true,
                 goalId = goal.id
             )
         } else {
@@ -1782,6 +1783,7 @@ open class AgentOpenRouterClient internal constructor(
             focusedRecovery = false,
             networkAvailable = toolRuntime?.isNetworkAvailable() ?: true,
             credentialsAvailable = AgentOperationalState.areCredentialsAvailable(apiKey),
+            publicWebConfigured = toolRuntime?.isPublicWebConfigured() ?: true,
             goalId = goal.id
         )
         
@@ -2144,6 +2146,7 @@ open class AgentOpenRouterClient internal constructor(
         focusedRecovery: Boolean,
         networkAvailable: Boolean,
         credentialsAvailable: Boolean,
+        publicWebConfigured: Boolean = true,
         goalId: String? = null
     ): TaskToolPlan {
         val researchRole = researchPassRole(task)
@@ -2153,6 +2156,7 @@ open class AgentOpenRouterClient internal constructor(
             runtime = toolRuntime,
             networkAvailable = networkAvailable,
             credentialsAvailable = credentialsAvailable,
+            publicWebConfigured = publicWebConfigured,
             isFreeOnly = isFreeOnlyModel(modelId),
             includeAdvancedResearchTools = includeAdvanced
         )

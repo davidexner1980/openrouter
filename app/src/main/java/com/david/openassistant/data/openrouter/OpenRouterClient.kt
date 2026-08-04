@@ -67,6 +67,26 @@ class OpenRouterClient(
         return enqueueStream(apiKey, payload, listener)
     }
 
+    suspend fun visionChat(
+        apiKey: String,
+        modelId: String,
+        messages: List<ChatMessage>,
+    ): String {
+        val payload = createBaseChatPayload(modelId, messages).apply {
+            put("stream", false)
+        }
+        val wirePayloadText = payload.toString()
+        val request = baseRequest(CHAT_URL, apiKey)
+            .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        val captured = executeCapturedCall(request, "staged_vision_chat", wirePayloadText)
+        if (!captured.successful) throw openRouterException(captured.code, captured.body, apiKey)
+        val root = requireOpenRouterObject(captured.body, "OpenRouter vision response")
+        val choice = root.optJSONArray("choices")?.optJSONObject(0)
+            ?: throw OpenRouterException(null, "No response choice from vision model.")
+        return choice.optJSONObject("message")?.optString("content").orEmpty()
+    }
+
     /**
      * Runs an automatic function-calling loop until the model returns a final
      * answer or the user explicitly stops it. There is no app-defined round

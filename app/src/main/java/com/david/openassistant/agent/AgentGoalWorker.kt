@@ -170,6 +170,12 @@ class AgentGoalWorker(
                     }
 
                     // CANONICAL STRUCTURAL REPAIR
+                    val repairResult = store.repairUniversalToolAvailabilityStateAtomic(goalId)
+                    if (repairResult is TypedRepairResult.Repaired) {
+                        goalDiagnostics.info("universal_tool_availability_repaired")
+                        goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
+                    }
+
                     if (store.repairRecoveryStarvationAtomic(goalId)) {
                         goalDiagnostics.info("recovery_starvation_repaired")
                         goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()

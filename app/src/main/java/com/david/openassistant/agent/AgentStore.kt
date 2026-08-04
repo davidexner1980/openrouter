@@ -91,6 +91,18 @@ sealed class LeaseAcquisitionResult {
     data class StorageFailure(val cause: Throwable) : LeaseAcquisitionResult()
 }
 
+sealed class TypedRepairResult {
+    object Repaired : TypedRepairResult()
+    object AlreadyRepaired : TypedRepairResult()
+    object NotApplicable : TypedRepairResult()
+    object LiveOwnerPresent : TypedRepairResult()
+    object ProviderReconciliationRequired : TypedRepairResult()
+    object UserPaused : TypedRepairResult()
+    object Cancelling : TypedRepairResult()
+    object Terminal : TypedRepairResult()
+    data class StorageFailure(val cause: Throwable) : TypedRepairResult()
+}
+
 class AgentStore private constructor(
     context: Context?,
     baseDir: File?,
@@ -327,6 +339,95 @@ class AgentStore private constructor(
             AuthorizeRetryResult.Authorized
         } catch (e: Throwable) {
             AuthorizeRetryResult.StorageFailure(e)
+        }
+    }
+
+    fun repairUniversalToolAvailabilityStateAtomic(goalId: String): TypedRepairResult = synchronized(STORE_LOCK) {
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return@synchronized TypedRepairResult.NotApplicable
+        
+        if (goal.status.isFinalTerminalStatus()) return@synchronized TypedRepairResult.Terminal
+        if (goal.status == AgentGoalStatus.PAUSED) return@synchronized TypedRepairResult.UserPaused
+        if (goal.status == AgentGoalStatus.FINALIZING) return@synchronized TypedRepairResult.Cancelling
+        
+        val universalToolRepairKey = "universal-tool-availability-v3:${goal.id}"
+        if (goal.idempotencyRecords.any { it.key == universalToolRepairKey }) return@synchronized TypedRepairResult.AlreadyRepaired
+        
+        // Live owner protection
+        val lease = goal.executionLease
+        val now = System.currentTimeMillis()
+        if (lease != null && !AgentLeasePolicy.isStale(lease, now)) {
+            val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
+            if (lease.ownerProcessSessionId == currentSessionId) {
+                return@synchronized TypedRepairResult.LiveOwnerPresent
+            }
+        }
+        
+        // Active provider request protection
+        if (goal.requestAttempts.any { it.exchangeOutcome == ExchangeOutcome.ACTIVE }) {
+            return@synchronized TypedRepairResult.LiveOwnerPresent
+        }
+
+        val restrictedFailureMarkers = setOf("evidence-bounded", "model-only", "without new searches", "without tool loops")
+        val hasRestrictedFailure = (goal.error?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false) ||
+            goal.tasks.any { task -> task.lastError?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false }
+        
+        val hasStructuralStall = goal.noProgressCount >= 2 || 
+            goal.tasks.any { 
+                (it.outcomeClassification == "PROGRESS_STALL" || it.lastTactic == "REFORMULATE_QUERY") && 
+                it.status != AgentTaskStatus.COMPLETED 
+            }
+
+        val isStuck = goal.status == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE || 
+            (goal.status == AgentGoalStatus.FAILED && hasRestrictedFailure) ||
+            (hasRestrictedFailure && hasStructuralStall)
+
+        if (!isStuck) return@synchronized TypedRepairResult.NotApplicable
+
+        val migrationRecord = IdempotencyRecord(
+            key = universalToolRepairKey,
+            effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+            state = IdempotencyState.COMMITTED,
+            claimOwner = "system",
+            committedAt = now,
+            completedBy = "system"
+        )
+        
+        val repairedTasks = goal.tasks.map { task ->
+            val taskIsStuck = task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE || 
+                (task.status == AgentTaskStatus.FAILED && hasRestrictedFailure) ||
+                (hasRestrictedFailure && (task.outcomeClassification == "PROGRESS_STALL" || task.lastTactic == "REFORMULATE_QUERY"))
+            
+            if (taskIsStuck) {
+                task.copy(
+                    status = AgentTaskStatus.QUEUED,
+                    attemptCount = 0,
+                    lastError = null,
+                    automaticWindowReopenCount = 0,
+                    globalAutomaticWindowReopenCount = 0,
+                    outcomeClassification = null,
+                    lastTactic = null
+                )
+            } else {
+                task
+            }
+        }
+
+        val updatedGoal = goal.copy(
+            status = AgentGoalStatus.RUNNING,
+            tasks = repairedTasks,
+            noProgressCount = 0,
+            idempotencyRecords = goal.idempotencyRecords + migrationRecord,
+            events = appendEvent(goal.events, "System applied authoritative structural repair for universal tool availability. Restricted execution profile removed; re-queuing with full operational tool registry."),
+            error = null,
+            updatedAt = now
+        )
+        
+        return try {
+            writeGoalLocked(updatedGoal)
+            TypedRepairResult.Repaired
+        } catch (e: Throwable) {
+            TypedRepairResult.StorageFailure(e)
         }
     }
 
@@ -1736,85 +1837,6 @@ class AgentStore private constructor(
             }
             if (task.cycleId != null && !allCycleIds.contains(task.cycleId)) {
                 return goal.copy(status = AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION, isCorrupt = true, error = "Task ${task.id} references non-existent cycle ${task.cycleId}.")
-            }
-        }
-
-        // REQUIRED CHANGE 4: UNIVERSAL TOOL AVAILABILITY REPAIR
-        // Repair missions stuck in restricted execution profiles or blocked with partial evidence.
-        val universalToolRepairKey = "universal-tool-availability-v2:${goal.id}"
-        val toolRepaired = goal.idempotencyRecords.any { it.key == universalToolRepairKey }
-
-        if (!toolRepaired && goal.status !in setOf(
-                AgentGoalStatus.COMPLETED,
-                AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-                AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-                AgentGoalStatus.PAUSED,
-                AgentGoalStatus.CANCELLED
-            )
-        ) {
-            val restrictedFailureMarkers = setOf("evidence-bounded", "model-only", "without new searches", "without tool loops")
-            val hasRestrictedFailure = (goal.error?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false) ||
-                goal.tasks.any { task -> task.lastError?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false }
-            
-            // Structural stall markers from the photographed state
-            val hasStructuralStall = goal.noProgressCount >= 2 || 
-                goal.tasks.any { 
-                    (it.outcomeClassification == "PROGRESS_STALL" || it.lastTactic == "REFORMULATE_QUERY") && 
-                    it.status != AgentTaskStatus.COMPLETED 
-                }
-
-            val isStuck = goal.status == AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE || 
-                (goal.status == AgentGoalStatus.FAILED && hasRestrictedFailure) ||
-                (hasRestrictedFailure && hasStructuralStall)
-
-            if (isStuck) {
-                val migrationRecord = IdempotencyRecord(
-                    key = universalToolRepairKey,
-                    effectType = IdempotencyEffectType.SYSTEM_REPAIR,
-                    state = IdempotencyState.COMMITTED,
-                    claimOwner = "universal_tool_availability_repair_v2",
-                    committedAt = System.currentTimeMillis()
-                )
-                
-                val repairedTasks = goal.tasks.map { task ->
-                    val taskIsStuck = task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE || 
-                        (task.status == AgentTaskStatus.FAILED && hasRestrictedFailure) ||
-                        (hasRestrictedFailure && (task.outcomeClassification == "PROGRESS_STALL" || task.lastTactic == "REFORMULATE_QUERY"))
-                    
-                    if (taskIsStuck) {
-                        task.copy(
-                            status = AgentTaskStatus.QUEUED,
-                            attemptCount = 0,
-                            lastError = null,
-                            automaticWindowReopenCount = 0,
-                            globalAutomaticWindowReopenCount = 0,
-                            outcomeClassification = null,
-                            lastTactic = null
-                        )
-                    } else {
-                        task
-                    }
-                }
-
-                diagnostics?.info(
-                    event = "universal_tool_availability_repaired",
-                    component = "storage",
-                    fields = mapOf(
-                        "goal_id" to goal.id,
-                        "has_restricted_failure" to hasRestrictedFailure,
-                        "has_structural_stall" to hasStructuralStall,
-                        "repaired_task_count" to repairedTasks.count { it.status == AgentTaskStatus.QUEUED && goal.tasks.any { old -> old.id == it.id && old.status != AgentTaskStatus.QUEUED } }
-                    )
-                )
-
-                return goal.copy(
-                    status = AgentGoalStatus.RUNNING,
-                    tasks = repairedTasks,
-                    noProgressCount = 0,
-                    idempotencyRecords = goal.idempotencyRecords + migrationRecord,
-                    events = appendEvent(goal.events, "System applied structural repair for universal tool availability. Restricted execution profile removed; re-queuing with full operational tool registry."),
-                    error = null
-                )
             }
         }
 

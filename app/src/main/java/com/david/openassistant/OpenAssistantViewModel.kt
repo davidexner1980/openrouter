@@ -1621,15 +1621,59 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             runtime = autonomousToolRuntime,
             networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
             credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
+            publicWebConfigured = researchWebSettings.load().searxngBaseUrl != null,
             isFreeOnly = freeOnly
         )
-        val useTools = (automationDecision.route == AutomationRoute.TOOL_ASSISTED_CHAT || hasTools) &&
-            (pendingImage == null)
         
-        if (useTools) {
-            startAutomaticToolLoop(apiKey, modelId, requestMessages, freeOnly)
+        if (hasTools) {
+            val supportsBoth = state.selectedModel?.supportsTools == true && state.selectedModel?.supportsVision == true
+            if (pendingImage != null && !supportsBoth) {
+                startStagedMultimodalToolLoop(apiKey, modelId, requestMessages, pendingImage, freeOnly)
+            } else {
+                startAutomaticToolLoop(apiKey, modelId, requestMessages, freeOnly)
+            }
         } else {
             startNormalStream(apiKey, modelId, requestMessages, freeOnly)
+        }
+    }
+
+    private fun startStagedMultimodalToolLoop(
+        apiKey: String,
+        modelId: String,
+        requestMessages: List<ChatMessage>,
+        pendingImage: ChatAttachment,
+        freeOnly: Boolean
+    ) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(
+                isGenerating = true,
+                diagnostics = RequestDiagnostics.running("Multimodal Stage 1: Vision Interpretation", modelId)
+            )}
+            
+            val visionResult = runCatching {
+                withContext(Dispatchers.IO) {
+                    openRouterClient.visionChat(apiKey, modelId, requestMessages)
+                }
+            }
+            
+            visionResult.onSuccess { description ->
+                val enrichedMessages = requestMessages.map { message ->
+                    if (message.attachments.contains(pendingImage)) {
+                        message.copy(
+                            content = "${message.content}\n\n[Image Description: $description]",
+                            attachments = emptyList()
+                        )
+                    } else message
+                }
+                
+                _uiState.update { it.copy(
+                    diagnostics = RequestDiagnostics.running("Multimodal Stage 2: Tool-Assisted Reasoning", modelId)
+                )}
+                
+                startAutomaticToolLoop(apiKey, modelId, enrichedMessages, freeOnly)
+            }.onFailure { error ->
+                failToolFlow(error.message ?: "Vision Stage failed", modelId, System.currentTimeMillis())
+            }
         }
     }
 
@@ -1983,6 +2027,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                                 runtime = autonomousToolRuntime,
                                 networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
                                 credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
+                                publicWebConfigured = researchWebSettings.load().searxngBaseUrl != null,
                                 isFreeOnly = freeOnly
                             )
                             val audit = payloadWithAudit.audit
