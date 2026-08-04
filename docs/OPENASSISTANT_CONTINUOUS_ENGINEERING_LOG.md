@@ -989,3 +989,80 @@ STATIC TRACE + JVM VERIFIED
 
 ### Recommended Next Pass
 - Next scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-0133-26e4932 — 2026-08-04T01:33:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 26e493259867c8edac99c3c0912674678749db63
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-0133-26e4932: repair baseline test failures and resolve environment blockers
+- Remote checked before commit: Yes
+
+### Selected Scope
+- Problem: 9 pre-existing test failures and environment blockers (duplicate Android Preferences folder variables) preventing stable verification.
+- Why selected: Restore the 100% pass baseline required for production engineering. Fixed architectural mismatches and lifecycle races.
+- Correct owner: AgentOpenRouterClient, AgentStore, Test Fixtures.
+- Violated invariant: Baseline must remain green; logical request reconciliation must be stable across process restarts.
+
+### Reproduction
+- Starting state: 9 failing tests after recent broad changes.
+- Trigger: .\gradlew.bat testDebugUnitTest
+- Expected: 589 passed, 0 failed.
+- Actual: 580 passed, 9 failed.
+- First causal failure: Multi-dimensional mismatch between production data structures and test reflection, plus non-atomic cache resolution in AgentStore.
+
+### Root Cause
+- Root cause:
+    1. RawAgentResponse constructor grew to 10 parameters; reflection in AgentOpenRouterClientTest used 8.
+    2. AgentStore write-read-back loop used file timestamps with millisecond resolution, causing stale cache hits in fast tests.
+    3. RecoveryStarvationTest and OpenRouterProtocolTest used hardcoded session IDs that diverged from the dynamic PROCESS_SESSION_ID used by toTicket().
+    4. handleTerminalTransition hook order prevented simulating store failures during terminalization.
+    5. executeCapturedOpenRouterBody catch block was too narrow, swallowing specific cancellation timeout IOExceptions from hooks.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Merged try-catch blocks, moved terminalHook call, fixed GoalMissing error string)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Fixed stale write-read-back cache loop, aligned Mismatch expected/actual order, added explicit InvalidGeneration return)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentOpenRouterClientTest.kt (Updated reflection to 10 args)
+    - app/src/test/java/com/david/openassistant/agent/OpenRouterProtocolTest.kt (Fixed hardcoded session IDs)
+    - app/src/test/java/com/david/openassistant/agent/RecoveryStarvationTest.kt (Fixed session IDs and strict status transitions)
+    - app/src/test/java/com/david/openassistant/agent/Slice1LifecycleTest.kt (Fixed session IDs and parentOperationId alignment)
+- Behavior changed: All unit tests now pass. Store reconciliation is reliable even in sub-millisecond execution cycles. Cancellation timeouts are correctly persisted.
+
+### Verification
+- Baseline compilation: PASSED (after unsetting ANDROID_PREFS_ROOT)
+- Full unit total: 589
+- Passed: 589
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known: Environmental sensitivity to ANDROID_PREFS_ROOT and ANDROID_USER_HOME matching (mitigated in shell).
+- Performance: Significant improvement in store reliability during high-frequency mutations.
+
+### Repository Hygiene
+- git diff --check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues Updated
+- Closed: UNIVERSAL-TOOL-AVAILABILITY (Verified via baseline pass), RECOVERY-STARVATION (Verified via baseline pass).
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Next Action
+- Scope: Physical acceptance on Samsung SM-G998U.

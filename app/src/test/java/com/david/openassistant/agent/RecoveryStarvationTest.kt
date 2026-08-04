@@ -1,5 +1,6 @@
 package com.david.openassistant.agent
 
+import com.david.openassistant.data.diagnostics.DiagnosticEvent
 import com.david.openassistant.data.diagnostics.RuntimeDiagnostics
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -140,11 +141,11 @@ class RecoveryStarvationTest {
         val planId = "plan-1"
         val logicalId = "recovery-plan-1"
         val operation = MissionOperation.RECOVERY_PROPOSAL
-        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticket = PlanningTicket(goalId, "worker-1", DiagnosticEvent.PROCESS_SESSION_ID, 1, "attempt-1", System.currentTimeMillis())
         
         val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
         store.upsertGoal(goal, true)
-        store.updateGoalAtomic(goalId, null) { it.copy(executionLease = AgentExecutionLease("worker-1", "session-1", "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())) }
+        store.updateGoalAtomic(goalId, null) { it.copy(executionLease = AgentExecutionLease("worker-1", DiagnosticEvent.PROCESS_SESSION_ID, "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())) }
 
         val claim = store.claimOrReconcileProviderRequestAtomic(
             goalId = goalId,
@@ -160,20 +161,20 @@ class RecoveryStarvationTest {
         val proposal = createTestProposal()
         val summary = AgentApiSummary(responseId = "resp-1", totalTokens = 100)
         
-        store.transitionRecoveryPlanAtomic(ticket, planId, RecoveryPlanStatus.PREPARED, RecoveryPlanStatus.READY_TO_COMMIT, "fp1") { g, _ ->
+        store.transitionRecoveryPlanAtomic(ticket, planId, RecoveryPlanStatus.PREPARED, RecoveryPlanStatus.GENERATING, "fp1") { g, _ ->
             g.copy(recoveryPlans = g.recoveryPlans.map { 
                 if (it.id == planId) it.copy(proposal = proposal, accountingSummary = summary) else it 
             })
         }
         
-        val context = ProviderRequestContext.Mission(goalId, "worker-1", null, "attempt-1", 1, ticket.acquiredAt, operation = operation, parentOperationId = "parent", recoveryPlanId = planId)
+        val context = ProviderRequestContext.Mission(goalId, "worker-1", null, "attempt-1", 1, ticket.acquiredAt, operation = operation, parentOperationId = logicalId, recoveryPlanId = planId)
         store.transitionExchangeOutcomeWithResultAtomic(goalId, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, context)
         
         // Simulate restart
-        val ticket2 = PlanningTicket(goalId, "worker-2", "session-2", 2, "attempt-2", System.currentTimeMillis())
+        val ticket2 = PlanningTicket(goalId, "worker-2", DiagnosticEvent.PROCESS_SESSION_ID, 2, "attempt-2", System.currentTimeMillis())
         store.updateGoalAtomic(goalId, null) { it.copy(
             leaseGeneration = 2,
-            executionLease = AgentExecutionLease("worker-2", "session-2", "none", "attempt-2", 2, System.currentTimeMillis(), System.currentTimeMillis())
+            executionLease = AgentExecutionLease("worker-2", DiagnosticEvent.PROCESS_SESSION_ID, "none", "attempt-2", 2, System.currentTimeMillis(), System.currentTimeMillis())
         ) }
         
         val recon = store.claimOrReconcileProviderRequestAtomic(
@@ -184,7 +185,7 @@ class RecoveryStarvationTest {
             ticket = ticket2,
             recoveryPlanId = planId
         )
-        assertTrue("Should return successful result available", recon is ReconciliationResult.ExistingSuccessfulResultAvailable)
+        assertTrue(recon is ReconciliationResult.ExistingSuccessfulResultAvailable)
         val res = recon as ReconciliationResult.ExistingSuccessfulResultAvailable
         assertEquals(proposal, res.proposal)
         assertEquals(summary, res.summary)

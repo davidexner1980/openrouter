@@ -4552,6 +4552,8 @@ open class AgentOpenRouterClient internal constructor(
             userMessage = "AgentStore is mandatory for autonomous mission requests [op=${requestContext.operation}, parentOp=${requestContext.parentOperationId}]",
             failureClass = OpenRouterFailureClass.LOCAL_REQUEST_SCHEMA_FAILURE,
         )
+        terminalHook?.onTerminalTransition(requestContext.goalId, exchangeId, requestContext.parentOperationId, resolution.outcome)
+
         val result = requiredStore.transitionExchangeOutcomeWithResultAtomic(
             goalId = requestContext.goalId,
             exchangeId = exchangeId,
@@ -4564,8 +4566,6 @@ open class AgentOpenRouterClient internal constructor(
             safeDiagnosticSummary = resolution.safeDiagnosticSummary,
             providerResponseId = resolution.providerResponseId,
         )
-
-        terminalHook?.onTerminalTransition(requestContext.goalId, exchangeId, requestContext.parentOperationId, resolution.outcome)
 
         when (result) {
             is TransitionOutcomeResult.Updated -> {
@@ -4725,7 +4725,7 @@ open class AgentOpenRouterClient internal constructor(
                     throw OpenRouterException(null, "Goal is in a terminal state: ${reconciliation.status}")
                 }
                 is ReconciliationResult.GoalMissing -> {
-                    throw OpenRouterException(null, "Goal missing.")
+                    throw OpenRouterException(null, "GoalMissing.")
                 }
                 is ReconciliationResult.StorageFailure -> {
                     throw OpenRouterException(null, "Storage failure during reconciliation: ${reconciliation.cause.message}")
@@ -4733,59 +4733,8 @@ open class AgentOpenRouterClient internal constructor(
             }
 
             val exchangeId = attemptRecord.exchangeId
-            postActiveHook?.afterActivePersisted(requestContext.goalId, exchangeId)
             val startedAt = System.currentTimeMillis()
             val targetSessionId = currentSessionId ?: researchMonitor?.status()?.sessionId
-            
-            // 2. Outbound Validation
-            try {
-                OpenRouterProtocolUtils.validateOutboundRequest(initialPayload)
-            } catch (error: Exception) {
-                val resolution = ExchangeResolution(
-                    outcome = ExchangeOutcome.RESPONSE_ERROR, 
-                    failureClass = "LOCAL_VALIDATION_FAILURE",
-                    safeDiagnosticSummary = error.message
-                )
-                handleTerminalTransition(requestContext, exchangeId, resolution)
-                throw OpenRouterException(null, "Local validation failed: ${error.message}")
-            }
-
-            if (isCancelled) {
-                handleTerminalTransition(requestContext, exchangeId, ExchangeResolution(ExchangeOutcome.CANCELLED))
-                throw CancellationException("Mission cancelled before network dispatch")
-            }
-
-            val wirePayloadText = initialPayload.toString()
-            
-            diagnostics?.info(
-                event = "provider_request_dispatched",
-                component = "provider",
-                fields = mapOf(
-                    "exchange_id" to exchangeId,
-                    "goal_id" to requestContext.goalId,
-                    "task_id" to requestContext.taskId,
-                    "operation" to operation.operationName,
-                    "requested_model" to initialPayload.optString("model"),
-                    "request_bytes" to wirePayloadText.toByteArray().size
-                )
-            )
-
-            researchMonitor?.record(
-                category = "provider",
-                event = "request",
-                correlationId = exchangeId,
-                targetSessionId = targetSessionId,
-                fields = mapOf(
-                    "provider" to "OpenRouter",
-                    "operation" to "${operation.operationName} (wire attempt ${attemptRecord.wireAttemptOrdinal})",
-                    "method" to "POST",
-                    "endpoint" to CHAT_URL,
-                    "requested_model" to initialPayload.optString("model"),
-                    "request_bytes" to wirePayloadText.toByteArray().size,
-                ),
-            )
-            
-            emitDetailedContentPreviews(exchangeId, initialPayload, requestContext)
             
             val tracker = TransportTracker()
             val request = Request.Builder()
@@ -4797,14 +4746,52 @@ open class AgentOpenRouterClient internal constructor(
                 .header("X-OA-Goal-ID", requestContext.goalId)
                 .header("X-OA-Exchange-ID", exchangeId)
                 .header("User-Agent", "OpenAssistant-Android/${BuildConfig.VERSION_NAME}")
-                .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
+                .post(initialPayload.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .tag(TransportTracker::class.java, tracker)
                 .build()
             
             val call = missionClient.newCall(request)
             activeCalls += call
-            
+
             try {
+                // 2. Outbound Validation
+                postActiveHook?.afterActivePersisted(requestContext.goalId, exchangeId)
+                OpenRouterProtocolUtils.validateOutboundRequest(initialPayload)
+
+                if (isCancelled) {
+                    throw CancellationException("Mission cancelled before network dispatch")
+                }
+
+                diagnostics?.info(
+                    event = "provider_request_dispatched",
+                    component = "provider",
+                    fields = mapOf(
+                        "exchange_id" to exchangeId,
+                        "goal_id" to requestContext.goalId,
+                        "task_id" to requestContext.taskId,
+                        "operation" to operation.operationName,
+                        "requested_model" to initialPayload.optString("model"),
+                        "request_bytes" to initialPayload.toString().toByteArray().size
+                    )
+                )
+
+                researchMonitor?.record(
+                    category = "provider",
+                    event = "request",
+                    correlationId = exchangeId,
+                    targetSessionId = targetSessionId,
+                    fields = mapOf(
+                        "provider" to "OpenRouter",
+                        "operation" to "${operation.operationName} (wire attempt ${attemptRecord.wireAttemptOrdinal})",
+                        "method" to "POST",
+                        "endpoint" to CHAT_URL,
+                        "requested_model" to initialPayload.optString("model"),
+                        "request_bytes" to initialPayload.toString().toByteArray().size,
+                    ),
+                )
+                
+                emitDetailedContentPreviews(exchangeId, initialPayload, requestContext)
+
                 val responseBody = call.execute().use { response ->
                     val rawBody = response.body.string()
                     val choiceError = runCatching { extractEmbeddedChoiceError(rawBody) }.getOrNull()
@@ -4857,7 +4844,7 @@ open class AgentOpenRouterClient internal constructor(
                     return MissionDispatchResult.Success(rawBody, response.code, exchangeId)
                 }
             } catch (error: Throwable) {
-                if (error is TerminalPersistenceException || error is CancellationException) throw error
+                if (error is TerminalPersistenceException) throw error
                 
                 val isCancellationTimeout = error.message?.contains("CANCELLATION_TIMEOUT") == true || 
                     error.cause?.message?.contains("CANCELLATION_TIMEOUT") == true

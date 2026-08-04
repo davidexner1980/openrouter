@@ -72,7 +72,7 @@ class AgentOpenRouterClientTest {
     @Test
     fun withRecoveredInlineSourcesFiltersFabricatedUrls() {
         val rawResponseClass = Class.forName("com.david.openassistant.agent.AgentOpenRouterClient\$RawAgentResponse")
-        val constructor = rawResponseClass.getDeclaredConstructors().first { it.parameterCount == 8 }
+        val constructor = rawResponseClass.getDeclaredConstructors().first { it.parameterCount == 10 }
         constructor.isAccessible = true
         
         val summary = AgentApiSummary()
@@ -86,7 +86,7 @@ class AgentOpenRouterClientTest {
         val content = "Check out https://trusted.com/page1 and also https://fabricated.com/fake"
         
         val sourceReads = emptyList<SourceRead>()
-        val rawResponse = constructor.newInstance(content, summary, sources, executions, queryFp, rejectedQ, verifiedUrls, sourceReads)
+        val rawResponse = constructor.newInstance(content, summary, sources, executions, queryFp, rejectedQ, verifiedUrls, sourceReads, null, null)
         
         val method = AgentOpenRouterClient::class.java.getDeclaredMethod("withRecoveredInlineSources", rawResponseClass, Set::class.java)
         method.isAccessible = true

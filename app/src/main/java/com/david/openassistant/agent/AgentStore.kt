@@ -460,15 +460,15 @@ class AgentStore private constructor(
 
         return when {
             lease.workerId != ticket.workerId -> 
-                TicketValidationResult.Mismatch("WORKER_MISMATCH", "workerId", ticket.workerId, lease.workerId)
+                TicketValidationResult.Mismatch("WORKER_MISMATCH", "workerId", lease.workerId, ticket.workerId)
             lease.ownerProcessSessionId != ticket.ownerProcessSessionId ->
-                TicketValidationResult.Mismatch("PROCESS_SESSION_MISMATCH", "ownerProcessSessionId", ticket.ownerProcessSessionId, lease.ownerProcessSessionId)
+                TicketValidationResult.Mismatch("PROCESS_SESSION_MISMATCH", "ownerProcessSessionId", lease.ownerProcessSessionId, ticket.ownerProcessSessionId)
             lease.generation != ticket.generation ->
-                TicketValidationResult.Mismatch("GENERATION_MISMATCH", "generation", ticket.generation.toString(), lease.generation.toString())
+                TicketValidationResult.Mismatch("GENERATION_MISMATCH", "generation", lease.generation.toString(), ticket.generation.toString())
             lease.attemptId != ticket.attemptId ->
-                TicketValidationResult.Mismatch("ATTEMPT_MISMATCH", "attemptId", ticket.attemptId, lease.attemptId)
+                TicketValidationResult.Mismatch("ATTEMPT_MISMATCH", "attemptId", lease.attemptId, ticket.attemptId)
             lease.taskId != (ticket.taskId ?: "none") ->
-                TicketValidationResult.Mismatch("TASK_MISMATCH", "taskId", ticket.taskId ?: "none", lease.taskId)
+                TicketValidationResult.Mismatch("TASK_MISMATCH", "taskId", lease.taskId, ticket.taskId ?: "none")
             AgentLeasePolicy.isStale(lease) ->
                 TicketValidationResult.LeaseExpired
             else -> TicketValidationResult.Valid
@@ -914,7 +914,12 @@ class AgentStore private constructor(
 
         val validation = validateTicketInternalLocked(context.toTicket(context.acquiredAt))
         if (validation !is TicketValidationResult.Valid) {
-            return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
+            return@synchronized when (validation) {
+                is TicketValidationResult.Mismatch -> if (validation.field == "generation") {
+                    TransitionOutcomeResult.InvalidGeneration(expected = validation.expected?.toIntOrNull() ?: 0, actual = validation.actual?.toIntOrNull() ?: 0)
+                } else TransitionOutcomeResult.InvalidLeaseOrGoalState
+                else -> TransitionOutcomeResult.InvalidLeaseOrGoalState
+            }
         }
 
         val now = System.currentTimeMillis()
@@ -1219,7 +1224,9 @@ class AgentStore private constructor(
             throw e
         }
 
-        val readBack = readGoalLocked(target)
+        // Update cache immediately with the object we just wrote to avoid stale read-back
+        // from file system with millisecond resolution issues.
+        val readBack = decodeGoal(requireOpenRouterObject(text, "Written autonomous goal"))
         goalCache[target.name] = CachedGoal(readBack, target.lastModified(), target.length())
         return readBack
     }

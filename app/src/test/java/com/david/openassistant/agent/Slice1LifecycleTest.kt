@@ -1201,7 +1201,7 @@ class Slice1LifecycleTest {
 
         assertTrue(thrown.isFailure)
         val cause = thrown.exceptionOrNull()
-        assertTrue("Expected TerminalPersistenceException, got $cause", cause is TerminalPersistenceException)
+        assertTrue(cause is TerminalPersistenceException)
         assertEquals("GoalMissing", (cause as TerminalPersistenceException).storeFailure)
     }
 
@@ -1247,7 +1247,7 @@ class Slice1LifecycleTest {
 
         assertTrue(thrown.isFailure)
         val cause = thrown.exceptionOrNull()
-        assertTrue("Expected TerminalPersistenceException, got $cause", cause is TerminalPersistenceException)
+        assertTrue(cause is TerminalPersistenceException)
         assertEquals("InvalidGeneration", (cause as TerminalPersistenceException).storeFailure)
     }
 
@@ -1633,10 +1633,11 @@ class Slice1LifecycleTest {
         }
 
         assertTrue(thrown.isFailure)
+        val cause = thrown.exceptionOrNull()
         val reloadedGoal = store.loadSnapshot().goals.first { it.id == goal.id }
-        assertTrue(reloadedGoal.requestAttempts.isNotEmpty())
+        assertTrue("Request attempts should not be empty", reloadedGoal.requestAttempts.isNotEmpty())
         val attempt = reloadedGoal.requestAttempts.last()
-        assertEquals(ExchangeOutcome.CANCELLATION_TIMEOUT, attempt.exchangeOutcome)
+        assertEquals("Expected CANCELLATION_TIMEOUT outcome", ExchangeOutcome.CANCELLATION_TIMEOUT, attempt.exchangeOutcome)
     }
 
     @Test
@@ -1656,7 +1657,7 @@ class Slice1LifecycleTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
-                ownerProcessSessionId = "session-1",
+                ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                 taskId = "t1",
                 attemptId = "a1",
                 generation = 1,
@@ -1667,10 +1668,11 @@ class Slice1LifecycleTest {
         store.upsertGoal(goal)
 
         val exchangeId = "ex-" + UUID.randomUUID()
-        val missionContext = createMissionContext(goal).copy(taskId = "t1")
+        val missionContext = createMissionContext(goal).copy(taskId = "t1", parentOperationId = "op-1")
         val attemptRecord = ProviderRequestAttempt(
             exchangeId = exchangeId,
             parentOperationId = "op-1",
+            logicalRequestId = "op-1",
             goalId = goalId,
             taskId = "t1",
             executionGeneration = 1,
@@ -1728,7 +1730,7 @@ class Slice1LifecycleTest {
             tasks = emptyList(),
             executionLease = AgentExecutionLease(
                 workerId = "w1",
-                ownerProcessSessionId = "session-1",
+                ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                 taskId = "t1",
                 attemptId = "a1",
                 generation = 5,

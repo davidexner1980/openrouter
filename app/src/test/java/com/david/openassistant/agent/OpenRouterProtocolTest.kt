@@ -88,7 +88,7 @@ class OpenRouterProtocolTest {
             val now = System.currentTimeMillis()
             val lease = AgentExecutionLease(
                 workerId = "w1",
-                ownerProcessSessionId = "session-1",
+                ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                 taskId = "none",
                 attemptId = "a1",
                 generation = 0,
@@ -220,7 +220,7 @@ class OpenRouterProtocolTest {
             val now = System.currentTimeMillis()
             val lease = AgentExecutionLease(
                 workerId = "w1",
-                ownerProcessSessionId = "session-1",
+                ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
                 taskId = "none",
                 attemptId = "a1",
                 generation = 0,
