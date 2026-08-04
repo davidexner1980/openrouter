@@ -71,7 +71,7 @@ class AgentUniversalToolAvailabilityTest {
             isFreeOnly = false
         )
         assertFalse("public_web_search should not be operational when offline", offlineAudit.operational.any { it.name == "public_web_search" })
-        assertEquals("Network unavailable", offlineAudit.unavailable["public_web_search"])
+        assertEquals(ToolUnavailabilityReason.NETWORK_UNAVAILABLE, offlineAudit.unavailable["public_web_search"])
     }
 
     @Test

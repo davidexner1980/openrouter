@@ -213,6 +213,7 @@ data class AgentTask(
     val outcomeClassification: String? = null,
     val errorClassification: String? = null,
     val retryEligibility: Boolean = true,
+    val isToolRestricted: Boolean = false,
     val retryAuthorizedFingerprint: String? = null,
     val rejectedQueries: List<RejectedResearchQuery> = emptyList(),
     val activeResearchStrategyJson: String? = null,

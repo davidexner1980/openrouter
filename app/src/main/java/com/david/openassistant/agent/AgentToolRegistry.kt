@@ -18,7 +18,7 @@ object AgentToolRegistry {
         val toolName: String,
         val configured: Boolean,
         val operational: Boolean,
-        val unavailabilityReason: String?,
+        val unavailabilityReason: ToolUnavailabilityReason = ToolUnavailabilityReason.NONE,
         val requiresNetwork: Boolean,
         val requiresCredentials: Boolean,
         val requiresPublicWebEndpoint: Boolean,
@@ -30,7 +30,7 @@ object AgentToolRegistry {
     data class ToolAvailabilityAudit(
         val totalConfigured: Int,
         val operational: List<SafeToolDefinition>,
-        val unavailable: Map<String, String>, // name -> reason
+        val unavailable: Map<String, ToolUnavailabilityReason>, // name -> reason
         val requirements: List<ToolOperationalRequirement>
     )
 
@@ -48,11 +48,11 @@ object AgentToolRegistry {
         includeAdvancedResearchTools: Boolean = false
     ): ToolAvailabilityAudit {
         val operational = mutableListOf<SafeToolDefinition>()
-        val unavailable = mutableMapOf<String, String>()
+        val unavailable = mutableMapOf<String, ToolUnavailabilityReason>()
         val requirements = mutableListOf<ToolOperationalRequirement>()
         
         if (runtime == null) {
-            return ToolAvailabilityAudit(0, emptyList(), mapOf("all" to "Tool runtime not initialized"), emptyList())
+            return ToolAvailabilityAudit(0, emptyList(), mapOf("all" to ToolUnavailabilityReason.TOOL_RUNTIME_NOT_INITIALIZED), emptyList())
         }
 
         val allDefinitions = runtime.definitions()
@@ -61,11 +61,11 @@ object AgentToolRegistry {
             val req = determineRequirements(tool.name, publicWebConfigured)
             
             val (isOperational, reason) = when {
-                req.requiresNetwork && !networkAvailable -> false to "Network unavailable"
-                req.requiresCredentials && !credentialsAvailable -> false to "Credentials missing"
-                req.requiresPublicWebEndpoint && !publicWebConfigured -> false to "Public web route unconfigured"
-                isFreeOnly && tool.name in setOf("openrouter:web_search", "openrouter:web_fetch", "openrouter:subagent", "openrouter:advisor", "openrouter:fusion") -> false to "Provider-hosted tool unsupported on FREE route"
-                else -> true to null
+                req.requiresNetwork && !networkAvailable -> false to ToolUnavailabilityReason.NETWORK_UNAVAILABLE
+                req.requiresCredentials && !credentialsAvailable -> false to ToolUnavailabilityReason.CREDENTIALS_MISSING
+                req.requiresPublicWebEndpoint && !publicWebConfigured -> false to ToolUnavailabilityReason.PUBLIC_WEB_UNCONFIGURED
+                isFreeOnly && tool.name in setOf("openrouter:web_search", "openrouter:web_fetch", "openrouter:subagent", "openrouter:advisor", "openrouter:fusion") -> false to ToolUnavailabilityReason.ROUTE_UNSUPPORTED
+                else -> true to ToolUnavailabilityReason.NONE
             }
 
             requirements.add(req.copy(operational = isOperational, unavailabilityReason = reason))
@@ -73,7 +73,7 @@ object AgentToolRegistry {
             if (isOperational) {
                 operational.add(tool)
             } else {
-                unavailable[tool.name] = reason ?: "Unknown"
+                unavailable[tool.name] = reason
             }
         }
 
@@ -87,14 +87,14 @@ object AgentToolRegistry {
             if (requirements.none { it.toolName == name }) {
                 val req = determineRequirements(name, publicWebConfigured)
                 val (isOperational, reason) = when {
-                    req.requiresNetwork && !networkAvailable -> false to "Network unavailable"
-                    req.requiresCredentials && !credentialsAvailable -> false to "Credentials missing"
-                    isFreeOnly -> false to "Provider-hosted tool unsupported on FREE route"
-                    else -> true to null
+                    req.requiresNetwork && !networkAvailable -> false to ToolUnavailabilityReason.NETWORK_UNAVAILABLE
+                    req.requiresCredentials && !credentialsAvailable -> false to ToolUnavailabilityReason.CREDENTIALS_MISSING
+                    isFreeOnly -> false to ToolUnavailabilityReason.ROUTE_UNSUPPORTED
+                    else -> true to ToolUnavailabilityReason.NONE
                 }
                 requirements.add(req.copy(operational = isOperational, unavailabilityReason = reason))
                 if (!isOperational) {
-                    unavailable[name] = reason ?: "Unknown"
+                    unavailable[name] = reason
                 }
             }
         }
@@ -120,7 +120,7 @@ object AgentToolRegistry {
             toolName = name,
             configured = if (requiresPublicWeb) publicWebConfigured else true,
             operational = true, // Default, will be adjusted
-            unavailabilityReason = null,
+            unavailabilityReason = ToolUnavailabilityReason.NONE,
             requiresNetwork = requiresNetwork,
             requiresCredentials = requiresCredentials,
             requiresPublicWebEndpoint = requiresPublicWeb,

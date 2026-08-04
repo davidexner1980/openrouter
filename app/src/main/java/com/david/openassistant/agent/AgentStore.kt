@@ -378,8 +378,10 @@ class AgentStore private constructor(
         }
 
         val restrictedFailureMarkers = setOf("evidence-bounded", "model-only", "without new searches", "without tool loops")
-        val hasRestrictedFailure = (goal.error?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false) ||
-            goal.tasks.any { task -> task.lastError?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false }
+        val hasRestrictedFailure = goal.isToolRestricted ||
+            goal.failureClassification == MissionFailureClassification.TOOL_RESTRICTED_PHASE_STALL ||
+            (goal.error?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false) ||
+            goal.tasks.any { task -> task.isToolRestricted || task.lastError?.lowercase()?.let { err -> restrictedFailureMarkers.any { err.contains(it) } } ?: false }
         
         val hasStructuralStall = goal.noProgressCount >= 2 || 
             goal.tasks.any { 
@@ -403,13 +405,15 @@ class AgentStore private constructor(
         )
         
         val repairedTasks = goal.tasks.map { task ->
-            val taskIsStuck = task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE || 
+            val taskIsStuck = task.isToolRestricted ||
+                task.status == AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE ||
                 (task.status == AgentTaskStatus.FAILED && hasRestrictedFailure) ||
                 (hasRestrictedFailure && (task.outcomeClassification == "PROGRESS_STALL" || task.lastTactic == "REFORMULATE_QUERY"))
             
             if (taskIsStuck) {
                 task.copy(
                     status = AgentTaskStatus.QUEUED,
+                    isToolRestricted = false,
                     attemptCount = 0,
                     lastError = null,
                     automaticWindowReopenCount = 0,
@@ -424,6 +428,8 @@ class AgentStore private constructor(
 
         val updatedGoal = goal.copy(
             status = AgentGoalStatus.QUEUED,
+            isToolRestricted = false,
+            failureClassification = MissionFailureClassification.NONE,
             tasks = repairedTasks,
             noProgressCount = 0,
             idempotencyRecords = goal.idempotencyRecords + migrationRecord,
@@ -1536,6 +1542,8 @@ class AgentStore private constructor(
         json.put("objective_revisions", JSONArray(goal.objectiveRevisions.map(::encodeObjectiveRevision)))
         json.put("active_research_cycle_id", goal.activeResearchCycleId ?: JSONObject.NULL)
         json.put("active_continuation_scheduling_claim", goal.activeContinuationSchedulingClaim?.let(::encodeContinuationSchedulingClaim) ?: JSONObject.NULL)
+        json.put("is_tool_restricted", goal.isToolRestricted)
+        json.put("failure_classification", goal.failureClassification.name)
         return json
     }
 
@@ -1679,6 +1687,8 @@ class AgentStore private constructor(
             objectiveRevisions = json.optJSONArray("objective_revisions").decodeList(::decodeObjectiveRevision),
             activeResearchCycleId = json.optNullableString("active_research_cycle_id"),
             activeContinuationSchedulingClaim = json.optJSONObject("active_continuation_scheduling_claim")?.let(::decodeContinuationSchedulingClaim),
+            isToolRestricted = json.optBoolean("is_tool_restricted", false),
+            failureClassification = json.optEnum("failure_classification", MissionFailureClassification.NONE),
         )
 
         val machinePauseIdx = restoredEvents.indexOfLast { 
@@ -2198,6 +2208,7 @@ class AgentStore private constructor(
         .put("outcome_classification", task.outcomeClassification ?: JSONObject.NULL)
         .put("error_classification", task.errorClassification ?: JSONObject.NULL)
         .put("retry_eligibility", task.retryEligibility)
+        .put("is_tool_restricted", task.isToolRestricted)
         .put("retry_authorized_fingerprint", task.retryAuthorizedFingerprint ?: JSONObject.NULL)
         .put("rejected_queries", JSONArray().apply { task.rejectedQueries.forEach { put(encodeRejectedQuery(it)) } })
         .put("active_research_strategy_json", task.activeResearchStrategyJson ?: JSONObject.NULL)
@@ -2258,6 +2269,7 @@ class AgentStore private constructor(
             outcomeClassification = json.optNullableString("outcome_classification"),
             errorClassification = json.optNullableString("error_classification"),
             retryEligibility = json.optBoolean("retry_eligibility", true),
+            isToolRestricted = json.optBoolean("is_tool_restricted", false),
             retryAuthorizedFingerprint = json.optNullableString("retry_authorized_fingerprint"),
             rejectedQueries = json.optJSONArray("rejected_queries").decodeList(::decodeRejectedQuery),
             activeResearchStrategyJson = json.optNullableString("active_research_strategy_json"),

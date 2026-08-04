@@ -1067,6 +1067,108 @@ JVM VERIFIED
 ### Next Action
 - Scope: Physical acceptance on Samsung SM-G998U.
 
+---
+
+## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+
+### Status
+
+VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED + INTEGRATION VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
+- Remote checked before commit: Yes
+
+### Journal Truth Audit
+
+- Prior entries reviewed: Yes
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+
+- Problem: Arbitrary string reason codes for tool unavailability and missing ResearchReportBridge.java infrastructure.
+- Why selected: Enforce "Universal Tool Availability Law" with typed reason codes and restore broken project infrastructure.
+- Correct owner: AgentToolRegistry, AgentStore, ResearchReportBridge.
+- Violated invariant: Tool availability reasons must use stable typed codes; project infrastructure must be complete and functional.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+
+### Reproduction
+
+- Starting state: 598 passing tests, missing tools/ResearchReportBridge.java, string-based unavailability reasons.
+- Trigger: Gradle build warned about missing bridge source; AgentStore used fragile string matching for repairs.
+- Expected: Typed reason codes, no build warnings, functional USB report bridge.
+- Actual: Fragile string logic and missing source warnings.
+- First causal failure: Removal of ResearchReportBridge.java in a previous run and lack of typed enum for tool state.
+
+### Root Cause
+
+- Root cause: Evolution of tool availability logic favored rapid string-based diagnostics over stable typed contracts. Infrastructure source was accidentally deleted or not committed in a previous cycle.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentCoreEnums.kt (Added ToolUnavailabilityReason and MissionFailureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (Updated to use ToolUnavailabilityReason)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalModels.kt (Added isToolRestricted and failureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionModels.kt (Added isToolRestricted to AgentTask)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Updated serialization and repair logic to use new fields)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt (Aligned with typed reason codes)
+- Infrastructure files:
+    - tools/ResearchReportBridge.java (New: restored functional USB report receiver)
+- Behavior changed: Tool availability is now enforced by typed reason codes. Structural repairs are more robust using specific flags. USB reports are again receivable via ADB.
+
+### Regression Proof
+
+- Test: AgentUniversalToolAvailabilityTest.kt
+- Passed after repair: Yes.
+- Real production owner exercised: Yes (AgentToolRegistry).
+- Why recurrence is detected: The build now fails/warns if ResearchReportBridge.java is missing, and typed contracts prevent string-drift in tool logic.
+
+### Verification
+
+- Baseline: PASSED
+- Full unit total: 598
+- Passed: 598
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- startResearchReportBridge: PASSED (Self-test confirmed)
+
+### Risks
+
+- Migration: Schema-compatible addition.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues
+
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Physical acceptance on Samsung SM-G998U.
+
 ## 2026-08-04: UNIVERSAL TOOL AVAILABILITY REPAIR
 
 ### Diagnosis
@@ -1179,6 +1281,108 @@ JVM VERIFIED
 ### Next Action
 - Scope: Physical acceptance on Samsung SM-G998U.
 
+---
+
+## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+
+### Status
+
+VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED + INTEGRATION VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
+- Remote checked before commit: Yes
+
+### Journal Truth Audit
+
+- Prior entries reviewed: Yes
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+
+- Problem: Arbitrary string reason codes for tool unavailability and missing ResearchReportBridge.java infrastructure.
+- Why selected: Enforce "Universal Tool Availability Law" with typed reason codes and restore broken project infrastructure.
+- Correct owner: AgentToolRegistry, AgentStore, ResearchReportBridge.
+- Violated invariant: Tool availability reasons must use stable typed codes; project infrastructure must be complete and functional.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+
+### Reproduction
+
+- Starting state: 598 passing tests, missing tools/ResearchReportBridge.java, string-based unavailability reasons.
+- Trigger: Gradle build warned about missing bridge source; AgentStore used fragile string matching for repairs.
+- Expected: Typed reason codes, no build warnings, functional USB report bridge.
+- Actual: Fragile string logic and missing source warnings.
+- First causal failure: Removal of ResearchReportBridge.java in a previous run and lack of typed enum for tool state.
+
+### Root Cause
+
+- Root cause: Evolution of tool availability logic favored rapid string-based diagnostics over stable typed contracts. Infrastructure source was accidentally deleted or not committed in a previous cycle.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentCoreEnums.kt (Added ToolUnavailabilityReason and MissionFailureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (Updated to use ToolUnavailabilityReason)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalModels.kt (Added isToolRestricted and failureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionModels.kt (Added isToolRestricted to AgentTask)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Updated serialization and repair logic to use new fields)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt (Aligned with typed reason codes)
+- Infrastructure files:
+    - tools/ResearchReportBridge.java (New: restored functional USB report receiver)
+- Behavior changed: Tool availability is now enforced by typed reason codes. Structural repairs are more robust using specific flags. USB reports are again receivable via ADB.
+
+### Regression Proof
+
+- Test: AgentUniversalToolAvailabilityTest.kt
+- Passed after repair: Yes.
+- Real production owner exercised: Yes (AgentToolRegistry).
+- Why recurrence is detected: The build now fails/warns if ResearchReportBridge.java is missing, and typed contracts prevent string-drift in tool logic.
+
+### Verification
+
+- Baseline: PASSED
+- Full unit total: 598
+- Passed: 598
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- startResearchReportBridge: PASSED (Self-test confirmed)
+
+### Risks
+
+- Migration: Schema-compatible addition.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues
+
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Physical acceptance on Samsung SM-G998U.
+
 ## 2026-08-04: UNIVERSAL TOOL AVAILABILITY REPAIR
 
 ### Diagnosis
@@ -1267,6 +1471,108 @@ JVM VERIFIED
 - Still open: Physical acceptance on Samsung SM-G998U.
 
 ### Next Action
+- Scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+
+### Status
+
+VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED + INTEGRATION VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
+- Remote checked before commit: Yes
+
+### Journal Truth Audit
+
+- Prior entries reviewed: Yes
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+
+- Problem: Arbitrary string reason codes for tool unavailability and missing ResearchReportBridge.java infrastructure.
+- Why selected: Enforce "Universal Tool Availability Law" with typed reason codes and restore broken project infrastructure.
+- Correct owner: AgentToolRegistry, AgentStore, ResearchReportBridge.
+- Violated invariant: Tool availability reasons must use stable typed codes; project infrastructure must be complete and functional.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+
+### Reproduction
+
+- Starting state: 598 passing tests, missing tools/ResearchReportBridge.java, string-based unavailability reasons.
+- Trigger: Gradle build warned about missing bridge source; AgentStore used fragile string matching for repairs.
+- Expected: Typed reason codes, no build warnings, functional USB report bridge.
+- Actual: Fragile string logic and missing source warnings.
+- First causal failure: Removal of ResearchReportBridge.java in a previous run and lack of typed enum for tool state.
+
+### Root Cause
+
+- Root cause: Evolution of tool availability logic favored rapid string-based diagnostics over stable typed contracts. Infrastructure source was accidentally deleted or not committed in a previous cycle.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentCoreEnums.kt (Added ToolUnavailabilityReason and MissionFailureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (Updated to use ToolUnavailabilityReason)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalModels.kt (Added isToolRestricted and failureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionModels.kt (Added isToolRestricted to AgentTask)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Updated serialization and repair logic to use new fields)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt (Aligned with typed reason codes)
+- Infrastructure files:
+    - tools/ResearchReportBridge.java (New: restored functional USB report receiver)
+- Behavior changed: Tool availability is now enforced by typed reason codes. Structural repairs are more robust using specific flags. USB reports are again receivable via ADB.
+
+### Regression Proof
+
+- Test: AgentUniversalToolAvailabilityTest.kt
+- Passed after repair: Yes.
+- Real production owner exercised: Yes (AgentToolRegistry).
+- Why recurrence is detected: The build now fails/warns if ResearchReportBridge.java is missing, and typed contracts prevent string-drift in tool logic.
+
+### Verification
+
+- Baseline: PASSED
+- Full unit total: 598
+- Passed: 598
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- startResearchReportBridge: PASSED (Self-test confirmed)
+
+### Risks
+
+- Migration: Schema-compatible addition.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues
+
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
 - Scope: Physical acceptance on Samsung SM-G998U.
 
 ## 2026-08-04: UNIVERSAL TOOL AVAILABILITY REPAIR
@@ -1436,6 +1742,108 @@ JVM VERIFIED
 
 ### Next Action
 - Scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+
+### Status
+
+VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED + INTEGRATION VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
+- Remote checked before commit: Yes
+
+### Journal Truth Audit
+
+- Prior entries reviewed: Yes
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+
+- Problem: Arbitrary string reason codes for tool unavailability and missing ResearchReportBridge.java infrastructure.
+- Why selected: Enforce "Universal Tool Availability Law" with typed reason codes and restore broken project infrastructure.
+- Correct owner: AgentToolRegistry, AgentStore, ResearchReportBridge.
+- Violated invariant: Tool availability reasons must use stable typed codes; project infrastructure must be complete and functional.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+
+### Reproduction
+
+- Starting state: 598 passing tests, missing tools/ResearchReportBridge.java, string-based unavailability reasons.
+- Trigger: Gradle build warned about missing bridge source; AgentStore used fragile string matching for repairs.
+- Expected: Typed reason codes, no build warnings, functional USB report bridge.
+- Actual: Fragile string logic and missing source warnings.
+- First causal failure: Removal of ResearchReportBridge.java in a previous run and lack of typed enum for tool state.
+
+### Root Cause
+
+- Root cause: Evolution of tool availability logic favored rapid string-based diagnostics over stable typed contracts. Infrastructure source was accidentally deleted or not committed in a previous cycle.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentCoreEnums.kt (Added ToolUnavailabilityReason and MissionFailureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (Updated to use ToolUnavailabilityReason)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalModels.kt (Added isToolRestricted and failureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionModels.kt (Added isToolRestricted to AgentTask)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Updated serialization and repair logic to use new fields)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt (Aligned with typed reason codes)
+- Infrastructure files:
+    - tools/ResearchReportBridge.java (New: restored functional USB report receiver)
+- Behavior changed: Tool availability is now enforced by typed reason codes. Structural repairs are more robust using specific flags. USB reports are again receivable via ADB.
+
+### Regression Proof
+
+- Test: AgentUniversalToolAvailabilityTest.kt
+- Passed after repair: Yes.
+- Real production owner exercised: Yes (AgentToolRegistry).
+- Why recurrence is detected: The build now fails/warns if ResearchReportBridge.java is missing, and typed contracts prevent string-drift in tool logic.
+
+### Verification
+
+- Baseline: PASSED
+- Full unit total: 598
+- Passed: 598
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- startResearchReportBridge: PASSED (Self-test confirmed)
+
+### Risks
+
+- Migration: Schema-compatible addition.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues
+
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Physical acceptance on Samsung SM-G998U.
 ---
 
 ## Run CE-20260804-1213-fd38d224 � 2026-08-04T12:13:00
@@ -1511,4 +1919,106 @@ JVM VERIFIED
 - Still unresolved: Physical acceptance on Samsung SM-G998U.
 
 ### Recommended Next Pass
+- Scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+
+### Status
+
+VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED + INTEGRATION VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
+- Remote checked before commit: Yes
+
+### Journal Truth Audit
+
+- Prior entries reviewed: Yes
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+
+- Problem: Arbitrary string reason codes for tool unavailability and missing ResearchReportBridge.java infrastructure.
+- Why selected: Enforce "Universal Tool Availability Law" with typed reason codes and restore broken project infrastructure.
+- Correct owner: AgentToolRegistry, AgentStore, ResearchReportBridge.
+- Violated invariant: Tool availability reasons must use stable typed codes; project infrastructure must be complete and functional.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+
+### Reproduction
+
+- Starting state: 598 passing tests, missing tools/ResearchReportBridge.java, string-based unavailability reasons.
+- Trigger: Gradle build warned about missing bridge source; AgentStore used fragile string matching for repairs.
+- Expected: Typed reason codes, no build warnings, functional USB report bridge.
+- Actual: Fragile string logic and missing source warnings.
+- First causal failure: Removal of ResearchReportBridge.java in a previous run and lack of typed enum for tool state.
+
+### Root Cause
+
+- Root cause: Evolution of tool availability logic favored rapid string-based diagnostics over stable typed contracts. Infrastructure source was accidentally deleted or not committed in a previous cycle.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentCoreEnums.kt (Added ToolUnavailabilityReason and MissionFailureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (Updated to use ToolUnavailabilityReason)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalModels.kt (Added isToolRestricted and failureClassification)
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionModels.kt (Added isToolRestricted to AgentTask)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Updated serialization and repair logic to use new fields)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt (Aligned with typed reason codes)
+- Infrastructure files:
+    - tools/ResearchReportBridge.java (New: restored functional USB report receiver)
+- Behavior changed: Tool availability is now enforced by typed reason codes. Structural repairs are more robust using specific flags. USB reports are again receivable via ADB.
+
+### Regression Proof
+
+- Test: AgentUniversalToolAvailabilityTest.kt
+- Passed after repair: Yes.
+- Real production owner exercised: Yes (AgentToolRegistry).
+- Why recurrence is detected: The build now fails/warns if ResearchReportBridge.java is missing, and typed contracts prevent string-drift in tool logic.
+
+### Verification
+
+- Baseline: PASSED
+- Full unit total: 598
+- Passed: 598
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- startResearchReportBridge: PASSED (Self-test confirmed)
+
+### Risks
+
+- Migration: Schema-compatible addition.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues
+
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
 - Scope: Physical acceptance on Samsung SM-G998U.
