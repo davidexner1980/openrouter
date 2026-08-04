@@ -167,15 +167,30 @@ class AgentGoalWorker(
                         return@coroutineScope Result.success()
                     }
 
+                    // CANONICAL STRUCTURAL REPAIR
+                    if (store.repairRecoveryStarvationAtomic(goalId)) {
+                        goalDiagnostics.info("recovery_starvation_repaired")
+                        goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
+                    }
+
+                    // RECOVERY PRIORITY: Check for active nonterminal recovery plan before ordinary task allocation
+                    val activeRecoveryId = goalSnapshot.activeRecoveryPlanId
+                    val activeRecoveryPlan = if (activeRecoveryId != null) goalSnapshot.recoveryPlans.firstOrNull { it.id == activeRecoveryId } else null
+                    val hasActiveRecovery = goalSnapshot.status == AgentGoalStatus.RECOVERING || (activeRecoveryPlan != null && activeRecoveryPlan.status.isNonTerminal())
+
                     val allocationProfile = AgentResearchAllocator.profileForGoal(goalSnapshot, autonomyPolicy)
                     val gaps = AgentResearchAllocator.evaluateGaps(goalSnapshot, allocationProfile)
                     
                     diagnostics.info(
                         event = "runnable_task_selection_started",
                         component = "worker",
-                        fields = mapOf("goal_id" to goalId)
+                        fields = mapOf("goal_id" to goalId, "recovery_priority" to hasActiveRecovery)
                     )
-                    var taskSelection = AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
+                    var taskSelection = if (hasActiveRecovery) {
+                        AllocatedTaskSelection(null, "Active recovery priority.")
+                    } else {
+                        AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
+                    }
                     
                     // REQUIRED CHANGE 5: No-runnable-task decision path
                     if (taskSelection.taskId == null) {
@@ -221,12 +236,21 @@ class AgentGoalWorker(
                                 // Continue to acquire planning lease for verification
                             }
                             NoTaskDecision.RECOVERY -> {
-                                // REQUIRED CHANGE 5: Durable no-runnable recovery handoff
-                                diagnostics.info(event = "queued_goal_recovery_prepared", component = "worker", fields = mapOf("goal_id" to goalId))
-                                repairBlockedWorkflow(goalSnapshot, null)
-                                // V43: Re-load snapshot after mutation to avoid stale decision path
-                                goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
-                                taskSelection = AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
+                                if (hasActiveRecovery) {
+                                    // Proceed to acquire planning lease
+                                } else {
+                                    // REQUIRED CHANGE 5: Durable no-runnable recovery handoff
+                                    diagnostics.info(event = "queued_goal_recovery_prepared", component = "worker", fields = mapOf("goal_id" to goalId))
+                                    repairBlockedWorkflow(goalSnapshot, null)
+                                    // V43: Re-load snapshot after mutation to avoid stale decision path
+                                    goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
+                                    
+                                    val nextPlanId = goalSnapshot.activeRecoveryPlanId
+                                    val nextPlan = if (nextPlanId != null) goalSnapshot.recoveryPlans.firstOrNull { it.id == nextPlanId } else null
+                                    if (goalSnapshot.status != AgentGoalStatus.RECOVERING && nextPlan?.status?.isNonTerminal() != true) {
+                                        taskSelection = AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
+                                    }
+                                }
                             }
                             NoTaskDecision.TERMINAL_EXHAUSTED -> {
                                 store.updateGoalAtomic(goalId, null) { current ->
@@ -291,10 +315,13 @@ class AgentGoalWorker(
                         goalSnapshot.status == AgentGoalStatus.PLANNING -> {
                             store.acquirePlanningLeaseAtomic(goalId, workerId)
                         }
+                        hasActiveRecovery -> {
+                            // RECOVERY PRIORITY
+                            store.acquirePlanningLeaseAtomic(goalId, workerId)
+                        }
                         taskSelection.taskId != null -> {
                             store.acquireTaskLeaseAtomic(goalId, workerId, taskSelection.taskId)
                         }
-                        goalSnapshot.status == AgentGoalStatus.RECOVERING || 
                         goalSnapshot.isReadyForVerification || 
                         goalSnapshot.status == AgentGoalStatus.FINALIZING -> {
                             store.acquirePlanningLeaseAtomic(goalId, workerId)
@@ -348,6 +375,24 @@ class AgentGoalWorker(
                         }
                     }
                     activeTicket = ticket
+                    
+                    // RECOVERY OWNERSHIP TRUTH: Validate plan after lease acquisition
+                    if (hasActiveRecovery) {
+                        if (ticket !is PlanningTicket) {
+                            goalDiagnostics.warning("task_lease_acquired_during_active_recovery_priority_violation")
+                            return@coroutineScope Result.retry()
+                        }
+                        
+                        val latestPlanId = leasedGoal.activeRecoveryPlanId
+                        val latestPlan = if (latestPlanId != null) leasedGoal.recoveryPlans.firstOrNull { it.id == latestPlanId } else null
+                        
+                        if (latestPlan == null || latestPlan.status.isTerminal()) {
+                            goalDiagnostics.warning("recovery_plan_missing_or_terminal_after_lease")
+                        } else if (activeRecoveryId != null && latestPlan.id != activeRecoveryId) {
+                            goalDiagnostics.warning("recovery_plan_mismatch_after_lease")
+                            return@coroutineScope Result.retry()
+                        }
+                    }
 
                     val lease = leasedGoal.executionLease!!
                     val workerStartTime = System.currentTimeMillis()
@@ -644,8 +689,12 @@ class AgentGoalWorker(
     private fun classifyNoRunnableTask(goal: AgentGoal, selection: AllocatedTaskSelection): NoTaskDecision {
         if (selection.retryAfterCooldown) return NoTaskDecision.RETRY_LATER
         
+        val activeRecoveryPlan = goal.activeRecoveryPlanId?.let { id -> goal.recoveryPlans.firstOrNull { it.id == id } }
+        if (goal.status == AgentGoalStatus.RECOVERING || (activeRecoveryPlan != null && activeRecoveryPlan.status.isNonTerminal())) {
+            return NoTaskDecision.RECOVERY
+        }
+
         if (goal.status == AgentGoalStatus.PLANNING) return NoTaskDecision.RECOVERY // Should be planning
-        if (goal.status == AgentGoalStatus.RECOVERING) return NoTaskDecision.RECOVERY
         if (goal.status == AgentGoalStatus.FINALIZING) return NoTaskDecision.FINALIZE
         if (goal.isReadyForVerification) return NoTaskDecision.VERIFICATION
 
@@ -795,12 +844,52 @@ class AgentGoalWorker(
                 fields = mapOf("goal_id" to goalId, "gen" to generation, "fingerprint" to (fingerprint ?: "none"))
             )
             try {
-                scheduler.enqueueContinuation(goalId, generation, fingerprint)
-                diagnostics.info(
-                    event = "continuation_enqueued",
-                    component = "scheduler",
-                    fields = mapOf("goal_id" to goalId, "gen" to generation)
-                )
+                val result = scheduler.enqueueContinuation(goalId, generation, fingerprint)
+                when (result) {
+                    is SchedulingResult.NewlyEnqueued -> {
+                        diagnostics.info(
+                            event = "continuation_enqueued",
+                            component = "scheduler",
+                            fields = mapOf("goal_id" to goalId, "gen" to generation, "work_id" to result.workId.toString())
+                        )
+                    }
+                    is SchedulingResult.ReusedActive -> {
+                        diagnostics.info(
+                            event = "continuation_reused",
+                            component = "scheduler",
+                            fields = mapOf("goal_id" to goalId, "gen" to generation)
+                        )
+                    }
+                    is SchedulingResult.RejectedNoProgress -> {
+                        diagnostics.info(
+                            event = "continuation_suppressed",
+                            component = "scheduler",
+                            fields = mapOf("goal_id" to goalId, "reason" to "no_progress")
+                        )
+                    }
+                    is SchedulingResult.CoalescedDuplicate -> {
+                        diagnostics.info(
+                            event = "continuation_suppressed",
+                            component = "scheduler",
+                            fields = mapOf("goal_id" to goalId, "reason" to "duplicate")
+                        )
+                    }
+                    is SchedulingResult.EnqueueFailed -> {
+                        diagnostics.error(
+                            event = "continuation_enqueue_failed",
+                            component = "scheduler",
+                            throwable = result.error,
+                            fields = mapOf("goal_id" to goalId, "gen" to generation)
+                        )
+                    }
+                    else -> {
+                        diagnostics.info(
+                            event = "continuation_result_other",
+                            component = "scheduler",
+                            fields = mapOf("goal_id" to goalId, "result" to result::class.java.simpleName)
+                        )
+                    }
+                }
             } catch (e: Throwable) {
                 diagnostics.error(
                     event = "continuation_enqueue_failed",
@@ -824,22 +913,7 @@ class AgentGoalWorker(
         val plan = goal.recoveryPlans.firstOrNull { it.id == activePlanId } ?: return repairBlockedWorkflow(goal, ticket)
         
         return when (plan.status) {
-            RecoveryPlanStatus.PREPARED -> {
-                val logicalRequestId = "recovery-${plan.id}"
-                val snapshot = store.updateGoalAtomic(goal.id, ticket) { current ->
-                    current.copy(
-                        recoveryPlans = current.recoveryPlans.map { p ->
-                            if (p.id == plan.id) p.copy(
-                                status = RecoveryPlanStatus.GENERATING,
-                                logicalProviderRequestId = logicalRequestId
-                            ) else p
-                        }
-                    )
-                }
-                val nextGoal = snapshot.goals.firstOrNull { it.id == goal.id } ?: return WorkerOutcome.FAIL
-                val nextPlan = nextGoal.recoveryPlans.firstOrNull { it.id == plan.id } ?: return WorkerOutcome.FAIL
-                planner.generateRecoveryProposal(apiKey, nextGoal, nextPlan, ticket)
-            }
+            RecoveryPlanStatus.PREPARED,
             RecoveryPlanStatus.GENERATING,
             RecoveryPlanStatus.FAILED_RETRYABLE -> {
                 planner.generateRecoveryProposal(apiKey, goal, plan, ticket)
@@ -932,12 +1006,13 @@ class AgentGoalWorker(
                                 current.researchCycles.map { if (it.id == current.activeResearchCycleId) it.copy(learningSummary = learningSummary) else it }
                             } else current.researchCycles
                             
+                            val isNewPlan = existingPlan == null
                             current.copy(
                                 status = AgentGoalStatus.RECOVERING,
                                 activeRecoveryPlanId = planId,
-                                recoveryPlans = if (existingPlan == null) current.recoveryPlans + newPlan else current.recoveryPlans,
+                                recoveryPlans = if (isNewPlan) current.recoveryPlans + newPlan else current.recoveryPlans,
                                 researchCycles = updatedCycles,
-                                events = appendEvent(current.events, "Research stalled: ${diagnosis.name}. Prepared tactic pivot: ${tactic.name}.")
+                                events = if (isNewPlan) appendEvent(current.events, "Research stalled: ${diagnosis.name}. Prepared tactic pivot: ${tactic.name}.") else current.events
                             )
                         }
                         return WorkerOutcome.CONTINUE

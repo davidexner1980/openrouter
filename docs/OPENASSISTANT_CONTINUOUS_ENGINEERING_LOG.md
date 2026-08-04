@@ -721,4 +721,85 @@ JVM VERIFIED
 ### Recommended Next Pass
 - Next scope: Improve robustness of parallel tool execution by ensuring duplicate executions are pruned.
 - Supporting evidence: Static trace in `AgentTaskExecutor` reveals that multiple LLM tool requests could dispatch redundant identical fetch calls.
-$newEntry
+---
+
+## Run CE-20260803-1936-RECOVERY-STARVATION — 2026-08-03T19:36:00
+
+### Status
+PARTIALLY VERIFIED
+
+### Evidence Level
+RUNTIME REPRODUCED
+
+### Repository
+- Branch: main
+- Starting commit: 9c38e16a57d154e6b52db50005126d1083e61d33
+- Run commit: SELF
+- Commit message: Continuous improvement: prevent active recovery plan starvation
+
+### Selected Scope
+- Problem: Runtime-reproduced recovery livelock where a PREPARED adaptive recovery plan was repeatedly re-created or bypassed by ordinary task execution. 
+- Why selected: Addressed mission progress failure and improved research robustness. Earlier automated closure of identical-context recovery was disproven by runtime evidence from sdk_gphone16k_x86_64.
+- Correct owner: AgentGoalWorker, AgentStore, AgentPlanner, MissionRecoveryWorker, AgentScheduler.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance. [PB-003] Provider requests must be registered before dispatch.
+
+### Evidence and Reproduction
+- Original symptom: Activity ledger recorded "Identical context detected. Prepared adaptive recovery tactic" repeatedly without progress. 
+- Evidence source: Runtime logs from sdk_gphone16k_x86_64.
+- Root cause: Priority inversion in AgentGoalWorker (task selected before recovery checked), watchdog status flattening, and lack of idempotent recovery preparation.
+
+### Acceptance Criteria
+- Active recovery priority over task execution.
+- Task leases rejected during nonterminal recovery (ACTIVE_RECOVERY_OWNS_EXECUTION).
+- Idempotent recovery plan preparation and events.
+- Ledger-aware recovery generation (PREPARED -> GENERATING -> READY_TO_COMMIT -> COMMITTED).
+- Watchdog preserves active phases (RECOVERING, etc.).
+- Typed SchedulingResult for truthful continuation logging.
+- Atomic/Idempotent structural repair for existing stuck missions.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentResearchModels.kt (Added RecoveryPlanStatus helpers/transitions)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Added priority defense and structural repair)
+    - app/src/main/java/com/david/openassistant/agent/AgentScheduler.kt (Updated SchedulingResult contract)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Implemented priority and repair logic)
+    - app/src/main/java/com/david/openassistant/agent/AgentPlanner.kt (Implemented ledger-aware generation and fingerprint validation)
+    - app/src/main/java/com/david/openassistant/agent/MissionRecoveryWorker.kt (Updated watchdog phase preservation)
+    - app/src/main/java/com/david/openassistant/agent/AgentTaskExecutor.kt (Implemented idempotent preparation)
+    - app/src/main/java/com/david/openassistant/agent/ProviderRequestContext.kt (Added logicalRequestId)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Exposed logicalRequestId and made methods open for test mocking)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/RecoveryStarvationTest.kt (New: comprehensive priority, watchdog, and idempotency tests)
+- Behavior changed: Recovery now has strict priority. Stale workers cannot bypass active recovery. Provider generation is request-ledger aware and re-entry safe.
+
+### Verification
+- Baseline commands: .\gradlew.bat testDebugUnitTest
+- Baseline results: PASSED (581 tests)
+- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.RecoveryStarvationTest"
+- Focused results: PASSED (7 tests)
+- Full unit command: .\gradlew.bat testDebugUnitTest
+- Total: 588
+- Passed: 588
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- Samsung physical-device result: PENDING
+
+### Risks
+- Known risks: Tightened lease logic might cause increased retries if ledger reconciliation is slow.
+- Migration risk: None (Pure logic and schema-compatible data additions).
+
+### Repository Hygiene
+- git diff --check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues Updated
+- Still open: None.
+
+### Recommended Next Pass
+- Next scope: Improve robustness of parallel tool execution by ensuring duplicate executions are pruned.

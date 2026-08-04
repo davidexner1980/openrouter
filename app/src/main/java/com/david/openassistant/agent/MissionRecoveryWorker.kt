@@ -57,7 +57,6 @@ class MissionRecoveryWorker(
                         // Targeted recovery for interrupted active work
                         val recovered = AgentLifecycleReducer.recoverInterruptedWork(current, now)
                         recovered.copy(
-                            status = if (recovered.status.isActivePhase()) AgentGoalStatus.QUEUED else recovered.status,
                             events = appendEvent(recovered.events, "Watchdog recovered an active goal with a stale or missing lease."),
                             lastResumeReason = ResumeReason.STALE_LEASE_RECOVERY
                         ).also {

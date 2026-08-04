@@ -119,11 +119,12 @@ class AgentTaskExecutor internal constructor(
                             "fingerprint" to currentFingerprint
                         )
                     )
+                    val isNewPlan = current.recoveryPlans.none { it.id == planId }
                     current.copy(
                         status = AgentGoalStatus.RECOVERING,
                         activeRecoveryPlanId = planId,
-                        recoveryPlans = if (current.recoveryPlans.none { it.id == planId }) current.recoveryPlans + recoveryPlan else current.recoveryPlans,
-                        events = appendEvent(current.events, "Identical context detected. Prepared adaptive recovery tactic: ${tactic.name}.")
+                        recoveryPlans = if (isNewPlan) current.recoveryPlans + recoveryPlan else current.recoveryPlans,
+                        events = if (isNewPlan) appendEvent(current.events, "Identical context detected. Prepared adaptive recovery tactic: ${tactic.name}.") else current.events
                     )
                 }
             }

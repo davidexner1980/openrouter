@@ -19,6 +19,7 @@ sealed interface SchedulingResult {
     data class NewlyEnqueued(val workId: UUID, val state: WorkInfo.State) : SchedulingResult
     data class ReusedActive(val workId: UUID, val state: WorkInfo.State) : SchedulingResult
     data class CoalescedDuplicate(val reason: String) : SchedulingResult
+    data class RejectedNoProgress(val goalId: String, val fingerprint: String) : SchedulingResult
     data class ExistingSucceeded(val workId: UUID) : SchedulingResult
     data class ExistingFailed(val workId: UUID) : SchedulingResult
     data class ExistingCancelled(val workId: UUID) : SchedulingResult
@@ -146,24 +147,30 @@ class AgentScheduler(context: Context) {
         return finalResult
     }
 
-    fun enqueueContinuation(goalId: String, generation: Int = 0, fingerprint: String? = null) {
+    fun enqueueContinuation(goalId: String, generation: Int = 0, fingerprint: String? = null): SchedulingResult {
         if (fingerprint != null && isDuplicateNoProgressContinuation(goalId, fingerprint)) {
             diagnostics.info(
                 event = "no_op_continuation_rejected_by_scheduler",
                 component = "scheduler",
                 fields = mapOf("goal_id" to goalId, "fingerprint" to fingerprint)
             )
-            return
+            return SchedulingResult.RejectedNoProgress(goalId, fingerprint)
         }
         
-        workManager.enqueueUniqueWork(
-            uniqueWorkName(goalId, generation),
-            ExistingWorkPolicy.APPEND_OR_REPLACE,
-            createRequest(goalId),
-        )
-        
-        if (fingerprint != null) {
-            recordProcessedFingerprint(goalId, fingerprint)
+        return try {
+            val request = createRequest(goalId)
+            workManager.enqueueUniqueWork(
+                uniqueWorkName(goalId, generation),
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                request,
+            )
+            
+            if (fingerprint != null) {
+                recordProcessedFingerprint(goalId, fingerprint)
+            }
+            SchedulingResult.NewlyEnqueued(request.id, WorkInfo.State.ENQUEUED)
+        } catch (e: Throwable) {
+            SchedulingResult.EnqueueFailed(e)
         }
     }
 

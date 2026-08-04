@@ -98,7 +98,24 @@ enum class RecoveryPlanStatus {
     REJECTED_NOT_NOVEL,
     STRATEGY_EXHAUSTED,
     FAILED_RETRYABLE,
-    FAILED_NEEDS_ACTION
+    FAILED_NEEDS_ACTION;
+
+    fun isTerminal(): Boolean = this in setOf(
+        COMMITTED,
+        REJECTED_NOT_NOVEL,
+        STRATEGY_EXHAUSTED,
+        FAILED_NEEDS_ACTION
+    )
+
+    fun isNonTerminal(): Boolean = !isTerminal()
+
+    fun canTransitionTo(next: RecoveryPlanStatus): Boolean = when (this) {
+        PREPARED -> next == GENERATING
+        GENERATING -> next in setOf(READY_TO_COMMIT, FAILED_RETRYABLE, FAILED_NEEDS_ACTION)
+        READY_TO_COMMIT -> next in setOf(COMMITTED, REJECTED_NOT_NOVEL, STRATEGY_EXHAUSTED)
+        FAILED_RETRYABLE -> next == GENERATING
+        else -> false
+    }
 }
 
 data class RecoveryProposal(

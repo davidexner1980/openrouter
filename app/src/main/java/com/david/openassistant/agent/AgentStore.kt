@@ -172,6 +172,42 @@ class AgentStore private constructor(
         acquireLeaseInternalLocked(goalId, workerId, taskId)
     }
 
+    fun repairRecoveryStarvationAtomic(goalId: String): Boolean = synchronized(STORE_LOCK) {
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return false
+        
+        if (goal.status != AgentGoalStatus.RECOVERING) return false
+        val planId = goal.activeRecoveryPlanId ?: return false
+        val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return false
+        if (plan.status != RecoveryPlanStatus.PREPARED && plan.status != RecoveryPlanStatus.GENERATING) return false
+        
+        // Match repeat identical context suppressions
+        val suppressionMessage = "Identical context detected. Prepared adaptive recovery tactic"
+        val repeatedEvents = goal.events.filter { it.message.contains(suppressionMessage) }
+        if (repeatedEvents.size < 2) return false
+        
+        val repairKey = "recovery_starvation_repair:${goal.id}:${plan.taskId}:${plan.id}:${plan.inputExecutionFingerprint}"
+        if (goal.idempotencyRecords.any { it.key == repairKey }) return false
+        
+        val now = System.currentTimeMillis()
+        val updatedGoal = goal.copy(
+            executionLease = null, // Clear stale/bypass lease
+            idempotencyRecords = goal.idempotencyRecords + IdempotencyRecord(
+                key = repairKey,
+                effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                state = IdempotencyState.COMMITTED,
+                claimOwner = "system",
+                committedAt = now,
+                completedBy = "system"
+            ),
+            events = appendEvent(goal.events, "System applied structural repair for recovery plan starvation."),
+            updatedAt = now
+        )
+        
+        writeGoalLocked(updatedGoal)
+        return true
+    }
+
     fun updateProviderTransportStage(
         goalId: String,
         exchangeId: String,
@@ -208,6 +244,17 @@ class AgentStore private constructor(
         
         if (goal.status.isFinalTerminalStatus() || goal.status == AgentGoalStatus.REJECTED || goal.status == AgentGoalStatus.BLOCKED) {
             return LeaseAcquisitionResult.MissionTerminal
+        }
+
+        // RECOVERY PRIORITY DEFENSE
+        if (taskId != null) {
+            val activeRecoveryId = goal.activeRecoveryPlanId
+            val plan = if (activeRecoveryId != null) goal.recoveryPlans.firstOrNull { it.id == activeRecoveryId } else null
+            val isRecoveryActive = goal.status == AgentGoalStatus.RECOVERING || (plan != null && plan.status.isNonTerminal())
+            
+            if (isRecoveryActive) {
+                return LeaseAcquisitionResult.Rejected("ACTIVE_RECOVERY_OWNS_EXECUTION")
+            }
         }
 
         val now = System.currentTimeMillis()

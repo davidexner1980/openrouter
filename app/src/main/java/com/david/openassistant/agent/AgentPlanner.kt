@@ -306,6 +306,36 @@ class AgentPlanner(
         plan: ResearchRecoveryPlan,
         ticket: PlanningTicket,
     ): WorkerOutcome {
+        val logicalRequestId = plan.logicalProviderRequestId ?: "recovery-${plan.id}"
+
+        // Ensure status and ID are persisted
+        if (plan.status != RecoveryPlanStatus.GENERATING || plan.logicalProviderRequestId == null) {
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                current.copy(
+                    recoveryPlans = current.recoveryPlans.map { p ->
+                        if (p.id == plan.id) p.copy(
+                            status = RecoveryPlanStatus.GENERATING,
+                            logicalProviderRequestId = logicalRequestId
+                        ) else p
+                    }
+                )
+            }
+        }
+
+        // Idempotent advance: if proposal already exists, move to READY_TO_COMMIT
+        if (plan.proposal != null) {
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                current.copy(
+                    recoveryPlans = current.recoveryPlans.map { p ->
+                        if (p.id == plan.id && p.status == RecoveryPlanStatus.GENERATING) {
+                            p.copy(status = RecoveryPlanStatus.READY_TO_COMMIT)
+                        } else p
+                    }
+                )
+            }
+            return WorkerOutcome.CONTINUE
+        }
+
         val parentOperationId = "op-recovery-${plan.id}"
         val missionContext = ProviderRequestContext.Mission(
             goalId = goal.id,
@@ -317,6 +347,7 @@ class AgentPlanner(
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) MissionOperation.CYCLE_ADVANCE else MissionOperation.RECOVERY_PROPOSAL,
             parentOperationId = parentOperationId,
+            logicalRequestId = logicalRequestId
         )
 
         return try {
@@ -445,6 +476,19 @@ class AgentPlanner(
         ticket: PlanningTicket,
     ): WorkerOutcome {
         val proposal = plan.proposal ?: return WorkerOutcome.FAIL
+
+        val task = goal.tasks.firstOrNull { it.id == plan.taskId }
+        val currentFingerprint = if (task != null) FingerprintUtils.calculateExecutionFingerprint(goal, task) else null
+
+        if (plan.inputExecutionFingerprint != currentFingerprint) {
+            diagnostics.warning("recovery_commit_fingerprint_mismatch", mapOf(
+                "goal_id" to goal.id,
+                "plan_id" to plan.id,
+                "expected" to plan.inputExecutionFingerprint,
+                "actual" to (currentFingerprint ?: "null")
+            ))
+            return WorkerOutcome.FAIL
+        }
         
         return if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) {
             commitCycleAdvance(goal, plan, proposal, ticket)
@@ -505,6 +549,7 @@ class AgentPlanner(
                 },
                 idempotencyRecords = current.idempotencyRecords + accountingRecord,
                 activeRecoveryPlanId = null,
+                status = AgentGoalStatus.QUEUED,
                 events = appendEvent(current.events, "Tactic pivot committed: ${plan.selectedTactic.name}."),
             ).withAdditionalUsage(plan.accountingSummary?.totalTokens, plan.accountingSummary?.costUsd).also {
                 diagnostics.info(

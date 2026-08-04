@@ -387,7 +387,7 @@ internal fun parseAdaptiveResearchStrategy(
         }
     }
 
-class AgentOpenRouterClient internal constructor(
+open class AgentOpenRouterClient internal constructor(
     private val toolRuntime: AutonomousToolRuntime? = null,
     private val autonomyPolicy: AutonomyPolicy = AutonomyPolicy.DEFAULT,
     private val client: OkHttpClient = sharedClient,
@@ -682,7 +682,7 @@ class AgentOpenRouterClient internal constructor(
         .put("required", JSONArray(listOf("title", "question", "objective", "confirmed_constraints", "inferred_preferences", "unresolved_questions", "evidence_requirements", "preferred_source_types", "freshness_requirement", "exclusions", "desired_deliverable")))
         .put("additionalProperties", false)
 
-    suspend fun createResearchRecoveryProposal(
+    open suspend fun createResearchRecoveryProposal(
         apiKey: String,
         modelId: String,
         goal: AgentGoal,
@@ -4712,7 +4712,7 @@ class AgentOpenRouterClient internal constructor(
         maxAttempts: Int = 3
     ): Triple<String, Int, String> {
         val parentOperationId = requestContext.parentOperationId
-        val logicalRequestId = parentOperationId // For V39: stable logical request ID
+        val logicalRequestId = requestContext.logicalRequestId ?: parentOperationId // For V39: stable logical request ID
         var payload = initialPayload
         var attempt = 0
         var previousExchangeId: String? = null
