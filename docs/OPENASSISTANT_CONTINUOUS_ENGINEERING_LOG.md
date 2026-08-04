@@ -803,3 +803,72 @@ RUNTIME REPRODUCED
 
 ### Recommended Next Pass
 - Next scope: Improve robustness of parallel tool execution by ensuring duplicate executions are pruned.
+---
+
+## Run CE-20260803-2000-03d3b667 — 2026-08-03T20:00:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+STATIC TRACE + JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 03d3b667f3edbbac408dce419adf59269a6bfdca
+- Run commit: SELF — commit containing this journal entry
+- Commit message: Continuous improvement CE-20260803-2000-03d3b667: implement atomic intra-round pruning for parallel tool execution
+
+### Selected Scope
+- Problem: Redundant identical fetch calls in parallel tool execution. Multiple identical tool calls in one model response could dispatch redundant external operations because of non-atomic deduplication logic.
+- Why selected: Addressed Priority 4 (Duplicate external side effect) and improved performance/cost robustness.
+- Correct owner: AgentOpenRouterClient.
+- Violated invariant: Identical tool requests in the same round must dispatch exactly one external operation.
+
+### Evidence and Reproduction
+- Original symptom: Static trace of executeToolAwareJsonRequest revealed use of non-atomic getOrPut on ConcurrentHashMap for side-effecting async tool dispatch.
+- Evidence source: Static audit of AgentOpenRouterClient.kt.
+- Root cause: getOrPut extension function is not atomic for value calculation; multiple async blocks could start for the same tool signature before the map is updated.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Switched to atomic computeIfAbsent for intra-round pruning; exposed executeRawJsonRequest and RawAgentResponse for testing)
+    - app/src/main/java/com/david/openassistant/domain/tools/AutonomousToolRuntime.kt (Marked execute open for mocking)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/ParallelToolDeduplicationTest.kt (New: verified tool runtime is called once for identical parallel requests)
+- Behavior changed: Parallel identical tool calls in the same model response are now atomically pruned at the dispatch point.
+- Behavior preserved: Unique tool calls and sequential rounds remain unaffected.
+
+### Verification
+- Baseline commands: .\gradlew.bat testDebugUnitTest
+- Baseline results: PASSED (589 tests)
+- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.ParallelToolDeduplicationTest"
+- Focused results: PASSED (1 test)
+- Full unit total: 590
+- Passed: 590
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known risks: None.
+- Migration risk: None.
+- Performance risk: Significant improvement (reduced redundant network/tool calls).
+
+### Repository Hygiene
+- git diff --check: Passed
+- Generated-file scan: Clean
+- Large-file scan: Clean
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues Updated
+- Still open: None.
+
+### Recommended Next Pass
+- Next scope: Improve robustness of citation extraction from complex model outputs.
+- Supporting evidence: Frequent warnings in logs about malformed citation patterns.

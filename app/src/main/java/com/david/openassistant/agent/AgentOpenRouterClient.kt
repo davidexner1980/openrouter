@@ -3831,7 +3831,7 @@ open class AgentOpenRouterClient internal constructor(
         return copy
     }
 
-    private suspend fun executeToolAwareJsonRequest(
+    internal suspend fun executeToolAwareJsonRequest(
         apiKey: String,
         originalPayload: JSONObject,
         generation: Int = 0,
@@ -4104,7 +4104,7 @@ open class AgentOpenRouterClient internal constructor(
                                         priorOutput
                                     } else {
                                         // Handle intra-round parallel deduplication
-                                        roundExecutionJobs.getOrPut(signature) {
+                                        roundExecutionJobs.computeIfAbsent(signature) {
                                             async {
                                                 try {
                                                     diagnostics?.info(
@@ -4488,7 +4488,7 @@ open class AgentOpenRouterClient internal constructor(
         return rawBody
     }
 
-    private suspend fun executeRawJsonRequest(
+    internal open suspend fun executeRawJsonRequest(
         apiKey: String,
         payload: JSONObject,
         generation: Int = 0,
@@ -6467,7 +6467,7 @@ open class AgentOpenRouterClient internal constructor(
         }
     }
 
-    private data class RawAgentResponse(
+    internal data class RawAgentResponse(
         val content: String,
         val summary: AgentApiSummary,
         val sources: List<AgentSourceCitation>,

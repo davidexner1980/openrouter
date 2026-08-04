@@ -74,13 +74,13 @@ open class AutonomousToolRuntime internal constructor(
             activeRecipes
     }
 
-    suspend fun execute(call: OpenRouterToolCall): ToolExecutionResult = execute(
+    open suspend fun execute(call: OpenRouterToolCall): ToolExecutionResult = execute(
         call = call,
         apiKey = null,
         modelId = null,
     )
 
-    suspend fun execute(
+    open suspend fun execute(
         call: OpenRouterToolCall,
         apiKey: String?,
         modelId: String?,
