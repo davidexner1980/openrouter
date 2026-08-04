@@ -166,5 +166,5 @@ internal fun sourceTitle(url: String): String = runCatching {
 private const val MAX_RECOVERED_SOURCES = 32
 private const val MAX_TITLE_CHARS = 240
 private const val MAX_URL_CHARS = 2_048
-private val MARKDOWN_LINK_PATTERN = Regex("""\[([^\]\r\n]{1,240})]\((https://[^\s)]+)\)""", RegexOption.IGNORE_CASE)
+private val MARKDOWN_LINK_PATTERN = Regex("""\[([^\]\r\n]{1,240})]\s*\((https://[^\s)]+)\)""", RegexOption.IGNORE_CASE)
 private val HTTPS_URL_PATTERN = Regex("""https://[^\s<>\"']+""", RegexOption.IGNORE_CASE)

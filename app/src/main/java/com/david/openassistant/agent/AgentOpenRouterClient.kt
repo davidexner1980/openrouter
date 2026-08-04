@@ -3844,9 +3844,24 @@ open class AgentOpenRouterClient internal constructor(
             }.getOrDefault(trimmed.removeSuffix("/"))
         }
 
-        fun preserveSource(source: AgentSourceCitation, successfulFetch: Boolean = false) {
-            if (successfulFetch) verifiedUrls.add(source.url)
+        val allowedSourceKeys = goal?.evidence?.flatMap { it.sources }?.map { sourceKey(it.url) }?.toSet() ?: emptySet()
+
+        fun preserveSource(
+            source: AgentSourceCitation,
+            successfulFetch: Boolean = false,
+            fromTool: Boolean = false
+        ) {
             val key = sourceKey(source.url)
+            if (successfulFetch) verifiedUrls.add(source.url)
+
+            if (!fromTool && goal != null) {
+                val isVerifiedInLoop = verifiedUrls.contains(source.url) || verifiedUrls.any { sourceKey(it) == key }
+                if (!isVerifiedInLoop && !allowedSourceKeys.contains(key)) {
+                    // Prune fabricated citation from model text/annotations
+                    return
+                }
+            }
+
             val matchingEntries = accumulatedSources.entries
                 .filter { entry -> sourceKey(entry.key) == key }
             val richestExistingExcerpt = matchingEntries
@@ -3923,7 +3938,7 @@ open class AgentOpenRouterClient internal constructor(
                     ?: throw OpenRouterException(null, "The agent model returned an invalid response message.")
                 val providerSources = parseSourceCitations(message.optJSONArray("annotations"))
                 providerSources.forEach { source ->
-                    preserveSource(source)
+                    preserveSource(source, fromTool = false)
                 }
                 executions += providerResearchToolExecutions(root, providerSources)
                 val calls = message.optJSONArray("tool_calls")
@@ -4140,6 +4155,7 @@ open class AgentOpenRouterClient internal constructor(
                                                             preserveSource(
                                                                 source = source,
                                                                 successfulFetch = call.name == "public_web_fetch",
+                                                                fromTool = true,
                                                             )
                                                         }
                                                         priorOutputsBySignature[signature] = result.outputJson
@@ -4247,7 +4263,7 @@ open class AgentOpenRouterClient internal constructor(
                     )?.let { return it }
                     ?: throw OpenRouterException(null, "The agent model returned no usable text after tool execution.")
                 recoverHttpsSourceCitations(content).forEach { source ->
-                    preserveSource(source)
+                    preserveSource(source, fromTool = false)
                 }
                 return RawAgentResponse(
                     content = content,

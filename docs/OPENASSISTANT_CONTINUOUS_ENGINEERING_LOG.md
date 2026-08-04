@@ -2022,3 +2022,116 @@ JVM VERIFIED + INTEGRATION VERIFIED
 ### Recommended Next Pass
 
 - Scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-1611-72f05acf — 2026-08-04T16:11:00
+
+### Status
+
+VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 72f05acf241e549594c335a9abca5ac42bcd7561
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1611-72f05acf: implement robust citation extraction and filter hallucinated sources
+- Remote checked before commit: Yes
+
+### Journal Truth Audit
+
+- Prior entries reviewed: Yes
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+
+- Problem: Hallucinated citations from model response text were being added to the evidence list, allowing models to bypass source-count gates. Also, citation extraction regex was brittle regarding whitespace.
+- Why selected: Addressed Priority 13 (Research quality and evidence defects) and followed "improve robustness of citation extraction" recommendation.
+- Correct owner: AgentOpenRouterClient, ResearchSourceRecovery.
+- Violated invariant: Every factual claim must cite a returned research source or preserved evidence ID. Never invent a citation.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+- Out of scope: Citation-chain validation (already implemented).
+
+### Reproduction
+
+- Starting state: 598 passing tests. Goal with verified evidence.
+- Trigger: Model returns response with text containing a hallucinated URL.
+- Expected: Hallucinated URL is filtered out.
+- Actual: Hallucinated URL was extracted and added to result sources.
+- First causal failure: preserveSource in executeToolAwareJsonRequest lacked filtering against known evidence.
+- Durable result: Hallucinated citations persisted in mission state.
+- Provider count: 1
+- Repeatability: 100% (logic trace and unit test).
+
+### Hypotheses
+
+- Accepted: Filtering citations against goal.evidence and current run's successful fetches prevents model-authored hallucinations.
+- Rejected: Relying solely on CitationValidator (too late in the pipeline, allows quality gate bypass).
+
+### Root Cause
+
+- Root cause: executeToolAwareJsonRequest blindly trusted every URL extracted from model text/annotations without verifying it existed in the research context or was discovered via tool output.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Added filtering in preserveSource and built allowed source keys)
+    - app/src/main/java/com/david/openassistant/agent/ResearchSourceRecovery.kt (Improved MARKDOWN_LINK_PATTERN regex to handle spaces)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/CitationExtractionIntegrityTest.kt (New: verified filtering and regex improvement)
+- Documentation files: docs/OPENASSISTANT_CONTINUOUS_ENGINEERING_LOG.md (Updated)
+- Behavior changed: Model-authored hallucinations (URLs not in evidence context) are now pruned. Markdown links with spaces between label and URL are now correctly extracted.
+- Behavior preserved: Verified citations and tool-discovered sources remain eligible.
+
+### Regression Proof
+
+- Test: CitationExtractionIntegrityTest.kt
+- Failed before repair: Yes (asserted hallucination was present).
+- Expected failure: AssertionError if hallucination is NOT filtered.
+- Passed after repair: Yes.
+- Real production owner exercised: Yes (AgentOpenRouterClient).
+- Durable state loaded: Yes (AgentStepResult sources).
+- Simulation or copied logic present: NO
+- Why recurrence is detected: The test verifies that executeToolAwareJsonRequest prunes an unauthorized URL even when presented in a valid markdown link format.
+
+### Verification
+
+- Baseline: PASSED (after unsetting ANDROID_PREFS_ROOT)
+- Focused: PASSED (CitationExtractionIntegrityTest)
+- Full unit total: 601
+- Passed: 601
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Known: Extremely strict filtering might prune valid but slightly malformed URLs (mitigated by sourceKey canonicalization).
+
+### Repository Hygiene
+
+- Diff check: Passed (manual inspection of changed lines)
+- Generated files: Clean
+- Secret scan: Passed
+- Raw debug-output scan: Passed (clean in app source)
+- Final status: Clean
+
+### Rollback
+
+- Revert method: git revert SELF
+- Data compatibility: Full compatibility.
+
+### Open Issues
+
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Physical acceptance on Samsung SM-G998U.
