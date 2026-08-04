@@ -1427,7 +1427,7 @@ JVM VERIFIED
 - Final status: Clean
 
 ### Rollback
-- Revert method: git revert <commit>
+- Revert method: git revert 34df884e43678e2a86202bd77767bf18be956c78
 - Data compatibility: Full compatibility.
 
 ### Open Issues Updated
@@ -1435,4 +1435,80 @@ JVM VERIFIED
 - Still unresolved: Physical acceptance on Samsung SM-G998U.
 
 ### Next Action
+- Scope: Physical acceptance on Samsung SM-G998U.
+---
+
+## Run CE-20260804-1213-fd38d224 � 2026-08-04T12:13:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: fd38d22479e60d71c195ce20e450e43177e96c36
+- Run commit: 6227ea107149f109268f448c347f3b8908b9075f
+- Commit message: Continuous improvement CE-20260804-1213-fd38d224: remove raw debug output and improve repair truthfulness
+- Remote checked before commit: Yes
+
+### Journal Truth Audit
+- Prior entries reviewed: Yes
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+- Problem: Raw println debug output leaked local absolute paths and bypassed structured diagnostics. Structural repairs for tool availability used RUNNING status incorrectly before lease acquisition.
+- Why selected: Addressed security risk (local path leaks) and maintainability issues. Improved lifecycle truth by ensuring repaired missions enter QUEUED instead of RUNNING.
+- Correct owner: AgentStore, AgentOpenRouterClient.
+- Violated invariant: No raw debug output bypasses structured diagnostics; repairs must leave missions in a truthful state.
+
+### Reproduction
+- Evidence source: Static trace and git grep confirmed several active println calls in production code.
+- Automated reproduction: RecoveryStarvationTest had a println that was verified via console inspection.
+
+### Root Cause
+- Root cause: Leftover debug prints from previous rapid engineering cycles. Non-permissive RUNNING status in repairUniversalToolAvailabilityStateAtomic created a brief period of "untruthful" ownership before a real worker claimed the mission.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Removed printlns, added structured diagnostics for init and errors, updated repair status to QUEUED)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Removed printlns, used diagnostics for terminal transition errors)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/RecoveryStarvationTest.kt (Removed debug println)
+- Behavior changed: Debug logs now only appear in structured diagnostic files. Repaired missions correctly wait in QUEUED for a worker to start them.
+- Behavior preserved: All mission persistence and reconciliation logic.
+
+### Regression Proof
+- Test: Full unit test suite.
+- Passed after repair: Yes.
+- Why recurrence is detected: println search is now part of the standard preflight audit.
+
+### Verification
+- Baseline compilation: PASSED
+- Full unit total: 598
+- Passed: 598
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known: None.
+- Security: Improved (removed local path leaks).
+
+### Repository Hygiene
+- Diff check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert 6227ea107149f109268f448c347f3b8908b9075f
+- Data compatibility: Full compatibility.
+
+### Open Issues Updated
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
 - Scope: Physical acceptance on Samsung SM-G998U.
