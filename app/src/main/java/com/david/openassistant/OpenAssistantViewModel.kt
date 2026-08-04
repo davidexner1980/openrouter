@@ -1963,7 +1963,14 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         apiKey = apiKey,
                         modelId = modelId,
                         messages = requestMessages,
-                        toolDefinitions = autonomousToolRuntime::definitions,
+                        toolDefinitions = {
+                            com.david.openassistant.agent.AgentToolRegistry.attachedToolsPayload(
+                                runtime = autonomousToolRuntime,
+                                networkAvailable = true,
+                                credentialsAvailable = true,
+                                isFreeOnly = freeOnly
+                            )
+                        },
                         executeTool = { call -> autonomousToolRuntime.execute(call, apiKey, modelId) },
                         shouldStop = stopRequested::get,
                         freeOnly = freeOnly,

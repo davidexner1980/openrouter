@@ -19,7 +19,7 @@ import org.junit.Test
 
 class AgentToolScopeTest {
     @Test
-    fun reasoningMilestoneCannotSeeGlobalWorkspaceOrGeneralToolCatalog() {
+    fun reasoningMilestoneRetainsAccessToOperationalTools() {
         val selection = executionToolSelection(
             task = task(
                 capability = AgentCapability.REASON,
@@ -30,8 +30,8 @@ class AgentToolScopeTest {
             focusedRecovery = false,
         )
 
-        assertTrue(selection.definitions.isEmpty())
-        assertEquals(null, selection.preferredToolName)
+        assertTrue("Reasoning must retain tool access", selection.definitions.isNotEmpty())
+        assertEquals(allDefinitions.size, selection.definitions.size)
     }
 
     @Test

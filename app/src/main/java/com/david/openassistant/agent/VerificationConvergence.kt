@@ -324,7 +324,7 @@ internal fun selectVerificationRecoveryRoute(
  * counts are technically satisfied. Route only findings that explicitly call
  * for absent sources, records, measurements, coverage, or triangulation back
  * into research. Editorial changes and removal of unsupported prose remain an
- * evidence-only correction.
+ * correction.
  */
 internal fun verificationFindingRequiresResearch(finding: String): Boolean {
     val normalized = finding.lowercase(Locale.US).replace(Regex("\\s+"), " ").trim()

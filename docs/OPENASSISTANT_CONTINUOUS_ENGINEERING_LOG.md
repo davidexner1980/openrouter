@@ -931,3 +931,61 @@ STATIC TRACE + JVM VERIFIED
 
 ### Recommended Next Pass
 - Next scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-0102-fe2efaf0 — 2026-08-04T01:02:00
+
+### Status
+PARTIALLY VERIFIED
+
+### Evidence Level
+STATIC TRACE + JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: fe2efaf09f8cebc23a471bf597b08e5af0c5c79e
+- Run commit: SELF — commit containing this journal entry
+- Commit message: Continuous improvement CE-20260804-0102-fe2efaf0: enforce universal tool availability across all mission phases and chat
+- Remote checked before commit: Yes
+
+### Selected Scope
+- Problem: Runtime-reproduced capability inversion where tools were disabled during Synthesis, Verification, and Correction.
+- Why selected: Restore agency and evidence acquisition capability when preserved evidence is insufficient.
+- Correct owner: AgentOpenRouterClient, AgentExecutionRecovery, AgentToolScope, AgentVerifier.
+- Violated invariant: Lifecycle phase must never remove a tool.
+- Protected behavior: [PB-001] Mission recovery must preserve evidence and provenance.
+
+### Root Cause
+- Root cause: Hardcoded `allowsInteractiveTools = false` in several `AgentExecutionStrategy` instances and explicit tool filtering in `AgentToolScope.capabilityScopedToolDefinitions`.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionRecovery.kt (Enabled tools for all strategies)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolScope.kt (Removed capability-based filtering)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Tool-aware verification, removed bootstrap cutoff)
+    - app/src/main/java/com/david/openassistant/agent/AgentVerifier.kt (Updated correction instructions)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (New: authoritative tool availability truth)
+    - app/src/main/java/com/david/openassistant/agent/ToolMappingUtils.kt (New: shared tool mapping)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Implemented existing-mission repair)
+    - app/src/main/java/com/david/openassistant/data/openrouter/OpenRouterClient.kt (Updated chat tool loop for universal tools)
+    - app/src/main/java/com/david/openassistant/OpenAssistantViewModel.kt (Integrated registry into chat)
+- Test files:
+    - Updated AgentExecutionRecoveryTest, AutonomyRuntimeTest, AgentToolBudgetTest, AgentToolScopeTest.
+- Behavior changed: All mission phases and chat now have access to the full operational tool registry. Evidence acquisition is allowed whenever a gap remains.
+
+### Verification
+- Full unit total: 589
+- Passed: 580
+- Failed: 9 (Pre-existing failures preserved)
+- Samsung physical-device result: PENDING
+
+### Risks
+- Known: Increased token usage due to model-driven tool calls in correction phases.
+- Performance: Negligible overhead for registry lookups.
+
+### Open Issues Updated
+- Still open: UNIVERSAL-TOOL-AVAILABILITY (Issue remains until Samsung verification passes).
+
+### Recommended Next Pass
+- Next scope: Physical acceptance on Samsung SM-G998U.

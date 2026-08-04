@@ -44,7 +44,7 @@ internal fun selectAgentExecutionStrategy(
         return evidenceBoundedCorrectionStrategy
     }
 
-    if (task.capability in AgentCapability.EVIDENCE_BOUNDED_CAPABILITIES) {
+    if (task.capability in AgentCapability.STRUCTURED_RESULT_CAPABILITIES) {
         return evidenceBoundedStrategy(task.capability)
     }
 
@@ -105,31 +105,31 @@ private fun isUsefulCheckpoint(taskEvidence: List<AgentEvidence>): Boolean {
 
 private val evidenceBoundedCorrectionStrategy = AgentExecutionStrategy(
     profile = AgentExecutionProfile.COMPATIBILITY_RESPONSE,
-    allowsInteractiveTools = false,
+    allowsInteractiveTools = true,
     reuseCheckpointSources = false,
-    explanation = "Verification correction is evidence-bounded and runs as one structured response without new searches or tool loops.",
+    explanation = "Use preserved evidence first. Search, fetch, calculate, inspect, or use another tool whenever additional evidence is needed to resolve a verification finding.",
 )
 
 private fun evidenceBoundedStrategy(capability: AgentCapability) = AgentExecutionStrategy(
     profile = AgentExecutionProfile.EVIDENCE_BOUNDED_RESPONSE,
-    allowsInteractiveTools = false,
+    allowsInteractiveTools = true,
     reuseCheckpointSources = false,
     explanation = when (capability) {
         AgentCapability.REASON ->
-            "Reasoning is milestone-scoped and runs as one structured response without workspace, web, or recipe tools."
+            "Focus on the assigned reasoning problem. Use searches or tools when facts, definitions, calculations, or current information are required."
         AgentCapability.SYNTHESIZE ->
-            "Synthesis is evidence-bounded and runs as one structured response without new tools or searches."
+            "Integrate preserved evidence. Gather additional evidence when a material gap prevents a grounded result."
         AgentCapability.VERIFY ->
-            "Verification is evidence-bounded and runs as one structured response without changing the inspected work."
-        else -> "This milestone runs as one evidence-bounded structured response."
+            "Evaluate the supplied work and independently investigate unresolved, contradictory, stale, or weakly supported claims when necessary."
+        else -> "Use preserved evidence first while retaining access to operational tools for unresolved gaps."
     },
 )
 
 private val checkpointCompletionStrategy = AgentExecutionStrategy(
     profile = AgentExecutionProfile.CHECKPOINT_COMPLETION,
-    allowsInteractiveTools = false,
+    allowsInteractiveTools = true,
     reuseCheckpointSources = true,
-    explanation = "Using the preserved research checkpoint in one completion pass; its real search/fetch audit is retained and no duplicate searches are counted.",
+    explanation = "Reuse the preserved research checkpoint to avoid duplicate work, while retaining the ability to search or use another tool for unresolved gaps.",
 )
 
 private fun angleSwitchRecoveryStrategy(attemptCount: Int) = AgentExecutionStrategy(
@@ -141,9 +141,9 @@ private fun angleSwitchRecoveryStrategy(attemptCount: Int) = AgentExecutionStrat
 
 private val compatibilityResponseStrategy = AgentExecutionStrategy(
     profile = AgentExecutionProfile.COMPATIBILITY_RESPONSE,
-    allowsInteractiveTools = false,
+    allowsInteractiveTools = true,
     reuseCheckpointSources = false,
-    explanation = "Two provider attempts ended without usable output, so this retry uses a smaller single-response compatibility request.",
+    explanation = "Two provider attempts ended without usable output, so this retry uses a smaller request shape while retaining access to operational tools.",
 )
 
 internal const val MAX_REQUIRED_TOOL_MILESTONE_ATTEMPTS = 6
@@ -162,7 +162,7 @@ internal fun hasExhaustedEvidenceBoundedAttemptWindow(
     task: AgentTask,
     qualityAccepted: Boolean,
 ): Boolean = !qualityAccepted &&
-    task.capability in AgentCapability.EVIDENCE_BOUNDED_CAPABILITIES &&
+    task.capability in AgentCapability.STRUCTURED_RESULT_CAPABILITIES &&
     task.attemptCount >= MAX_EVIDENCE_BOUNDED_MILESTONE_ATTEMPTS
 
 internal fun hasExhaustedResearchAttemptWindow(
@@ -174,7 +174,7 @@ internal fun hasExhaustedResearchAttemptWindow(
 
 internal fun localAttemptWindowLimit(capability: AgentCapability): Int? = when (capability) {
     in AgentCapability.RESEARCH_CAPABILITIES -> MAX_RESEARCH_MILESTONE_ATTEMPTS
-    in AgentCapability.EVIDENCE_BOUNDED_CAPABILITIES -> MAX_EVIDENCE_BOUNDED_MILESTONE_ATTEMPTS
+    in AgentCapability.STRUCTURED_RESULT_CAPABILITIES -> MAX_EVIDENCE_BOUNDED_MILESTONE_ATTEMPTS
     AgentCapability.CORRECT -> MAX_CORRECTION_MILESTONE_ATTEMPTS
     AgentCapability.TOOL_USE, AgentCapability.TOOL_CREATE ->
         MAX_REQUIRED_TOOL_MILESTONE_ATTEMPTS
@@ -221,12 +221,11 @@ internal fun automaticResearchRecoveryMessage(task: AgentTask, reason: String): 
     }
     return "Research milestone '${task.title}' completed its $MAX_RESEARCH_MILESTONE_ATTEMPTS-attempt local " +
         "safety window without verified completion. Preserved sources, claims, and checkpoints remain " +
-        "available. A new automatic recovery window will retry after backoff using a different provider " +
-        "route when available and newly reasoned query angles. Last deficiency: $preciseReason"
+        "available. A new automatic recovery window will retry after backoff using newly reasoned query angles and all operational tools. Last deficiency: $preciseReason"
 }
 
 /**
- * Opens a fresh evidence-only correction window after the local safety window
+ * Opens a fresh correction window after the local safety window
  * ends. The publication graph and strongest partial correction stay durable;
  * only the per-window attempt counter is reset. This prevents one late
  * provider timeout from turning a nearly complete mission into a terminal
@@ -249,14 +248,14 @@ internal fun automaticCorrectionRecoveryMessage(task: AgentTask, reason: String)
     return "Correction milestone '${task.title}' completed its $MAX_CORRECTION_MILESTONE_ATTEMPTS-attempt " +
         "local safety window without a publishable result. Preserved evidence, claims, and the strongest " +
         "partial correction remain available. A new automatic correction window will retry after backoff " +
-        "with provider-route recovery when another route is available. Last deficiency: $preciseReason"
+        "with all operational tools. Last deficiency: $preciseReason"
 }
 
 internal fun AgentTask.reopenAutomaticEvidenceBoundedWindow(
     preciseFailure: String,
     now: Long = System.currentTimeMillis(),
 ): AgentTask = reopenAutomaticWindow(
-    capabilityFilter = { it in AgentCapability.EVIDENCE_BOUNDED_CAPABILITIES },
+    capabilityFilter = { it in AgentCapability.STRUCTURED_RESULT_CAPABILITIES },
     preciseFailure = preciseFailure,
     errorMessageIfBlank = "The previous evidence-bounded window did not pass its completion gate.",
     now = now,
@@ -264,13 +263,12 @@ internal fun AgentTask.reopenAutomaticEvidenceBoundedWindow(
 
 internal fun automaticEvidenceBoundedRecoveryMessage(task: AgentTask, reason: String): String {
     val preciseReason = reason.trim().take(MAX_REASON_LENGTH).ifBlank {
-        "The previous model-only window did not pass its deterministic completion gate."
+        "The previous window did not pass its deterministic completion gate."
     }
     val label = task.capability.wireName.replace('_', ' ').replaceFirstChar(Char::uppercase)
     return "$label milestone '${task.title}' completed its $MAX_EVIDENCE_BOUNDED_MILESTONE_ATTEMPTS-attempt " +
         "local safety window without verified completion. Its strongest evidence and checkpoint remain " +
-        "available. A new automatic window will retry after backoff, using provider-route recovery when " +
-        "another route is available. " +
+        "available. A new automatic window will retry after backoff using all operational tools. " +
         "Last deficiency: $preciseReason"
 }
 
@@ -297,13 +295,13 @@ private fun AgentTask.reopenAutomaticWindow(
 
 internal fun milestoneBoundaryInstruction(capability: AgentCapability): String = when (capability) {
     AgentCapability.REASON ->
-        "Produce only the assigned decision framework, definitions, unknowns, or evidence needs. Do not research, name, compare, rank, price, or recommend real-world candidates; later research milestones own those facts."
+        "Produce only the assigned decision framework, definitions, unknowns, or evidence needs. Stay focused on the assigned reasoning problem. You may search or use tools when facts, definitions, calculations, or current information are required."
     AgentCapability.SYNTHESIZE ->
-        "Synthesize the preserved evidence into the complete result for this milestone. State supported factual claims from that evidence with exact citations; writing those supported claims in this response does not make them new. Do not introduce facts, sources, searches, or tool results absent from the preserved evidence."
+        "Synthesize the preserved evidence into the complete result for this milestone. Integrate existing evidence. You may gather new evidence when a critical gap remains."
     AgentCapability.CORRECT ->
-        "Correct only the listed verification findings from preserved evidence. Do not restart the investigation or add unsupported facts."
+        "Correct the listed verification findings. Use search, fetch, calculate, inspect, or use another tool whenever preserved evidence is insufficient to resolve a finding."
     AgentCapability.VERIFY ->
-        "Evaluate only the supplied work and acceptance criteria. Do not change the work, perform new research, or create supporting evidence."
+        "Independently evaluate the work. You may search and use tools to test claims, freshness, provenance, entity fit, contradictions, and acceptance criteria."
     AgentCapability.WEB_RESEARCH,
     AgentCapability.DEEP_RESEARCH,
         -> "Complete only this research pass and its acceptance criteria; do not perform later synthesis or claim the overall mission is finished."

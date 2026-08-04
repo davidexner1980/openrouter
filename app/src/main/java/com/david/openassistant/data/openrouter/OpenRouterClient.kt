@@ -6,6 +6,7 @@ import com.david.openassistant.data.network.filterSensitive
 import com.david.openassistant.domain.tools.OpenRouterToolCall
 import com.david.openassistant.domain.tools.SafeToolDefinition
 import com.david.openassistant.domain.tools.ToolExecutionResult
+import com.david.openassistant.agent.toOpenRouterFunctionTool
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -67,7 +68,7 @@ class OpenRouterClient(
         apiKey: String,
         modelId: String,
         messages: List<ChatMessage>,
-        toolDefinitions: () -> List<SafeToolDefinition>,
+        toolDefinitions: () -> JSONArray,
         executeTool: suspend (OpenRouterToolCall) -> ToolExecutionResult,
         shouldStop: () -> Boolean = { false },
         freeOnly: Boolean = false,
@@ -89,13 +90,26 @@ class OpenRouterClient(
         var totalCost = 0.0
         var round = 0
 
+        val availableNames = mutableSetOf<String>()
         while (true) {
             if (shouldStop()) throw OpenRouterException(null, "Generation was stopped.")
-            val definitions = toolDefinitions().distinctBy { it.name }
-            if (definitions.isEmpty()) throw OpenRouterException(null, "No autonomous local tools are available.")
+            val toolArray = toolDefinitions()
+            if (toolArray.length() == 0) throw OpenRouterException(null, "No autonomous tools are available.")
+            
+            availableNames.clear()
+            for (i in 0 until toolArray.length()) {
+                val toolObj = toolArray.optJSONObject(i) ?: continue
+                val type = toolObj.optString("type")
+                if (type == "function") {
+                    toolObj.optJSONObject("function")?.optString("name")?.let { availableNames.add(it) }
+                } else if (type.startsWith("openrouter:")) {
+                    availableNames.add(type)
+                }
+            }
+
             payload.put("tool_choice", "auto")
             payload.put("parallel_tool_calls", true)
-            payload.put("tools", JSONArray().apply { definitions.forEach { put(it.toOpenRouterJson()) } })
+            payload.put("tools", toolArray)
             
             OpenRouterProtocolUtils.validateOutboundRequest(payload)
 
@@ -164,7 +178,6 @@ class OpenRouterClient(
                     )
                 }
                 messageArray.put(JSONObject(message.toString()).put("role", "assistant"))
-                val availableNames = definitions.mapTo(mutableSetOf()) { it.name }
                 for (index in 0 until calls.length()) {
                     val rawCall = calls.optJSONObject(index)
                         ?: throw OpenRouterException(null, "The selected model returned an invalid tool request.")
@@ -524,35 +537,6 @@ class OpenRouterClient(
         return true
     }
 
-    private fun SafeToolDefinition.toOpenRouterJson(): JSONObject {
-        val properties = JSONObject()
-        val required = JSONArray()
-        parameters.forEach { parameter ->
-            properties.put(
-                parameter.name,
-                JSONObject()
-                    .put("type", parameter.type)
-                    .put("description", parameter.description),
-            )
-            if (parameter.required) required.put(parameter.name)
-        }
-        return JSONObject()
-            .put("type", "function")
-            .put(
-                "function",
-                JSONObject()
-                    .put("name", name)
-                    .put("description", description)
-                    .put(
-                        "parameters",
-                        JSONObject()
-                            .put("type", "object")
-                            .put("properties", properties)
-                            .put("required", required)
-                            .put("additionalProperties", false),
-                    ),
-            )
-    }
 
     private suspend fun executeCapturedCall(
         request: Request,

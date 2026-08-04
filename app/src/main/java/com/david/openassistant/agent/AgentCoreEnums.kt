@@ -109,7 +109,7 @@ enum class AgentCapability(val wireName: String) {
                 ?: throw IllegalArgumentException("Unsupported agent capability: $value")
 
         val RESEARCH_CAPABILITIES = setOf(WEB_RESEARCH, DEEP_RESEARCH)
-        val EVIDENCE_BOUNDED_CAPABILITIES = setOf(REASON, SYNTHESIZE, CORRECT, VERIFY)
+        val STRUCTURED_RESULT_CAPABILITIES = setOf(REASON, SYNTHESIZE, CORRECT, VERIFY)
     }
 }
 

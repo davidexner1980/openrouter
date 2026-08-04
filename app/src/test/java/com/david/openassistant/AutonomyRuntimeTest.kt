@@ -920,7 +920,7 @@ class AutonomyRuntimeTest {
     }
 
     @Test
-    fun researchReceivesOnlyPublicWebLocalTools() {
+    fun researchRetainsFullOperationalToolSet() {
         val definitions = listOf(
             SafeToolCatalog.definitions,
             AdvancedToolCatalog.definitions,
@@ -930,10 +930,10 @@ class AutonomyRuntimeTest {
             HostedSandboxToolCatalog.definitions,
         ).flatten()
 
-        val selected = capabilityScopedToolDefinitions(AgentCapability.DEEP_RESEARCH, definitions)
+        val selected = capabilityScopedToolDefinitions(definitions)
 
-        assertEquals(setOf("public_web_search", "public_web_fetch"), selected.map { it.name }.toSet())
-        assertEquals(2, selected.size)
+        assertTrue("Research must retain access to all operational tools", selected.size >= 49)
+        assertTrue(selected.any { it.name == "public_web_search" })
     }
 
     @Test

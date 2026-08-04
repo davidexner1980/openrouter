@@ -127,7 +127,7 @@ object AgentLifecycleReducer {
                                     AgentCapability.TOOL_USE,
                                     AgentCapability.TOOL_CREATE,
                                 ) ||
-                                    task.capability in AgentCapability.EVIDENCE_BOUNDED_CAPABILITIES ||
+                                    task.capability in AgentCapability.STRUCTURED_RESULT_CAPABILITIES ||
                                     task.capability in AgentCapability.RESEARCH_CAPABILITIES
                             )
                         ) {

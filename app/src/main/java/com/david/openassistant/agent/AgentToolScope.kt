@@ -3,31 +3,16 @@ package com.david.openassistant.agent
 import com.david.openassistant.domain.tools.SafeToolDefinition
 import java.util.Locale
 
-private val RESEARCH_LOCAL_TOOL_NAMES = setOf("public_web_search", "public_web_fetch")
 
 internal data class FocusedToolSelection(
     val definitions: List<SafeToolDefinition>,
     val preferredToolName: String?,
 )
 
-/** Keeps provider context capability-correct without exposing unrelated state. */
 internal fun capabilityScopedToolDefinitions(
-    capability: AgentCapability,
     definitions: List<SafeToolDefinition>,
     maximumDefinitions: Int = 96,
-): List<SafeToolDefinition> = when (capability) {
-    AgentCapability.WEB_RESEARCH,
-    AgentCapability.DEEP_RESEARCH,
-    -> definitions.filter { it.name in RESEARCH_LOCAL_TOOL_NAMES }
-
-    AgentCapability.REASON,
-    AgentCapability.SYNTHESIZE,
-    AgentCapability.CORRECT,
-    AgentCapability.VERIFY,
-    -> emptyList()
-
-    else -> definitions.take(maximumDefinitions)
-}
+): List<SafeToolDefinition> = definitions.take(maximumDefinitions)
 
 /**
  * Full execution starts with the entire applicable catalog. Narrowing is a
@@ -43,7 +28,6 @@ internal fun executionToolSelection(
 } else {
     FocusedToolSelection(
         definitions = capabilityScopedToolDefinitions(
-            capability = task.capability,
             definitions = definitions,
             maximumDefinitions = MAX_FULL_LOCAL_TOOL_DEFINITIONS,
         ),
@@ -65,15 +49,6 @@ internal fun focusedToolSelection(
     maximumDefinitions: Int = MAX_FOCUSED_TOOL_DEFINITIONS,
 ): FocusedToolSelection {
     if (maximumDefinitions <= 0 || definitions.isEmpty()) {
-        return FocusedToolSelection(emptyList(), null)
-    }
-    if (task.capability in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH)) {
-        return FocusedToolSelection(
-            definitions = capabilityScopedToolDefinitions(task.capability, definitions, maximumDefinitions),
-            preferredToolName = null,
-        )
-    }
-    if (task.capability in AgentCapability.EVIDENCE_BOUNDED_CAPABILITIES || task.capability == AgentCapability.CORRECT) {
         return FocusedToolSelection(emptyList(), null)
     }
 

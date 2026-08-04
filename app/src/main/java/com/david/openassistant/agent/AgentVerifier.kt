@@ -375,7 +375,7 @@ class AgentVerifier(
                             verificationCorrectionStreak = 0,
                             events = appendEvent(
                                 current.events,
-                                "Automatic verification recovery reopened the newest evidence-only correction with a fresh local attempt window and preserved every source, claim, and checkpoint.",
+                                "Automatic verification recovery reopened the newest correction with a fresh local attempt window and preserved every source, claim, and checkpoint.",
                             ),
                             error = null,
                         )
@@ -445,12 +445,12 @@ class AgentVerifier(
                             }
                         } else {
                             buildString {
-                                appendLine("Correct every missing requirement and deterministic publication-gate finding from preserved evidence only.")
+                                appendLine("Correct every missing requirement and deterministic publication-gate finding. Use preserved evidence first.")
                                 verification.correctionInstructions
                                     ?.takeIf(String::isNotBlank)
                                     ?.let { appendLine(it) }
                                 correctionFindings.forEach { appendLine("- $it") }
-                                appendLine("Produce one replacement final result with explicit evidence support and no new research.")
+                                appendLine("Produce one replacement final result. You may search, fetch, or use another tool whenever additional evidence is needed to resolve a finding.")
                             }
                         },
                         capability = recoveryRoute.capability,
@@ -491,7 +491,7 @@ class AgentVerifier(
                         events = appendEvent(
                             current.events,
                             if (recoveryRoutes.all { it.evidenceOnly }) {
-                                "Publication gate failed. Bounded evidence correction ${current.verificationCorrectionStreak + 1} of $MAX_VERIFICATION_CORRECTION_PASSES was queued from the preserved evidence."
+                                "Publication gate failed. Bounded correction ${current.verificationCorrectionStreak + 1} of $MAX_VERIFICATION_CORRECTION_PASSES was queued."
                             } else {
                                 "Publication gate found deterministic research deficits. Bounded recovery bundle ${current.verificationCorrectionStreak + 1} of $MAX_VERIFICATION_CORRECTION_PASSES queued ${correctionTasks.size} focused role(s)."
                             },

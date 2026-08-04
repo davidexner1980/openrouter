@@ -62,7 +62,7 @@ class AgentToolBudgetTest {
     }
 
     @Test
-    fun finalCompletionPayloadRemovesEveryToolSurface() {
+    fun finalCompletionPayloadRetainsToolsWhileRelaxingChoice() {
         val payload = JSONObject()
             .put("tools", JSONArray().put(JSONObject().put("type", "function")))
             .put("tool_choice", "required")
@@ -72,10 +72,10 @@ class AgentToolBudgetTest {
 
         val finalPayload = finalToolFreeCompletionPayload(payload)
 
-        assertFalse(finalPayload.has("tools"))
+        assertTrue(finalPayload.has("tools"))
         assertFalse(finalPayload.has("tool_choice"))
-        assertFalse(finalPayload.has("parallel_tool_calls"))
-        assertFalse(finalPayload.has("plugins"))
+        assertTrue(finalPayload.has("parallel_tool_calls"))
+        assertTrue(finalPayload.has("plugins"))
         assertEquals("user", finalPayload.getJSONArray("messages").getJSONObject(1).getString("role"))
     }
 }

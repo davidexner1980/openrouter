@@ -32,28 +32,28 @@ import org.junit.Test
 
 class AgentExecutionRecoveryTest {
     @Test
-    fun reasoningMilestoneIsAlwaysOneEvidenceBoundedResponse() {
+    fun reasoningMilestoneAllowsInteractiveTools() {
         val task = task(AgentCapability.REASON)
 
         val strategy = selectAgentExecutionStrategy(goal(task), task)
 
         assertEquals(AgentExecutionProfile.EVIDENCE_BOUNDED_RESPONSE, strategy.profile)
-        assertFalse(strategy.allowsInteractiveTools)
+        assertTrue(strategy.allowsInteractiveTools)
         assertFalse(strategy.reuseCheckpointSources)
     }
 
     @Test
-    fun synthesisMilestoneCannotStartNewToolOrSearchLoops() {
+    fun synthesisMilestoneAllowsNewToolOrSearchLoops() {
         val task = task(AgentCapability.SYNTHESIZE)
 
         val strategy = selectAgentExecutionStrategy(goal(task), task)
 
         assertEquals(AgentExecutionProfile.EVIDENCE_BOUNDED_RESPONSE, strategy.profile)
-        assertFalse(strategy.allowsInteractiveTools)
+        assertTrue(strategy.allowsInteractiveTools)
     }
 
     @Test
-    fun repeatedZeroOutputFailuresActivateSingleResponseCompatibility() {
+    fun repeatedZeroOutputFailuresActivateCompatibilityWhileRetainingTools() {
         val task = task(AgentCapability.DEEP_RESEARCH)
         val goal = goal(task).copy(
             attempts = listOf(
@@ -65,7 +65,7 @@ class AgentExecutionRecoveryTest {
         val strategy = selectAgentExecutionStrategy(goal, task)
 
         assertEquals(AgentExecutionProfile.COMPATIBILITY_RESPONSE, strategy.profile)
-        assertFalse(strategy.allowsInteractiveTools)
+        assertTrue(strategy.allowsInteractiveTools)
     }
 
     @Test
@@ -81,11 +81,11 @@ class AgentExecutionRecoveryTest {
         val strategy = selectAgentExecutionStrategy(goal, task)
 
         assertEquals(AgentExecutionProfile.COMPATIBILITY_RESPONSE, strategy.profile)
-        assertFalse(strategy.allowsInteractiveTools)
+        assertTrue(strategy.allowsInteractiveTools)
     }
 
     @Test
-    fun usefulResearchCheckpointIsReusedWithoutMoreSearchLoops() {
+    fun usefulResearchCheckpointIsReusedWhileRetainingToolAvailability() {
         val task = task(AgentCapability.DEEP_RESEARCH).copy(attemptCount = 4)
         val goal = goal(task).copy(
             evidence = listOf(
@@ -107,7 +107,7 @@ class AgentExecutionRecoveryTest {
 
         assertEquals(AgentExecutionProfile.CHECKPOINT_COMPLETION, strategy.profile)
         assertEquals(true, strategy.reuseCheckpointSources)
-        assertFalse(strategy.allowsInteractiveTools)
+        assertTrue(strategy.allowsInteractiveTools)
     }
 
     @Test
@@ -343,31 +343,31 @@ class AgentExecutionRecoveryTest {
     }
 
     @Test
-    fun reasonBoundaryForbidsPrematureResearchAndRecommendations() {
+    fun reasonBoundaryAllowsResearchWhenRequiredForDefinitions() {
         val boundary = milestoneBoundaryInstruction(AgentCapability.REASON)
 
-        assertTrue(boundary.contains("Do not research"))
-        assertTrue(boundary.contains("recommend"))
-        assertTrue(boundary.contains("later research milestones"))
+        assertTrue(boundary.contains("Stay focused"))
+        assertTrue(boundary.contains("You may search or use tools"))
+        assertTrue(boundary.contains("current information are required"))
     }
 
     @Test
-    fun synthesisBoundaryDistinguishesGroundedRestatementFromNewFacts() {
+    fun synthesisBoundaryAllowsResearchWhenCriticalGapRemains() {
         val boundary = milestoneBoundaryInstruction(AgentCapability.SYNTHESIZE)
 
-        assertTrue(boundary.contains("does not make them new"))
-        assertTrue(boundary.contains("absent from the preserved evidence"))
+        assertTrue(boundary.contains("Integrate existing evidence"))
+        assertTrue(boundary.contains("gather new evidence when a critical gap remains"))
         assertTrue(boundary.contains("complete result"))
     }
 
     @Test
-    fun verificationCorrectionIsAlwaysASingleEvidenceBoundedResponse() {
+    fun verificationCorrectionAllowsInteractiveTools() {
         val task = task(AgentCapability.CORRECT)
 
         val strategy = selectAgentExecutionStrategy(goal(task), task)
 
         assertEquals(AgentExecutionProfile.COMPATIBILITY_RESPONSE, strategy.profile)
-        assertFalse(strategy.allowsInteractiveTools)
+        assertTrue(strategy.allowsInteractiveTools)
         assertFalse(strategy.reuseCheckpointSources)
     }
 

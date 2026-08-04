@@ -81,16 +81,13 @@ internal fun relaxRequiredFunctionToolChoice(payload: JSONObject) {
 
 internal fun finalToolFreeCompletionPayload(payload: JSONObject): JSONObject =
     JSONObject(payload.toString()).apply {
-        remove("tools")
         remove("tool_choice")
-        remove("parallel_tool_calls")
-        remove("plugins")
         optJSONArray("messages")?.put(
             JSONObject()
                 .put("role", "user")
                 .put(
                     "content",
-                    "The bounded local-tool window is complete. Using only the tool results and preserved evidence above, return the required structured milestone result now. Do not request or call another tool.",
+                    "The local-tool window for this round is complete. Reuse the tool results and preserved evidence above to return the required structured milestone result. Stop using tools when the result is sufficiently grounded.",
                 ),
         )
     }
@@ -1278,7 +1275,7 @@ open class AgentOpenRouterClient internal constructor(
             minimumDomains = 2,
         )
         val allowInteractiveToolsForCall =
-            executionStrategy.allowsInteractiveTools && !bootstrapCompletedResearchTools
+            executionStrategy.allowsInteractiveTools
         val taskToolPlan = if (allowInteractiveToolsForCall) {
             buildTaskToolPlan(
                 task = task,
@@ -1344,12 +1341,10 @@ open class AgentOpenRouterClient internal constructor(
                     else -> {}
                 }
             } else {
+                appendLine("EXECUTION PROFILE: ${executionStrategy.explanation}")
                 if (bootstrapCompletedResearchTools) {
-                    appendLine("EXECUTION PROFILE: The deterministic research bootstrap already completed the required distinct searches, full-source reads, and evidence-driven follow-up for this pass.")
-                } else {
-                    appendLine("EXECUTION PROFILE: ${executionStrategy.explanation}")
+                    appendLine("The deterministic research bootstrap already completed the required distinct searches, full-source reads, and evidence-driven follow-up for this pass. Reuse preserved evidence first before repeating work.")
                 }
-                appendLine("No model-driven tools are attached to this request. Finish in one structured response from the supplied durable evidence and deterministic research bootstrap; do not request tools or repeat searches.")
             }
             appendLine("Separate facts, inferences, recommendations, and uncertainty in the claims array.")
             appendLine("A factual claim must cite a source URL returned by research or a preserved evidence ID. Never invent a citation.")
@@ -1364,7 +1359,7 @@ open class AgentOpenRouterClient internal constructor(
                     appendLine("FOCUSED RESEARCH PROTOCOL (${researchRole.name.lowercase()}):")
                     appendLine("1. Work only on this pass's role; use preserved evidence instead of repeating completed passes.")
                     if (executionStrategy.reuseCheckpointSources || bootstrapCompletedResearchTools) {
-                        appendLine("2. The supplied bootstrap or preserved checkpoint already contains the runtime's executed search and full-source-read audit. Do not claim that this tool-free completion response ran new searches or fetches. Analyze the preserved query trail, fetched text, exact URLs, and disagreements into the complete work product.")
+                        appendLine("2. Use the supplied bootstrap or preserved checkpoint evidence first. You may use additional searches and tools when addressing an unresolved evidence gap. Analyze the preserved query trail, fetched text, exact URLs, and disagreements into the complete work product.")
                     } else {
                         appendLine("2. Run at least ${autonomyPolicy.minimumSearchQueriesPerResearchPass} genuinely distinct search angles. Extract unfamiliar terms, named entities, citations, datasets, and disagreements from what you read, then follow the most informative leads with additional searches.")
                         appendLine("3. Open and analyze at least ${autonomyPolicy.targetFullSourceReadsPerResearchPass} important full pages, reports, datasets, or PDFs when accessible. Short search-result snippets are discovery clues, never sufficient proof for a material conclusion. If provider search returns long query-focused source extracts but exact fetch telemetry is unavailable, corroborate at least ${autonomyPolicy.targetFullSourceReadsPerResearchPass * PROVIDER_EXTRACTS_PER_READ_UNIT} independent substantial extracts and still fetch the most decision-critical pages whenever the route supports it.")
@@ -1416,13 +1411,13 @@ open class AgentOpenRouterClient internal constructor(
                 task.capability == AgentCapability.CORRECT -> {
                     appendLine()
                     appendLine("VERIFICATION CORRECTION PROTOCOL:")
-                    appendLine("1. Produce a replacement publication result from the preserved evidence; do not start another research pass or introduce new facts.")
+                    appendLine("1. Correct the listed verification findings using preserved evidence first. Search, fetch, calculate, inspect, or use another tool whenever additional evidence is needed to resolve a finding.")
                     appendLine("2. Remove contradicted or unsupported statements. Qualify genuine uncertainty instead of presenting it as fact.")
                     appendLine("3. Every factual claim in the claims array must include an exact preserved evidence_id and, for web-backed work, its matching exact HTTPS source URL.")
                     appendLine("4. Omit any factual claim that cannot be traced precisely. Preserved evidence remains available even when a claim is excluded from publication.")
                     appendLine("5. The work_product itself must be the complete corrected user-facing result, not a description of what a corrected result includes or a note claiming that findings were addressed.")
                     appendLine("6. The work_product must contain at least ${ResearchQualityGate.MIN_CORRECTION_CONTENT_CHARS} characters and at least ${ResearchQualityGate.MIN_CORRECTION_CLAIMS} material evidence-grounded claims, including one factual claim.")
-                    appendLine("7. Address every listed gate finding once, then return one complete structured response without requesting tools or searches.")
+                    appendLine("7. Address every listed gate finding. Use new searches and tools when they address an unresolved evidence gap. Stop using tools when the result is sufficiently grounded.")
                     appendLine("8. Recheck entity-to-source fit using the preserved source titles and URL paths. Never cite a sibling product, model, version, or page merely because it appears in the same multi-source evidence bundle.")
                     appendLine("9. A finding is resolved when the replacement publication removes the unsupported claim, qualifies it as uncertainty, or supplies precise preserved support. Missing evidence does not force the corrected answer to repeat an unprovable claim. Mark that finding PASS when the offending assertion is no longer published and its consequence is stated honestly.")
                 }
@@ -1746,7 +1741,7 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("Check completeness, internal consistency, unsupported claims, contradictions, source fit, and usability.")
             appendLine("Re-grade every goal acceptance criterion and review every structured claim you can evaluate.")
             appendLine("A proposed reusable concept is allowed only when the pattern is genuinely reusable; it remains proposal-only and must include risks and falsifiable shadow tests.")
-            appendLine("The final_answer may only organize or restate supported material already present in the supplied evidence. Do not introduce new factual claims during verification.")
+            appendLine("The final_answer may organize or restate supported material already present in the supplied evidence. Use searches and tools to independently investigate unresolved, contradictory, stale, or weakly supported claims when necessary.")
             appendLine("Evidence can contain rejected, partial, or superseded material for audit. Every factual statement in final_answer must correspond to an active structured claim that you review as supported with its preserved evidence and exact source URL; otherwise omit it or state the uncertainty without presenting it as fact.")
             appendLine("Write final_answer for the user with ordinary Markdown links to the exact HTTPS sources. Internal claim IDs and evidence IDs are audit references, not user-facing citations, and must never be the only citation shown.")
             if (goal.hasEpistemicallyBoundedConclusion()) {
@@ -1771,13 +1766,32 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("Evidence and work product:")
             append(evidence.ifBlank { "No evidence was produced." })
         }
-        val response = executeStructuredWithFallback(
+        val toolPlan = buildTaskToolPlan(
+            task = AgentTask(
+                id = "verification",
+                capability = AgentCapability.VERIFY,
+                title = "Independent verification",
+                instructions = "Independently verify the goal.",
+                order = 0,
+            ),
+            modelId = modelId,
+            focusedRecovery = false
+        )
+        
+        fun configuredPayload(payload: JSONObject): JSONObject = payload.apply {
+            if (toolPlan.tools.length() > 0) {
+                put("tools", toolPlan.tools)
+                put("parallel_tool_calls", true)
+            }
+        }
+
+        val response = executeStructuredWithToolsFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(modelId, VERIFIER_SYSTEM_PROMPT, prompt, role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "verify_goal", freeOnly = goal.freeOnly).apply {
+            strictPayload = configuredPayload(basePayload(modelId, VERIFIER_SYSTEM_PROMPT, prompt, role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "verify_goal", freeOnly = goal.freeOnly).apply {
                 put("temperature", 0.0)
                 put("response_format", jsonSchemaResponseFormat("agent_verification_v2", verificationSchema()))
-            },
-            jsonModePayload = basePayload(
+            }),
+            jsonModePayload = configuredPayload(basePayload(
                 modelId,
                 VERIFIER_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object matching the requested structure and no markdown.",
@@ -1787,8 +1801,8 @@ open class AgentOpenRouterClient internal constructor(
             ).apply {
                 put("temperature", 0.0)
                 put("response_format", JSONObject().put("type", "json_object"))
-            },
-            plainPayload = basePayload(
+            }),
+            plainPayload = configuredPayload(basePayload(
                 modelId,
                 VERIFIER_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
@@ -1797,9 +1811,10 @@ open class AgentOpenRouterClient internal constructor(
                 freeOnly = goal.freeOnly
             ).apply {
                 put("temperature", 0.0)
-            },
+            }),
             generation = generation,
             requestContext = requestContext,
+            goal = goal,
         )
         val initialParse = runCatching { parseVerification(response, goal) }
         initialParse.getOrNull()?.let { return it }
@@ -2121,80 +2136,17 @@ open class AgentOpenRouterClient internal constructor(
         modelId: String,
         focusedRecovery: Boolean,
     ): TaskToolPlan {
-        val capability = task.capability
         val researchRole = researchPassRole(task)
-        val tools = JSONArray()
-        if (
-            capability in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH) &&
-            !isFreeOnlyModel(modelId)
-        ) {
-            val searchTool = JSONObject()
-                .put("type", "openrouter:web_search")
-                .put(
-                    "parameters",
-                    JSONObject()
-                        .put("engine", "auto")
-                        .put("max_results", 8)
-                        .put("search_context_size", "high"),
-                )
-            val fetchTool = JSONObject()
-                .put("type", "openrouter:web_fetch")
-                .put(
-                    "parameters",
-                    JSONObject().put("engine", "auto"),
-                )
-            tools.put(searchTool)
-            tools.put(fetchTool)
-            tools.put(
-                JSONObject()
-                    .put("type", "openrouter:datetime")
-                    .put("parameters", JSONObject().put("timezone", java.util.TimeZone.getDefault().id)),
-            )
-            tools.put(
-                JSONObject()
-                    .put("type", "openrouter:subagent")
-                    .put(
-                        "parameters",
-                        JSONObject()
-                            .put(
-                                "instructions",
-                                "You are an independent research worker. Use primary sources where available, fetch the important pages, record exact URLs and dates, search for counterevidence, and return concise findings plus unresolved uncertainty. Do not simply agree with the parent model.",
-                            )
-                            .put("tools", JSONArray().put(searchTool).put(fetchTool))
-                            .put("reasoning", JSONObject().put("effort", "medium"))
-                            .put("temperature", 0.1),
-                    ),
-            )
-            if (researchRole in setOf(ResearchPassRole.CONTRADICTION, ResearchPassRole.GAP_CLOSURE)) {
-                tools.put(
-                    JSONObject()
-                        .put("type", "openrouter:advisor")
-                        .put(
-                            "parameters",
-                            JSONObject()
-                                .put("name", "evidence_auditor")
-                                .put(
-                                    "instructions",
-                                    "Act as an adversarial evidence auditor. Identify missing primary sources, stale claims, contradictions, selection bias, weak causal reasoning, and decisive tests that could falsify the current conclusion. Be specific and do not approve work merely because it is polished.",
-                                )
-                                .put("tools", JSONArray().put(searchTool).put(fetchTool))
-                                .put("forward_transcript", true)
-                                .put("reasoning", JSONObject().put("effort", "high"))
-                                .put("temperature", 0.0),
-                        ),
-                )
-                tools.put(
-                    JSONObject()
-                        .put("type", "openrouter:fusion")
-                        .put(
-                            "parameters",
-                            JSONObject()
-                                .put("reasoning", JSONObject().put("effort", "high"))
-                                .put("temperature", 0.1),
-                        ),
-                )
-            }
-        }
+        val includeAdvanced = researchRole in setOf(ResearchPassRole.CONTRADICTION, ResearchPassRole.GAP_CLOSURE)
+        
+        val tools = AgentToolRegistry.attachedToolsPayload(
+            runtime = toolRuntime,
+            networkAvailable = true, // Assumed available for the purpose of definition attachment
+            credentialsAvailable = true, // Assumed available
+            isFreeOnly = isFreeOnlyModel(modelId),
+            includeAdvancedResearchTools = includeAdvanced
+        )
+        
         val localSelection = if (autonomyPolicy.autoExecuteLocalTools) {
             executionToolSelection(
                 task = task,
@@ -2204,11 +2156,7 @@ open class AgentOpenRouterClient internal constructor(
         } else {
             FocusedToolSelection(emptyList(), null)
         }
-        if (autonomyPolicy.autoExecuteLocalTools) {
-            localSelection.definitions.forEach { definition ->
-                tools.put(definition.toOpenRouterFunctionTool())
-            }
-        }
+
         return TaskToolPlan(
             tools = tools,
             preferredFunctionName = localSelection.preferredToolName,
@@ -3646,35 +3594,6 @@ open class AgentOpenRouterClient internal constructor(
         )
     }
 
-    private fun SafeToolDefinition.toOpenRouterFunctionTool(): JSONObject {
-        val properties = JSONObject()
-        val required = JSONArray()
-        parameters.forEach { parameter ->
-            properties.put(
-                parameter.name,
-                JSONObject()
-                    .put("type", parameter.type)
-                    .put("description", parameter.description),
-            )
-            if (parameter.required) required.put(parameter.name)
-        }
-        return JSONObject()
-            .put("type", "function")
-            .put(
-                "function",
-                JSONObject()
-                    .put("name", name)
-                    .put("description", description)
-                    .put(
-                        "parameters",
-                        JSONObject()
-                            .put("type", "object")
-                            .put("properties", properties)
-                            .put("required", required)
-                            .put("additionalProperties", false),
-                    ),
-            )
-    }
 
     private suspend fun executeStructuredWithToolsFallback(
         apiKey: String,

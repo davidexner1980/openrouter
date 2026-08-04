@@ -404,7 +404,7 @@ class AgentTaskExecutor internal constructor(
             if (criticalCheckFailed) add("A critical milestone acceptance check failed.")
             addAll(researchQuality.reasons)
             if (!correctionClaimGatePassed) {
-                add("The evidence-only correction produced no publishable structured claims.")
+                add("The correction produced no publishable structured claims.")
             }
             impreciseSourceSelections.take(5).forEach { selection ->
                 add(
@@ -753,7 +753,7 @@ class AgentTaskExecutor internal constructor(
             val automaticCorrectionRecovery = attemptWindowExhausted &&
                 (currentTaskInUpdate.capability == AgentCapability.CORRECT)
             val automaticEvidenceBoundedRecovery = attemptWindowExhausted &&
-                (currentTaskInUpdate.capability in AgentCapability.EVIDENCE_BOUNDED_CAPABILITIES)
+                (currentTaskInUpdate.capability in AgentCapability.STRUCTURED_RESULT_CAPABILITIES)
             val automaticSynthesisAnalysisFallback = attemptWindowExhausted &&
                 isSynthesisGapAnalysisTask(currentTaskInUpdate) &&
                 (currentTaskInUpdate.capability == AgentCapability.TOOL_USE)
