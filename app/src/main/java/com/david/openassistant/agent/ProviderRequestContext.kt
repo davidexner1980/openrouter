@@ -16,6 +16,7 @@ sealed class ProviderRequestContext {
         val operation: MissionOperation,
         val parentOperationId: String,
         val logicalRequestId: String? = null,
+        val recoveryPlanId: String? = null,
     ) : ProviderRequestContext() {
         fun toTicket(acquiredAt: Long): AgentOwnershipTicket {
             val session = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
@@ -29,7 +30,8 @@ sealed class ProviderRequestContext {
         fun forChildOperation(
             operation: MissionOperation,
             role: AgentTaskRole,
-            taskId: String? = this.taskId,
+            taskId: String? = if (operation.taskBound) this.taskId else null,
+            recoveryPlanId: String? = this.recoveryPlanId,
         ): Mission {
             require(!operation.taskBound || taskId != null) {
                 "Task-bound operation ${operation.operationName} requires a non-null taskId"
@@ -41,6 +43,7 @@ sealed class ProviderRequestContext {
                 operation = operation,
                 role = role,
                 taskId = taskId,
+                recoveryPlanId = recoveryPlanId
             )
         }
     }

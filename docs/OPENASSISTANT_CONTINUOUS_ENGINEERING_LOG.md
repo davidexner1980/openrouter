@@ -872,3 +872,62 @@ STATIC TRACE + JVM VERIFIED
 ### Recommended Next Pass
 - Next scope: Improve robustness of citation extraction from complex model outputs.
 - Supporting evidence: Frequent warnings in logs about malformed citation patterns.
+---
+
+## Run CE-20260803-2033-RECOVERY-STARVATION-FIX — 2026-08-03T20:33:00
+
+### Status
+PARTIALLY VERIFIED
+
+### Evidence Level
+STATIC TRACE + JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 4b697ceb66921378050f18ac02fa9bf8d38b6d49
+- Run commit: SELF
+- Commit message: Continuous improvement: complete recovery starvation replay and scheduling repair
+
+### Selected Scope
+- Problem: Runtime-reproduced recovery livelock where PREPARED plans were bypassed or replayed during restarts.
+- Why selected: Corrective pass for CE-20260803-1936; addressed gaps in registration, replay prevention, and scheduling truth.
+- Correct owner: AgentStore (Authority), AgentOpenRouterClient (Boundary), AgentScheduler (Confirmation).
+- Violated invariant: Identical logical recovery operations must never replay ambiguous dispatches or duplicate dispatch across generation changes.
+
+### Evidence and Reproduction
+- Original symptom: Samsung SM-G998U reported mission stuck in PREPARED state with repeated preparation events.
+- Root cause: Missing cross-generation reconciliation in store, non-authoritative dispatch claim, and lack of durable scheduling confirmation.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Implemented claimOrReconcileProviderRequestAtomic, transitionRecoveryPlanAtomic, and durable scheduling claims)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Dynamic re-evaluation of recovery ownership after mutations)
+    - app/src/main/java/com/david/openassistant/agent/AgentScheduler.kt (Two-phase continuation scheduling with WorkManager confirmation)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Dispatch boundary enforcement using authoritative store claim)
+    - app/src/main/java/com/david/openassistant/agent/AgentPlanner.kt (Goal-bound recovery contract and cancellation truth)
+    - app/src/main/java/com/david/openassistant/agent/MissionRecoveryWorker.kt (Watchdog reconciliation of PENDING claims)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalModels.kt (Added ContinuationSchedulingClaim and updated ProviderRequestAttempt)
+    - app/src/main/java/com/david/openassistant/agent/MissionOperation.kt (Normalized recovery operations to goal-bound)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/RecoveryStarvationTest.kt (Comprehensive integration proof for cross-gen recon, scheduling, and atomicity)
+- Behavior changed: Logical requests now survive restarts. Dispatches are strictly single-owner. Continuations are confirmed by WorkManager before suppression.
+
+### Verification
+- Full unit commands: .\gradlew.bat testDebugUnitTest --no-daemon
+- Full unit total: 590
+- Passed: 590
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- Samsung physical-device result: PENDING (SM-G998U)
+
+### Risks
+- Downgrade risk: Older builds will ignore scheduling claims and logical requests; re-installing may destroy replay guarantees.
+- Perform logic: Pause missions before downgrade.
+
+### Open Issues Updated
+- Still open: RECOVERY-STARVATION (Issue reopened until Samsung verification passes).
+- New: Research report bridge source missing (USB device-report receiver does not start).
+
+### Recommended Next Pass
+- Next scope: Physical acceptance on Samsung SM-G998U.

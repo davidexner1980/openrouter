@@ -23,7 +23,7 @@ enum class MissionOperation(
     BODY_BUILDER_GENERATED_EXECUTION("body_builder_generated_execution", true),
     LENGTH_CONTINUATION("length_continuation", true),
     CYCLE_ADVANCE("cycle_advance", false),
-    RECOVERY_PROPOSAL("recovery_proposal", true);
+    RECOVERY_PROPOSAL("recovery_proposal", false);
 
     companion object {
         fun fromName(name: String): MissionOperation? = values().firstOrNull { it.operationName == name }

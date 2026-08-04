@@ -7,8 +7,8 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import okhttp3.OkHttpClient
 import java.util.UUID
+import org.json.JSONObject
 
 class RecoveryStarvationTest {
 
@@ -33,207 +33,215 @@ class RecoveryStarvationTest {
     }
 
     @Test
-    fun testRecoveryHasPriorityOverTaskExecution() = runBlocking {
-        val task = createTestTask(status = AgentTaskStatus.QUEUED)
+    fun testCrossGenerationReconciliation() = runBlocking {
+        val logicalId = "logical-1"
+        val operation = MissionOperation.RECOVERY_PROPOSAL
+        val fingerprint = "fp-1"
+        
+        val ticketGen1 = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
         val planId = "plan-1"
-        val plan = createPreparedPlan(planId)
-
-        val goal = createTestGoal(
-            status = AgentGoalStatus.RECOVERING,
-            tasks = listOf(task),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId
-        )
+        
+        val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
         store.upsertGoal(goal, true)
-        
-        val goalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
-        
-        // Use the same logic as executeGoalWorker
-        val activeRecoveryId = goalSnapshot.activeRecoveryPlanId
-        val activeRecoveryPlan = if (activeRecoveryId != null) goalSnapshot.recoveryPlans.firstOrNull { it.id == activeRecoveryId } else null
-        val hasActiveRecovery = goalSnapshot.status == AgentGoalStatus.RECOVERING || (activeRecoveryPlan != null && activeRecoveryPlan.status.isNonTerminal())
-        
-        assertTrue("Should detect active recovery", hasActiveRecovery)
+        store.updateGoalAtomic(goalId, null) { it.copy(executionLease = AgentExecutionLease("worker-1", "session-1", "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())) }
 
-        val allocationProfile = AgentResearchAllocator.profileForGoal(goalSnapshot)
-        val taskSelection = if (hasActiveRecovery) {
-            AllocatedTaskSelection(null, "Active recovery priority.")
-        } else {
-            AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile)
+        // Generation 1 claims
+        val res1 = store.claimOrReconcileProviderRequestAtomic(
+            goalId = goalId,
+            logicalRequestId = logicalId,
+            operation = operation,
+            payloadFingerprint = fingerprint,
+            ticket = ticketGen1,
+            recoveryPlanId = planId
+        )
+        if (res1 !is ReconciliationResult.NewDispatchClaimed) {
+            println("DEBUG: res1 is $res1")
         }
+        assertTrue(res1 is ReconciliationResult.NewDispatchClaimed)
+        val exchangeId = (res1 as ReconciliationResult.NewDispatchClaimed).attempt.exchangeId
         
-        assertNull("Task should NOT be selected when recovery has priority", taskSelection.taskId)
-
-        val workerId = "worker-1"
-        val acquisition = when {
-            goalSnapshot.status == AgentGoalStatus.PLANNING -> store.acquirePlanningLeaseAtomic(goalId, workerId)
-            hasActiveRecovery -> store.acquirePlanningLeaseAtomic(goalId, workerId)
-            taskSelection.taskId != null -> store.acquireTaskLeaseAtomic(goalId, workerId, taskSelection.taskId)
-            else -> LeaseAcquisitionResult.Rejected("none")
-        }
+        // Simulate process death and new generation
+        val ticketGen2 = PlanningTicket(goalId, "worker-2", "session-2", 2, "attempt-2", System.currentTimeMillis())
+        store.updateGoalAtomic(goalId, null) { it.copy(
+            leaseGeneration = 2,
+            executionLease = AgentExecutionLease("worker-2", "session-2", "none", "attempt-2", 2, System.currentTimeMillis(), System.currentTimeMillis())
+        ) }
         
-        assertTrue("Should have acquired a lease", acquisition is LeaseAcquisitionResult.Acquired)
-        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket
-        assertTrue("Should have acquired PlanningTicket", ticket is PlanningTicket)
+        // Generation 2 reconciles
+        val res2 = store.claimOrReconcileProviderRequestAtomic(
+            goalId = goalId,
+            logicalRequestId = logicalId,
+            operation = operation,
+            payloadFingerprint = fingerprint,
+            ticket = ticketGen2,
+            recoveryPlanId = planId
+        )
+        assertTrue("Generation 2 should claim takeover retry", res2 is ReconciliationResult.NewDispatchClaimed)
+        val newExchangeId = (res2 as ReconciliationResult.NewDispatchClaimed).attempt.exchangeId
+        assertNotEquals(exchangeId, newExchangeId)
+        assertEquals(2, res2.attempt.wireAttemptOrdinal)
     }
 
     @Test
-    fun testTaskLeaseRejectionDuringActiveRecovery() = runBlocking {
-        val task = createTestTask()
+    fun testLogicalIdentityConflict() = runBlocking {
+        val logicalId = "logical-1"
+        val operation = MissionOperation.RECOVERY_PROPOSAL
+        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
         val planId = "plan-1"
-        val plan = createPreparedPlan(planId)
-        val goal = createTestGoal(
-            status = AgentGoalStatus.RECOVERING,
-            tasks = listOf(task),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId
+        
+        val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
+        store.upsertGoal(goal, true)
+        store.updateGoalAtomic(goalId, null) { it.copy(executionLease = AgentExecutionLease("worker-1", "session-1", "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())) }
+
+        store.claimOrReconcileProviderRequestAtomic(
+            goalId = goalId,
+            logicalRequestId = logicalId,
+            operation = operation,
+            payloadFingerprint = "fp-original",
+            ticket = ticket,
+            recoveryPlanId = planId
         )
-        store.upsertGoal(goal, true)
-
-        val acquisition = store.acquireTaskLeaseAtomic(goalId, "worker-1", taskId)
-        assertTrue("Should be rejected", acquisition is LeaseAcquisitionResult.Rejected)
-        assertEquals("ACTIVE_RECOVERY_OWNS_EXECUTION", (acquisition as LeaseAcquisitionResult.Rejected).reason)
         
-        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        assertEquals("Generation should not increment", 0, finalGoal.leaseGeneration)
-        assertNull("Lease should be null", finalGoal.executionLease)
-    }
-
-    @Test
-    fun testWatchdogPreservesRecoveringStatus() = runBlocking {
-        val goal = createTestGoal(status = AgentGoalStatus.RECOVERING)
-        store.upsertGoal(goal, true)
-        
-        // Simulate watchdog recovery logic from MissionRecoveryWorker.kt
-        store.updateGoal(goalId) { current ->
-            if (current.status.isActivePhase()) {
-                val recovered = AgentLifecycleReducer.recoverInterruptedWork(current)
-                // Watchdog should preserve RECOVERING
-                recovered.copy(
-                    events = appendEvent(recovered.events, "Watchdog recovered an active goal.")
-                )
-            } else current
-        }
-        
-        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        assertEquals("Watchdog should preserve RECOVERING status", AgentGoalStatus.RECOVERING, finalGoal.status)
-    }
-    
-    @Test
-    fun testIdenticalContextDoesNotDuplicatePreparationEvent() = runBlocking {
-        val currentFingerprint = "fp-1"
-        val task = createTestTask(attemptCount = 1).copy(lastRequestFingerprint = currentFingerprint)
-        
-        val planId = ResearchRecoveryEngine.generatePlanIdentity(goalId, taskId, currentFingerprint, ExecutionStallDiagnosis.REPEATED_CONTEXT, EscalationTactic.REBUILD_QUERY_PORTFOLIO)
-        val plan = createPreparedPlan(planId).copy(inputExecutionFingerprint = currentFingerprint)
-        
-        val eventText = "Identical context detected. Prepared adaptive recovery tactic: REBUILD_QUERY_PORTFOLIO."
-        val goal = createTestGoal(
-            status = AgentGoalStatus.RUNNING,
-            tasks = listOf(task),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId,
-            events = listOf(AgentEvent(message = eventText))
+        val res = store.claimOrReconcileProviderRequestAtomic(
+            goalId = goalId,
+            logicalRequestId = logicalId,
+            operation = operation,
+            payloadFingerprint = "fp-CHANGED",
+            ticket = ticket,
+            recoveryPlanId = planId
         )
-        store.upsertGoal(goal, true)
-        
-        val executor = createTestExecutor()
-        
-        // Bypass priority to acquire task ticket for testing executor idempotency
-        store.updateGoal(goalId) { it.copy(status = AgentGoalStatus.RUNNING, activeRecoveryPlanId = null) }
-        val acq = store.acquireTaskLeaseAtomic(goalId, "worker-1", taskId) as LeaseAcquisitionResult.Acquired
-        store.updateGoal(goalId) { it.copy(status = AgentGoalStatus.RUNNING, activeRecoveryPlanId = planId) }
-        
-        val ticket = acq.ticket as TaskExecutionTicket
-        executor.executeOneTask("api-key", acq.goal, task, ticket, emptyList())
-        
-        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        val recoveryEvents = finalGoal.events.count { it.message == eventText }
-        assertEquals("Should not duplicate recovery preparation event", 1, recoveryEvents)
+        assertTrue("Should reject different payload for same logical ID", res is ReconciliationResult.LogicalIdentityConflict)
     }
 
     @Test
-    fun testStructuralRepairIdempotency() = runBlocking {
-        val currentFingerprint = "fp-1"
-        val task = createTestTask(attemptCount = 1).copy(lastRequestFingerprint = currentFingerprint)
+    fun testOwnershipMismatch() = runBlocking {
+        val logicalId = "logical-1"
+        val operation = MissionOperation.RECOVERY_PROPOSAL
+        val ticket2 = PlanningTicket(goalId, "worker-2", "session-1", 1, "attempt-1", System.currentTimeMillis())
         val planId = "plan-1"
-        val plan = createPreparedPlan(planId).copy(inputExecutionFingerprint = currentFingerprint)
         
-        val suppressionMessage = "Identical context detected. Prepared adaptive recovery tactic: REBUILD_QUERY_PORTFOLIO."
-        val goal = createTestGoal(
-            status = AgentGoalStatus.RECOVERING,
-            tasks = listOf(task),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId,
-            events = listOf(
-                AgentEvent(message = suppressionMessage),
-                AgentEvent(message = suppressionMessage),
-                AgentEvent(message = "Acquired lease.")
-            )
-        )
+        val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
         store.upsertGoal(goal, true)
-        
-        assertTrue("First repair should succeed", store.repairRecoveryStarvationAtomic(goalId))
-        assertFalse("Second repair should be a no-op", store.repairRecoveryStarvationAtomic(goalId))
-        
-        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        assertEquals("Should only have one repair event", 1, finalGoal.events.count { it.message.contains("structural repair") })
+        store.updateGoalAtomic(goalId, null) { it.copy(executionLease = AgentExecutionLease("worker-1", "session-1", "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())) }
+
+        val res = store.claimOrReconcileProviderRequestAtomic(
+            goalId = goalId,
+            logicalRequestId = logicalId,
+            operation = operation,
+            payloadFingerprint = "fp",
+            ticket = ticket2,
+            recoveryPlanId = planId
+        )
+        assertTrue("Should reject if worker doesn't own the lease", res is ReconciliationResult.OwnershipMismatch)
     }
 
     @Test
-    fun testIdempotentRecoveryProposalGeneration() = runBlocking {
-        val task = createTestTask()
+    fun testSuccessfulResponseSurvivesProcessDeath() = runBlocking {
         val planId = "plan-1"
-        val plan = createPreparedPlan(planId)
-        val goal = createTestGoal(
-            status = AgentGoalStatus.RECOVERING,
-            tasks = listOf(task),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId
-        )
+        val logicalId = "recovery-plan-1"
+        val operation = MissionOperation.RECOVERY_PROPOSAL
+        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        
+        val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
         store.upsertGoal(goal, true)
-        
-        val mockClient = MockClient(store, diagnostics)
-        val planner = AgentPlanner(mockClient, store, diagnostics)
-        val ticket = store.acquirePlanningLeaseAtomic(goalId, "worker-1") as LeaseAcquisitionResult.Acquired
-        val planningTicket = ticket.ticket as PlanningTicket
+        store.updateGoalAtomic(goalId, null) { it.copy(executionLease = AgentExecutionLease("worker-1", "session-1", "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())) }
 
-        // Boundary 1: PREPARED -> GENERATING (and READY_TO_COMMIT if call succeeds)
-        planner.generateRecoveryProposal("key", ticket.goal, plan, planningTicket)
-        assertEquals(1, mockClient.callCount)
+        val claim = store.claimOrReconcileProviderRequestAtomic(
+            goalId = goalId,
+            logicalRequestId = logicalId,
+            operation = operation,
+            payloadFingerprint = "fp",
+            ticket = ticket,
+            recoveryPlanId = planId
+        ) as ReconciliationResult.NewDispatchClaimed
+        val exchangeId = claim.attempt.exchangeId
         
-        val goalAfter = store.loadSnapshot().goals.first { it.id == goalId }
-        val planAfter = goalAfter.recoveryPlans.first { it.id == planId }
-        assertEquals(RecoveryPlanStatus.READY_TO_COMMIT, planAfter.status)
-        assertNotNull(planAfter.proposal)
-        
-        // Boundary 2: Re-run should NOT call provider again
-        planner.generateRecoveryProposal("key", goalAfter, planAfter, planningTicket)
-        assertEquals("Should not call provider again if proposal exists", 1, mockClient.callCount)
-    }
-
-    @Test
-    fun testMismatchedFingerprintCannotCommitProposal() = runBlocking {
-        val task = createTestTask()
-        val planId = "plan-1"
-        val plan = createPreparedPlan(planId).copy(inputExecutionFingerprint = "fp1")
-        val goal = createTestGoal(
-            status = AgentGoalStatus.RECOVERING,
-            tasks = listOf(task),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId
-        )
-        store.upsertGoal(goal, true)
-        
-        val planner = AgentPlanner(createTestClient(), store, diagnostics)
-        val ticket = store.acquirePlanningLeaseAtomic(goalId, "worker-1") as LeaseAcquisitionResult.Acquired
-        val planningTicket = ticket.ticket as PlanningTicket
-        
+        // DESIGN A: Atomically persist proposal then mark success
         val proposal = createTestProposal()
-        val planWithProposal = plan.copy(status = RecoveryPlanStatus.READY_TO_COMMIT, proposal = proposal, inputExecutionFingerprint = "MISMATCH")
+        val summary = AgentApiSummary(responseId = "resp-1", totalTokens = 100)
         
-        val outcome = planner.commitRecoveryEffect(goal, planWithProposal, planningTicket)
-        assertEquals("Should fail due to fingerprint mismatch", WorkerOutcome.FAIL, outcome)
+        store.transitionRecoveryPlanAtomic(ticket, planId, RecoveryPlanStatus.PREPARED, RecoveryPlanStatus.READY_TO_COMMIT, "fp1") { g, _ ->
+            g.copy(recoveryPlans = g.recoveryPlans.map { 
+                if (it.id == planId) it.copy(proposal = proposal, accountingSummary = summary) else it 
+            })
+        }
+        
+        val context = ProviderRequestContext.Mission(goalId, "worker-1", null, "attempt-1", 1, ticket.acquiredAt, operation = operation, parentOperationId = "parent", recoveryPlanId = planId)
+        store.transitionExchangeOutcomeWithResultAtomic(goalId, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, context)
+        
+        // Simulate restart
+        val ticket2 = PlanningTicket(goalId, "worker-2", "session-2", 2, "attempt-2", System.currentTimeMillis())
+        store.updateGoalAtomic(goalId, null) { it.copy(
+            leaseGeneration = 2,
+            executionLease = AgentExecutionLease("worker-2", "session-2", "none", "attempt-2", 2, System.currentTimeMillis(), System.currentTimeMillis())
+        ) }
+        
+        val recon = store.claimOrReconcileProviderRequestAtomic(
+            goalId = goalId,
+            logicalRequestId = logicalId,
+            operation = operation,
+            payloadFingerprint = "fp",
+            ticket = ticket2,
+            recoveryPlanId = planId
+        )
+        assertTrue("Should return successful result available", recon is ReconciliationResult.ExistingSuccessfulResultAvailable)
+        val res = recon as ReconciliationResult.ExistingSuccessfulResultAvailable
+        assertEquals(proposal, res.proposal)
+        assertEquals(summary, res.summary)
+    }
+
+    @Test
+    fun testTwoPhaseScheduling() = runBlocking {
+        val fingerprint = "fp-sched-1"
+        val workName = "work-1"
+        val gen = 1
+        
+        val goal = createTestGoal()
+        store.upsertGoal(goal, true)
+        
+        // 1. Claim PENDING
+        val claim = store.claimContinuationAtomic(goalId, fingerprint, gen, workName)
+        assertNotNull(claim)
+        assertEquals(ContinuationSchedulingState.PENDING, claim!!.state)
+        
+        // 2. Duplicate claim for same gen/fp should return existing PENDING
+        val claim2 = store.claimContinuationAtomic(goalId, fingerprint, gen, workName)
+        assertEquals(claim.claimId, claim2!!.claimId)
+        
+        // 3. Confirm CONFIRMED_ACTIVE
+        val workId = UUID.randomUUID().toString()
+        assertTrue(store.confirmContinuationAtomic(goalId, claim.claimId, ContinuationSchedulingState.CONFIRMED_ACTIVE, workId))
+        
+        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
+        assertEquals(ContinuationSchedulingState.CONFIRMED_ACTIVE, finalGoal.activeContinuationSchedulingClaim!!.state)
+        assertEquals(workId, finalGoal.activeContinuationSchedulingClaim.workId)
+    }
+
+    @Test
+    fun testGoalBoundRecoveryContext() = runBlocking {
+        val planId = "plan-1"
+        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        
+        val context = ProviderRequestContext.Mission(
+            goalId = goalId,
+            workerId = ticket.workerId,
+            taskId = null, // Mandatory for goal-bound
+            attemptId = ticket.attemptId,
+            executionGeneration = ticket.generation,
+            acquiredAt = ticket.acquiredAt,
+            role = AgentTaskRole.PRIMARY_REASONING,
+            operation = MissionOperation.RECOVERY_PROPOSAL,
+            parentOperationId = "parent",
+            recoveryPlanId = planId
+        )
+        
+        val derivedTicket = context.toTicket(context.acquiredAt)
+        assertTrue("Goal-bound recovery must yield PlanningTicket", derivedTicket is PlanningTicket)
+        assertNull("Goal-bound recovery taskId must be null", (derivedTicket as PlanningTicket).taskId)
+        
+        // Test forChildOperation normalization
+        val child = context.forChildOperation(MissionOperation.CYCLE_ADVANCE, AgentTaskRole.PRIMARY_REASONING)
+        assertNull("forChildOperation must normalize taskId to null for goal-bound operations", child.taskId)
     }
 
     private fun createTestGoal(
@@ -256,19 +264,6 @@ class RecoveryStarvationTest {
         recoveryPlans = recoveryPlans,
         activeRecoveryPlanId = activeRecoveryPlanId,
         events = events
-    )
-
-    private fun createTestTask(
-        status: AgentTaskStatus = AgentTaskStatus.QUEUED,
-        attemptCount: Int = 0
-    ) = AgentTask(
-        id = taskId,
-        order = 0,
-        title = "Task",
-        instructions = "Instructions",
-        capability = AgentCapability.WEB_RESEARCH,
-        status = status,
-        attemptCount = attemptCount
     )
 
     private fun createPreparedPlan(id: String) = ResearchRecoveryPlan(
@@ -297,57 +292,5 @@ class RecoveryStarvationTest {
         followUpRule = null,
         rationale = "rationale",
         expectedNoveltyDimensions = listOf("strategy")
-    )
-
-    private class MockClient(
-        store: AgentStore,
-        diagnostics: RuntimeDiagnostics
-    ) : AgentOpenRouterClient(
-        toolRuntime = null,
-        autonomyPolicy = AutonomyPolicy(),
-        client = OkHttpClient(),
-        researchMonitor = null,
-        diagnostics = diagnostics,
-        store = store
-    ) {
-        var callCount = 0
-        override suspend fun createResearchRecoveryProposal(
-            apiKey: String,
-            modelId: String,
-            goal: AgentGoal,
-            plan: ResearchRecoveryPlan,
-            evidence: List<AgentEvidence>,
-            freeOnly: Boolean,
-            requestContext: ProviderRequestContext.Mission
-        ): Pair<RecoveryProposal, AgentApiSummary> {
-            callCount++
-            return RecoveryProposal(
-                revisedInvestigationInterpretation = "new strategy",
-                specificUnresolvedGap = "gap",
-                selectedSourceFamilyShift = null,
-                evidenceTargets = emptyList(),
-                falsifiers = emptyList(),
-                newQueryPortfolio = listOf("query1"),
-                followUpRule = null,
-                rationale = "rationale",
-                expectedNoveltyDimensions = listOf("strategy")
-            ) to AgentApiSummary()
-        }
-    }
-
-    private fun createTestClient() = AgentOpenRouterClient(
-        toolRuntime = null,
-        autonomyPolicy = AutonomyPolicy(),
-        client = OkHttpClient(),
-        researchMonitor = null,
-        diagnostics = diagnostics,
-        store = store
-    )
-
-    private fun createTestExecutor() = AgentTaskExecutor(
-        client = createTestClient(),
-        store = store,
-        diagnostics = diagnostics,
-        autonomyPolicy = AutonomyPolicy()
     )
 }

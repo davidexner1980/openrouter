@@ -89,7 +89,7 @@ class AgentExchangeRaceTest {
             }
             
             // 4. Worker 1 (the original) tries to finish its exchange
-            val transitionResult = store.transitionExchangeOutcome(
+            val transitionResult = store.transitionExchangeOutcomeWithResultAtomic(
                 goalId = goalId,
                 exchangeId = exchangeId,
                 newOutcome = ExchangeOutcome.RESPONSE_SUCCESS,

@@ -97,6 +97,8 @@ data class ProviderRequestAttempt(
     val reconciliationClaimOwner: String? = null,
     val reconciliationClaimedAt: Long? = null,
     val safeDiagnosticSummary: String? = null,
+    val recoveryPlanId: String? = null,
+    val responsePayloadFingerprint: String? = null,
 )
 
 data class RouteFailureFingerprint(

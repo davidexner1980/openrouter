@@ -14,6 +14,43 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
+sealed class UpdateTransportStageResult {
+    object Updated : UpdateTransportStageResult()
+    object GoalMissing : UpdateTransportStageResult()
+    object ExchangeMissing : UpdateTransportStageResult()
+    object AlreadyAtOrBeyondStage : UpdateTransportStageResult()
+    object InvalidTransition : UpdateTransportStageResult()
+    data class StorageFailure(val cause: Throwable) : UpdateTransportStageResult()
+}
+
+sealed class AuthorizeRetryResult {
+    object Authorized : AuthorizeRetryResult()
+    object AlreadyAuthorized : AuthorizeRetryResult()
+    object GoalMissing : AuthorizeRetryResult()
+    object InvalidAuthorization : AuthorizeRetryResult()
+    data class StorageFailure(val cause: Throwable) : AuthorizeRetryResult()
+}
+
+sealed class ReconciliationResult {
+    data class NewDispatchClaimed(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class ExistingNotDispatched(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class ExistingActive(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class ExistingInFlight(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class ExistingAmbiguous(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class ExistingSuccessfulResultAvailable(val attempt: ProviderRequestAttempt, val proposal: RecoveryProposal?, val summary: AgentApiSummary?) : ReconciliationResult()
+    data class ExistingSuccessfulResultMissing(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class ExistingTerminalFailure(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class RetryDispatchClaimed(val attempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class RetryAuthorizationRequired(val previousAttempt: ProviderRequestAttempt) : ReconciliationResult()
+    data class StaleOwnership(val currentGeneration: Int, val requestedGeneration: Int) : ReconciliationResult()
+    object OwnershipMismatch : ReconciliationResult()
+    data class LogicalIdentityConflict(val existingFingerprint: String, val requestedFingerprint: String) : ReconciliationResult()
+    data class RecoveryPlanMismatch(val expectedPlanId: String, val actualPlanId: String?) : ReconciliationResult()
+    data class GoalTerminal(val status: AgentGoalStatus) : ReconciliationResult()
+    data class GoalMissing(val status: AgentGoalStatus) : ReconciliationResult()
+    data class StorageFailure(val cause: Throwable) : ReconciliationResult()
+}
+
 /**
  * Durable per-goal store.
  */
@@ -67,7 +104,7 @@ class AgentStore private constructor(
         baseDir != null -> File(baseDir, GOALS_DIRECTORY_NAME)
         context != null -> File(context.applicationContext.filesDir, GOALS_DIRECTORY_NAME)
         else -> throw IllegalArgumentException("AgentStore requires either a Context or a base directory File.")
-    }
+    }.also { println("DEBUG: AgentStore goalsDirectory: ${it.absolutePath}") }
 
     private val goalCache = ConcurrentHashMap<String, CachedGoal>()
     private val diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = context?.let { com.david.openassistant.data.diagnostics.RuntimeDiagnostics(it) }
@@ -110,7 +147,12 @@ class AgentStore private constructor(
             else -> goal.id
         }
         writeSelectionAndSignalLocked(selectedId)
-        loadSnapshotFromFilesLocked()
+        val finalSnapshot = loadSnapshotFromFilesLocked()
+        if (finalSnapshot.goals.none { it.id == goal.id }) {
+            println("DEBUG: upsertGoal FAILED to find goal ${goal.id} in final snapshot. Goal count: ${finalSnapshot.goals.size}")
+            finalSnapshot.goals.forEach { println("DEBUG: existing goal: ${it.id}") }
+        }
+        finalSnapshot
     }
 
     fun updateGoal(goalId: String, transform: (AgentGoal) -> AgentGoal): AgentSnapshot = synchronized(STORE_LOCK) {
@@ -181,15 +223,33 @@ class AgentStore private constructor(
         val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return false
         if (plan.status != RecoveryPlanStatus.PREPARED && plan.status != RecoveryPlanStatus.GENERATING) return false
         
-        // Match repeat identical context suppressions
-        val suppressionMessage = "Identical context detected. Prepared adaptive recovery tactic"
-        val repeatedEvents = goal.events.filter { it.message.contains(suppressionMessage) }
-        if (repeatedEvents.size < 2) return false
+        // Match structural provable stalling: no runnable task and active recovery plan
+        val allocationProfile = AgentResearchAllocator.profileForGoal(goal)
+        val taskSelection = AgentResearchAllocator.chooseNextTask(goal, allocationProfile)
+        if (taskSelection.taskId != null) return false // A task is runnable, no starvation yet
         
+        // Ownership Safety: do not clear a live lease
+        val lease = goal.executionLease
+        val now = System.currentTimeMillis()
+        val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
+        
+        val isStale = AgentLeasePolicy.isStale(lease, now)
+        val isLegacy = lease != null && (lease.ownerProcessSessionId.isBlank() || lease.ownerProcessSessionId == "unknown")
+        val isOrphan = lease != null && !isLegacy && lease.ownerProcessSessionId != currentSessionId
+        
+        if (lease != null && !isStale && !isLegacy && !isOrphan) return false // Live owner exists
+        
+        // Prohibit if active provider request exists for this recovery
+        val logicalRequestId = plan.logicalProviderRequestId ?: "recovery-${plan.id}"
+        val activeRequest = goal.requestAttempts.firstOrNull { 
+            it.logicalRequestId == logicalRequestId && 
+            it.exchangeOutcome == ExchangeOutcome.ACTIVE 
+        }
+        if (activeRequest != null) return false
+
         val repairKey = "recovery_starvation_repair:${goal.id}:${plan.taskId}:${plan.id}:${plan.inputExecutionFingerprint}"
         if (goal.idempotencyRecords.any { it.key == repairKey }) return false
         
-        val now = System.currentTimeMillis()
         val updatedGoal = goal.copy(
             executionLease = null, // Clear stale/bypass lease
             idempotencyRecords = goal.idempotencyRecords + IdempotencyRecord(
@@ -200,7 +260,7 @@ class AgentStore private constructor(
                 committedAt = now,
                 completedBy = "system"
             ),
-            events = appendEvent(goal.events, "System applied structural repair for recovery plan starvation."),
+            events = appendEvent(goal.events, "System applied ownership-safe structural repair for recovery plan starvation."),
             updatedAt = now
         )
         
@@ -213,24 +273,55 @@ class AgentStore private constructor(
         exchangeId: String,
         stage: ProviderTransportStage,
         certainty: ProviderDeliveryCertainty? = null
-    ): Boolean = synchronized(STORE_LOCK) {
+    ): UpdateTransportStageResult = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
-        updateGoalInternalLocked(goalId) { current ->
-            val attempt = current.requestAttempts.firstOrNull { it.exchangeId == exchangeId }
-                ?: return@updateGoalInternalLocked current
-            
-            if (stage.ordinal <= attempt.transportStage.ordinal && stage != ProviderTransportStage.TERMINAL) {
-                return@updateGoalInternalLocked current
-            }
-            
-            val updatedAttempt = attempt.copy(
-                transportStage = stage,
-                deliveryCertainty = certainty ?: attempt.deliveryCertainty
-            )
-            current.copy(
-                requestAttempts = current.requestAttempts.map { if (it.exchangeId == exchangeId) updatedAttempt else it }
-            )
-        } != null
+        val current = loadSnapshotFromFilesLocked()
+        val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized UpdateTransportStageResult.GoalMissing
+        
+        val attempt = goal.requestAttempts.firstOrNull { it.exchangeId == exchangeId }
+            ?: return@synchronized UpdateTransportStageResult.ExchangeMissing
+        
+        if (stage.ordinal <= attempt.transportStage.ordinal && stage != ProviderTransportStage.TERMINAL) {
+            return@synchronized UpdateTransportStageResult.AlreadyAtOrBeyondStage
+        }
+        
+        val updatedAttempt = attempt.copy(
+            transportStage = stage,
+            deliveryCertainty = certainty ?: attempt.deliveryCertainty
+        )
+        val updatedGoal = goal.copy(
+            requestAttempts = goal.requestAttempts.map { if (it.exchangeId == exchangeId) updatedAttempt else it },
+            updatedAt = System.currentTimeMillis()
+        )
+        
+        return try {
+            writeGoalLocked(updatedGoal)
+            UpdateTransportStageResult.Updated
+        } catch (e: Throwable) {
+            UpdateTransportStageResult.StorageFailure(e)
+        }
+    }
+
+    fun authorizeRetry(goalId: String, authorization: ProviderRetryAuthorization): AuthorizeRetryResult = synchronized(STORE_LOCK) {
+        migrateLegacyIfNeededLocked()
+        val current = loadSnapshotFromFilesLocked()
+        val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized AuthorizeRetryResult.GoalMissing
+        
+        if (goal.retryAuthorizations.any { it.logicalRequestId == authorization.logicalRequestId && it.attemptOrdinal == authorization.attemptOrdinal && it.executionGeneration == authorization.executionGeneration }) {
+            return@synchronized AuthorizeRetryResult.AlreadyAuthorized
+        }
+        
+        val updatedGoal = goal.copy(
+            retryAuthorizations = goal.retryAuthorizations + authorization,
+            updatedAt = System.currentTimeMillis()
+        )
+        
+        return try {
+            writeGoalLocked(updatedGoal)
+            AuthorizeRetryResult.Authorized
+        } catch (e: Throwable) {
+            AuthorizeRetryResult.StorageFailure(e)
+        }
     }
 
     private fun acquireLeaseInternalLocked(
@@ -328,7 +419,7 @@ class AgentStore private constructor(
                         fields = mapOf(
                             "goal_id" to goalId,
                             "worker_id" to workerId,
-                            "old_session" to (existing?.ownerProcessSessionId ?: "none"),
+                            "old_session" to (existing.ownerProcessSessionId),
                             "new_session" to currentSessionId,
                             "task_id" to (taskId ?: "none")
                         )
@@ -501,22 +592,311 @@ class AgentStore private constructor(
         CreateAttemptResult.Created
     }
 
-    fun authorizeRetry(goalId: String, authorization: ProviderRetryAuthorization): Boolean = synchronized(STORE_LOCK) {
+    fun claimOrReconcileProviderRequestAtomic(
+        goalId: String,
+        logicalRequestId: String,
+        operation: MissionOperation,
+        payloadFingerprint: String,
+        ticket: AgentOwnershipTicket,
+        role: AgentTaskRole? = null,
+        recoveryPlanId: String? = null,
+    ): ReconciliationResult = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
-        updateGoalInternalLocked(goalId) { current ->
-            if (current.retryAuthorizations.any { it.logicalRequestId == authorization.logicalRequestId && it.attemptOrdinal == authorization.attemptOrdinal }) {
-                current
-            } else {
-                current.copy(retryAuthorizations = current.retryAuthorizations + authorization)
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return@synchronized ReconciliationResult.GoalMissing(AgentGoalStatus.QUEUED) // Should not happen with valid ticket
+
+        val validation = validateTicketInternalLocked(ticket)
+        if (validation !is TicketValidationResult.Valid) {
+            return@synchronized when (validation) {
+                is TicketValidationResult.Mismatch -> ReconciliationResult.OwnershipMismatch
+                is TicketValidationResult.LeaseExpired -> ReconciliationResult.StaleOwnership(goal.leaseGeneration, ticket.generation)
+                else -> ReconciliationResult.OwnershipMismatch
             }
-        } != null
+        }
+
+        if (goal.status.isFinalTerminalStatus()) return@synchronized ReconciliationResult.GoalTerminal(goal.status)
+
+        // Enforce recovery operation binding contract
+        if (operation == MissionOperation.RECOVERY_PROPOSAL || operation == MissionOperation.CYCLE_ADVANCE) {
+            if (ticket !is PlanningTicket) return@synchronized ReconciliationResult.OwnershipMismatch
+            if (recoveryPlanId == null || recoveryPlanId != goal.activeRecoveryPlanId) {
+                return@synchronized ReconciliationResult.RecoveryPlanMismatch(goal.activeRecoveryPlanId ?: "none", recoveryPlanId)
+            }
+            if (goal.status != AgentGoalStatus.RECOVERING) return@synchronized ReconciliationResult.GoalTerminal(goal.status)
+        }
+
+        // Search for existing logical request across all generations
+        val existingAttempts = goal.requestAttempts.filter { 
+            it.logicalRequestId == logicalRequestId && 
+            it.recoveryPlanId == recoveryPlanId &&
+            it.parentOperationId == logicalRequestId // Assumption: parentOperationId used for logical grouping in some contexts, but logicalRequestId is primary
+        }
+        
+        val latestAttempt = existingAttempts.maxByOrNull { it.startedAt }
+        
+        if (latestAttempt != null) {
+            if (latestAttempt.payloadFingerprint != payloadFingerprint) {
+                return@synchronized ReconciliationResult.LogicalIdentityConflict(latestAttempt.payloadFingerprint, payloadFingerprint)
+            }
+
+            return when (latestAttempt.exchangeOutcome) {
+                ExchangeOutcome.ACTIVE -> {
+                    if (latestAttempt.reconciliationClaimOwner == ticket.workerId && 
+                        latestAttempt.executionGeneration == ticket.generation) {
+                        // Resume locally owned
+                        when {
+                            latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED -> ReconciliationResult.NewDispatchClaimed(latestAttempt) // Treat as new dispatch if not sent
+                            else -> ReconciliationResult.ExistingInFlight(latestAttempt)
+                        }
+                    } else if (latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED && ticket.generation > latestAttempt.executionGeneration) {
+                        // Takeover non-dispatched from previous generation
+                        val exchangeId = "openrouter-${UUID.randomUUID()}"
+                        val newAttempt = latestAttempt.copy(
+                            exchangeId = exchangeId,
+                            wireAttemptOrdinal = latestAttempt.wireAttemptOrdinal + 1,
+                            previousExchangeId = latestAttempt.exchangeId,
+                            executionGeneration = ticket.generation,
+                            reconciliationClaimOwner = ticket.workerId,
+                            reconciliationClaimedAt = System.currentTimeMillis(),
+                            startedAt = System.currentTimeMillis()
+                        )
+                        val updatedGoal = goal.copy(
+                            requestAttempts = goal.requestAttempts + newAttempt,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        writeGoalLocked(updatedGoal)
+                        ReconciliationResult.NewDispatchClaimed(newAttempt)
+                    } else {
+                        // Check if owner is still live? For now, if ACTIVE, it's either in-flight or ambiguous
+                        ReconciliationResult.ExistingAmbiguous(latestAttempt)
+                    }
+                }
+                ExchangeOutcome.RESPONSE_SUCCESS -> {
+                    // DESIGN A: Check if proposal exists in the recovery plan
+                    val plan = goal.recoveryPlans.firstOrNull { it.id == recoveryPlanId }
+                    if (plan != null && plan.proposal != null) {
+                        ReconciliationResult.ExistingSuccessfulResultAvailable(latestAttempt, plan.proposal, plan.accountingSummary)
+                    } else {
+                        ReconciliationResult.ExistingSuccessfulResultMissing(latestAttempt)
+                    }
+                }
+                ExchangeOutcome.RESPONSE_ERROR, 
+                ExchangeOutcome.TRANSPORT_FAILURE,
+                ExchangeOutcome.CANCELLED,
+                ExchangeOutcome.CANCELLATION_TIMEOUT,
+                ExchangeOutcome.REFUSAL,
+                ExchangeOutcome.RATE_LIMITED,
+                ExchangeOutcome.AUTHENTICATION_FAILED,
+                ExchangeOutcome.PROVIDER_UNAVAILABLE,
+                ExchangeOutcome.RECOVERABLE_NETWORK_FAILURE,
+                ExchangeOutcome.PERMANENT_FAILURE,
+                ExchangeOutcome.MALFORMED_STRUCTURED_RESPONSE -> {
+                    // Check for authorization
+                    val auth = goal.retryAuthorizations.firstOrNull { 
+                        it.logicalRequestId == logicalRequestId && 
+                        it.attemptOrdinal == latestAttempt.wireAttemptOrdinal + 1 &&
+                        it.executionGeneration == ticket.generation 
+                    }
+                    if (auth != null) {
+                        // Claim retry
+                        val exchangeId = "openrouter-${UUID.randomUUID()}"
+                        val newAttempt = latestAttempt.copy(
+                            exchangeId = exchangeId,
+                            wireAttemptOrdinal = latestAttempt.wireAttemptOrdinal + 1,
+                            previousExchangeId = latestAttempt.exchangeId,
+                            transportStage = ProviderTransportStage.NOT_DISPATCHED,
+                            deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
+                            executionGeneration = ticket.generation,
+                            exchangeOutcome = ExchangeOutcome.ACTIVE,
+                            startedAt = System.currentTimeMillis(),
+                            reconciliationClaimOwner = ticket.workerId,
+                            reconciliationClaimedAt = System.currentTimeMillis(),
+                            finishedAt = null,
+                            httpStatusCode = null,
+                            failureClass = null,
+                            providerResponseId = null,
+                            safeDiagnosticSummary = null
+                        )
+                        val updatedGoal = goal.copy(
+                            requestAttempts = goal.requestAttempts + newAttempt,
+                            retryAuthorizations = goal.retryAuthorizations.filter { it != auth },
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        writeGoalLocked(updatedGoal)
+                        ReconciliationResult.RetryDispatchClaimed(newAttempt)
+                    } else {
+                        ReconciliationResult.ExistingTerminalFailure(latestAttempt)
+                    }
+                }
+                ExchangeOutcome.INTERRUPTED_OUTCOME_UNKNOWN,
+                ExchangeOutcome.UNCERTAIN_REMOTE_OUTCOME,
+                ExchangeOutcome.UNUSABLE_EMPTY_RESPONSE,
+                ExchangeOutcome.UNUSABLE_WHITESPACE_RESPONSE,
+                ExchangeOutcome.USABLE_STRUCTURED_RESULT -> {
+                    // Reconcile ambiguous
+                    ReconciliationResult.ExistingAmbiguous(latestAttempt)
+                }
+            }
+        }
+
+        // Create new attempt
+        val exchangeId = "openrouter-${UUID.randomUUID()}"
+        val newAttempt = ProviderRequestAttempt(
+            exchangeId = exchangeId,
+            logicalRequestId = logicalRequestId,
+            wireAttemptOrdinal = 1,
+            parentOperationId = logicalRequestId, // Using logicalRequestId as parent for reconciliation stability
+            goalId = goalId,
+            taskId = if (operation.taskBound) ticket.taskId else null,
+            executionGeneration = ticket.generation,
+            requestedModel = "unknown", // To be filled by client
+            role = role,
+            payloadFingerprint = payloadFingerprint,
+            exchangeOutcome = ExchangeOutcome.ACTIVE,
+            transportStage = ProviderTransportStage.NOT_DISPATCHED,
+            deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
+            recoveryPlanId = recoveryPlanId,
+            reconciliationClaimOwner = ticket.workerId,
+            reconciliationClaimedAt = System.currentTimeMillis(),
+            startedAt = System.currentTimeMillis()
+        )
+        
+        val updatedGoal = goal.copy(
+            requestAttempts = goal.requestAttempts + newAttempt,
+            updatedAt = System.currentTimeMillis()
+        )
+        writeGoalLocked(updatedGoal)
+        return@synchronized ReconciliationResult.NewDispatchClaimed(newAttempt)
     }
 
-    fun transitionExchangeOutcome(
+    fun transitionRecoveryPlanAtomic(
+        ticket: PlanningTicket,
+        planId: String,
+        expectedStatus: RecoveryPlanStatus,
+        nextStatus: RecoveryPlanStatus,
+        expectedInputFingerprint: String,
+        mutation: (AgentGoal, ResearchRecoveryPlan) -> AgentGoal
+    ): Boolean = synchronized(STORE_LOCK) {
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return false
+        
+        val validation = validateTicketInternalLocked(ticket)
+        if (validation !is TicketValidationResult.Valid) return false
+        
+        val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return false
+        if (plan.status != expectedStatus) return false
+        if (!plan.status.canTransitionTo(nextStatus)) return false
+        if (plan.inputExecutionFingerprint != expectedInputFingerprint) return false
+        
+        val updatedGoal = mutation(goal, plan)
+        // Ensure status transition is applied even if mutation forgets it
+        val finalGoal = updatedGoal.copy(
+            recoveryPlans = updatedGoal.recoveryPlans.map { 
+                if (it.id == planId) it.copy(status = nextStatus) else it 
+            },
+            updatedAt = System.currentTimeMillis()
+        )
+        
+        writeGoalLocked(finalGoal)
+        return true
+    }
+
+    fun createRecoveryPlanAtomic(
+        ticket: AgentOwnershipTicket,
+        plan: ResearchRecoveryPlan
+    ): Boolean = synchronized(STORE_LOCK) {
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return false
+        
+        val validation = validateTicketInternalLocked(ticket)
+        if (validation !is TicketValidationResult.Valid) return false
+        
+        if (goal.recoveryPlans.any { it.id == plan.id }) return false
+        
+        val updatedGoal = goal.copy(
+            status = AgentGoalStatus.RECOVERING,
+            activeRecoveryPlanId = plan.id,
+            recoveryPlans = goal.recoveryPlans + plan,
+            updatedAt = System.currentTimeMillis()
+        )
+        
+        writeGoalLocked(updatedGoal)
+        return true
+    }
+
+    fun claimContinuationAtomic(
+        goalId: String,
+        fingerprint: String,
+        generation: Int,
+        workName: String
+    ): ContinuationSchedulingClaim? = synchronized(STORE_LOCK) {
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return@synchronized null
+        
+        val existing = goal.activeContinuationSchedulingClaim
+        if (existing != null) {
+            if (existing.continuationFingerprint == fingerprint && existing.state == ContinuationSchedulingState.CONFIRMED_ACTIVE) {
+                return@synchronized existing // Already covers it
+            }
+            if (existing.state == ContinuationSchedulingState.PENDING && existing.claimantGeneration == generation) {
+                return@synchronized existing // Resume pending for same generation
+            }
+        }
+        
+        val newClaim = ContinuationSchedulingClaim(
+            goalId = goalId,
+            continuationFingerprint = fingerprint,
+            claimantGeneration = generation,
+            workName = workName,
+            state = ContinuationSchedulingState.PENDING
+        )
+        
+        val updatedGoal = goal.copy(
+            activeContinuationSchedulingClaim = newClaim,
+            updatedAt = System.currentTimeMillis()
+        )
+        writeGoalLocked(updatedGoal)
+        return@synchronized newClaim
+    }
+
+    fun confirmContinuationAtomic(
+        goalId: String,
+        claimId: String,
+        state: ContinuationSchedulingState,
+        workId: String? = null,
+        failureClass: String? = null,
+        failureMessage: String? = null
+    ): Boolean = synchronized(STORE_LOCK) {
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return@synchronized false
+        
+        val existing = goal.activeContinuationSchedulingClaim ?: return@synchronized false
+        if (existing.claimId != claimId) return@synchronized false
+        
+        val updatedClaim = existing.copy(
+            state = state,
+            workId = workId ?: existing.workId,
+            failureClass = failureClass,
+            failureMessage = failureMessage,
+            confirmedAt = if (state == ContinuationSchedulingState.CONFIRMED_ACTIVE || state == ContinuationSchedulingState.REUSED_ACTIVE) System.currentTimeMillis() else existing.confirmedAt,
+            lastCheckedAt = System.currentTimeMillis()
+        )
+        
+        val updatedGoal = goal.copy(
+            activeContinuationSchedulingClaim = updatedClaim,
+            updatedAt = System.currentTimeMillis()
+        )
+        writeGoalLocked(updatedGoal)
+        return@synchronized true
+    }
+
+    fun transitionExchangeOutcomeWithResultAtomic(
         goalId: String,
         exchangeId: String,
         newOutcome: ExchangeOutcome,
         context: ProviderRequestContext.Mission,
+        proposal: RecoveryProposal? = null,
+        summary: AgentApiSummary? = null,
         statusCode: Int? = null,
         failureClass: String? = null,
         safeDiagnosticSummary: String? = null,
@@ -532,32 +912,9 @@ class AgentStore private constructor(
             return@synchronized TransitionOutcomeResult.AlreadyTerminal(existingAttempt.exchangeOutcome)
         }
 
-        if (context.goalId != goalId || existingAttempt.goalId != goalId) {
+        val validation = validateTicketInternalLocked(context.toTicket(context.acquiredAt))
+        if (validation !is TicketValidationResult.Valid) {
             return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
-        }
-
-        val lease = goal.executionLease ?: return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
-
-        if (context.workerId != lease.workerId) {
-            return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
-        }
-
-        if (context.attemptId != lease.attemptId) {
-            return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
-        }
-
-        if (context.executionGeneration != lease.generation || existingAttempt.executionGeneration != lease.generation) {
-            return@synchronized TransitionOutcomeResult.InvalidGeneration(expected = lease.generation, actual = existingAttempt.executionGeneration)
-        }
-
-        if (context.operation.taskBound) {
-            if (context.taskId == null || lease.taskId != context.taskId || existingAttempt.taskId != context.taskId) {
-                return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
-            }
-        } else {
-            if (context.taskId != null || existingAttempt.taskId != null) {
-                return@synchronized TransitionOutcomeResult.InvalidLeaseOrGoalState
-            }
         }
 
         val now = System.currentTimeMillis()
@@ -570,10 +927,23 @@ class AgentStore private constructor(
             finishedAt = now,
         )
 
-        val updatedGoal = goal.copy(
+        var updatedGoal = goal.copy(
             requestAttempts = goal.requestAttempts.map { if (it.exchangeId == exchangeId) updatedAttempt else it },
             updatedAt = now,
         )
+        
+        if (proposal != null && context.recoveryPlanId != null) {
+            updatedGoal = updatedGoal.copy(
+                recoveryPlans = updatedGoal.recoveryPlans.map { 
+                    if (it.id == context.recoveryPlanId) it.copy(
+                        proposal = proposal,
+                        accountingSummary = summary,
+                        status = RecoveryPlanStatus.READY_TO_COMMIT,
+                        generatedAt = now
+                    ) else it
+                }
+            )
+        }
 
         val writeResult = runCatching { writeGoalLocked(updatedGoal) }
         if (writeResult.isFailure) {
@@ -690,12 +1060,16 @@ class AgentStore private constructor(
     private fun loadSnapshotFromFilesLocked(): AgentSnapshot {
         goalsDirectory.mkdirs()
         val quarantined = mutableListOf<MissionQuarantineEntry>()
-        val goals = discoverGoalFilesLocked()
+        val files = discoverGoalFilesLocked()
+        val goals = files
             .asSequence()
             .mapNotNull { file ->
                 try {
-                    readGoalLocked(file)
+                    val goal = readGoalLocked(file)
+                    println("DEBUG: Loaded goal ${goal.id} from ${file.name}")
+                    goal
                 } catch (error: Throwable) {
+                    println("DEBUG: Failed to read goal from ${file.name}: ${error.message}")
                     val recoveryArtifact = preserveCorruptGoalLocked(file, error)
                     quarantined += MissionQuarantineEntry(
                         fileName = file.name,
@@ -717,7 +1091,16 @@ class AgentStore private constructor(
 
     private fun discoverGoalFilesLocked(): List<File> {
         goalsDirectory.mkdirs()
-        return goalsDirectory.listFiles()
+        val files = goalsDirectory.listFiles()
+        if (files == null || files.isEmpty()) {
+            println("DEBUG: discoverGoalFilesLocked: directory empty or missing: ${goalsDirectory.absolutePath}")
+            // Check parent
+            val parent = goalsDirectory.parentFile
+            if (parent != null && parent.exists()) {
+                println("DEBUG: parent contents: ${parent.listFiles()?.joinToString { it.name }}")
+            }
+        }
+        return files
             .orEmpty()
             .asSequence()
             .filter { it.isFile }
@@ -827,13 +1210,13 @@ class AgentStore private constructor(
         goalsDirectory.mkdirs()
         val target = goalFileLocked(goal.id)
         val encoded = encodeGoal(goal)
-        val encodedStr = encoded.toString()
+        val text = encoded.toString(2)
         
-        val bytes = encodedStr.toByteArray(StandardCharsets.UTF_8)
-        val temp = File(target.parentFile, target.name + ".tmp")
-        temp.writeBytes(bytes)
-        if (!temp.renameTo(target)) {
-            target.writeBytes(bytes)
+        try {
+            target.writeText(text)
+        } catch (e: Exception) {
+            println("DEBUG: Failed to write goal ${goal.id}: ${e.message}")
+            throw e
         }
 
         val readBack = readGoalLocked(target)
@@ -847,9 +1230,16 @@ class AgentStore private constructor(
     }
 
     private fun readGoalLocked(file: File): AgentGoal {
-        val atomicFile = AtomicFile(file)
-        val raw = atomicFile.openRead().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        return decodeGoal(requireOpenRouterObject(raw, "Stored autonomous goal"))
+        val cached = goalCache[file.name]
+        if (cached != null && cached.fileTimestamp == file.lastModified() && cached.fileLength == file.length()) {
+            return cached.goal
+        }
+
+        val raw = file.readText()
+        val goal = decodeGoal(requireOpenRouterObject(raw, "Stored autonomous goal"))
+        
+        goalCache[file.name] = CachedGoal(goal, file.lastModified(), file.length())
+        return goal
     }
 
     private fun deleteGoalFilesLocked(goalId: String) {
@@ -1018,6 +1408,7 @@ class AgentStore private constructor(
         json.put("research_cycles", JSONArray(goal.researchCycles.map(::encodeResearchCycle)))
         json.put("objective_revisions", JSONArray(goal.objectiveRevisions.map(::encodeObjectiveRevision)))
         json.put("active_research_cycle_id", goal.activeResearchCycleId ?: JSONObject.NULL)
+        json.put("active_continuation_scheduling_claim", goal.activeContinuationSchedulingClaim?.let(::encodeContinuationSchedulingClaim) ?: JSONObject.NULL)
         return json
     }
 
@@ -1160,6 +1551,7 @@ class AgentStore private constructor(
             researchCycles = json.optJSONArray("research_cycles").decodeList(::decodeResearchCycle),
             objectiveRevisions = json.optJSONArray("objective_revisions").decodeList(::decodeObjectiveRevision),
             activeResearchCycleId = json.optNullableString("active_research_cycle_id"),
+            activeContinuationSchedulingClaim = json.optJSONObject("active_continuation_scheduling_claim")?.let(::decodeContinuationSchedulingClaim),
         )
 
         val machinePauseIdx = restoredEvents.indexOfLast { 
@@ -1560,6 +1952,37 @@ class AgentStore private constructor(
         durationMs = json.optLongOrNull("duration_ms")
     )
 
+    private fun encodeContinuationSchedulingClaim(claim: ContinuationSchedulingClaim): JSONObject = JSONObject()
+        .put("claim_id", claim.claimId)
+        .put("goal_id", claim.goalId)
+        .put("continuation_fingerprint", claim.continuationFingerprint)
+        .put("claimant_generation", claim.claimantGeneration)
+        .put("work_name", claim.workName)
+        .put("work_id", claim.workId ?: JSONObject.NULL)
+        .put("state", claim.state.name)
+        .put("claimed_at", claim.claimedAt)
+        .put("last_checked_at", claim.lastCheckedAt)
+        .put("confirmed_at", claim.confirmedAt ?: JSONObject.NULL)
+        .put("failure_class", claim.failureClass ?: JSONObject.NULL)
+        .put("failure_message", claim.failureMessage ?: JSONObject.NULL)
+        .put("attempt_count", claim.attemptCount)
+
+    private fun decodeContinuationSchedulingClaim(json: JSONObject): ContinuationSchedulingClaim = ContinuationSchedulingClaim(
+        claimId = json.getString("claim_id"),
+        goalId = json.getString("goal_id"),
+        continuationFingerprint = json.getString("continuation_fingerprint"),
+        claimantGeneration = json.getInt("claimant_generation"),
+        workName = json.getString("work_name"),
+        workId = json.optNullableString("work_id"),
+        state = json.optEnum("state", ContinuationSchedulingState.PENDING),
+        claimedAt = json.getLong("claimed_at"),
+        lastCheckedAt = json.optLong("last_checked_at", json.getLong("claimed_at")),
+        confirmedAt = json.optLongOrNull("confirmed_at"),
+        failureClass = json.optNullableString("failure_class"),
+        failureMessage = json.optNullableString("failure_message"),
+        attemptCount = json.optInt("attempt_count", 1)
+    )
+
     private fun encodeRecoveryProposal(proposal: RecoveryProposal): JSONObject = JSONObject()
         .put("revised_investigation_interpretation", proposal.revisedInvestigationInterpretation)
         .put("specific_unresolved_gap", proposal.specificUnresolvedGap)
@@ -1570,6 +1993,18 @@ class AgentStore private constructor(
         .put("follow_up_rule", proposal.followUpRule ?: JSONObject.NULL)
         .put("rationale", proposal.rationale)
         .put("expected_novelty_dimensions", JSONArray(proposal.expectedNoveltyDimensions))
+
+    private fun decodeRecoveryProposal(json: JSONObject): RecoveryProposal = RecoveryProposal(
+        revisedInvestigationInterpretation = json.optString("revised_investigation_interpretation"),
+        specificUnresolvedGap = json.optString("specific_unresolved_gap"),
+        selectedSourceFamilyShift = json.optNullableString("selected_source_family_shift"),
+        evidenceTargets = json.optJSONArray("evidence_targets").toStringList(),
+        falsifiers = json.optJSONArray("falsifiers").toStringList(),
+        newQueryPortfolio = json.optJSONArray("new_query_portfolio").toStringList(),
+        followUpRule = json.optNullableString("follow_up_rule"),
+        rationale = json.optString("rationale"),
+        expectedNoveltyDimensions = json.optJSONArray("expected_novelty_dimensions").toStringList()
+    )
 
     private fun encodeObjectiveContract(contract: ObjectiveContract): JSONObject = JSONObject()
         .put("version", contract.version)
@@ -1703,7 +2138,22 @@ class AgentStore private constructor(
         )
     }
 
-    private fun encodeStructureRepairLineage(lineage: StructureRepairLineage): JSONObject = JSONObject()
+        private fun encodeStructureRepairLineage(lineage: StructureRepairLineage): JSONObject = JSONObject()
+        .put("original_response_hash", lineage.originalResponseHash)
+        .put("original_request_fingerprint", lineage.originalRequestFingerprint)
+        .put("repair_request_fingerprint", lineage.repairRequestFingerprint)
+        .put("repair_attempt_count", lineage.repairAttemptCount)
+        .put("repair_reason", lineage.repairReason.name)
+        .put("repair_outcome", lineage.repairOutcome.name)
+        .put("pre_repair_content_chars", lineage.preRepairContentChars)
+        .put("post_repair_content_chars", lineage.postRepairContentChars)
+        .put("pre_repair_raw_claims", lineage.preRepairRawClaims)
+        .put("post_repair_raw_claims", lineage.postRepairRawClaims)
+        .put("pre_repair_retained_claims", lineage.preRepairRetainedClaims)
+        .put("post_repair_retained_claims", lineage.postRepairRetainedClaims)
+        .put("pre_repair_supported_claims", lineage.preRepairSupportedClaims)
+        .put("post_repair_supported_claims", lineage.postRepairSupportedClaims)
+
         .put("original_response_hash", lineage.originalResponseHash)
         .put("original_request_fingerprint", lineage.originalRequestFingerprint)
         .put("repair_request_fingerprint", lineage.repairRequestFingerprint)
@@ -1736,7 +2186,11 @@ class AgentStore private constructor(
         postRepairSupportedClaims = json.getInt("post_repair_supported_claims"),
     )
 
-    private fun encodeCriterion(criterion: AgentAcceptanceCriterion): JSONObject = JSONObject()
+        private fun encodeCriterion(criterion: AgentAcceptanceCriterion): JSONObject = JSONObject()
+        .put("id", criterion.id)
+        .put("description", criterion.description)
+        .put("weight", criterion.weight)
+
         .put("id", criterion.id)
         .put("description", criterion.description)
         .put("weight", criterion.weight)
@@ -1747,7 +2201,12 @@ class AgentStore private constructor(
         weight = json.optDouble("weight", 1.0).coerceIn(0.1, 10.0),
     )
 
-    private fun encodeCheck(check: AgentAcceptanceCheck): JSONObject = JSONObject()
+        private fun encodeCheck(check: AgentAcceptanceCheck): JSONObject = JSONObject()
+        .put("criterion_id", check.criterionId)
+        .put("status", check.status.name)
+        .put("score", check.score)
+        .put("explanation", check.explanation)
+
         .put("criterion_id", check.criterionId)
         .put("status", check.status.name)
         .put("score", check.score)
@@ -1760,7 +2219,7 @@ class AgentStore private constructor(
         explanation = json.optString("explanation"),
     )
 
-    private fun encodeRequestAttempt(attempt: ProviderRequestAttempt): JSONObject = JSONObject()
+        private fun encodeRequestAttempt(attempt: ProviderRequestAttempt): JSONObject = JSONObject()
         .put("exchange_id", attempt.exchangeId)
         .put("logical_request_id", attempt.logicalRequestId)
         .put("wire_attempt_ordinal", attempt.wireAttemptOrdinal)
@@ -1792,6 +2251,42 @@ class AgentStore private constructor(
         .put("reconciliation_claim_owner", attempt.reconciliationClaimOwner ?: JSONObject.NULL)
         .put("reconciliation_claimed_at", attempt.reconciliationClaimedAt ?: JSONObject.NULL)
         .put("safe_diagnostic_summary", attempt.safeDiagnosticSummary ?: JSONObject.NULL)
+        .put("recovery_plan_id", attempt.recoveryPlanId ?: JSONObject.NULL)
+        .put("response_payload_fingerprint", attempt.responsePayloadFingerprint ?: JSONObject.NULL)
+
+        .put("exchange_id", attempt.exchangeId)
+        .put("logical_request_id", attempt.logicalRequestId)
+        .put("wire_attempt_ordinal", attempt.wireAttemptOrdinal)
+        .put("previous_exchange_id", attempt.previousExchangeId ?: JSONObject.NULL)
+        .put("provider_response_id", attempt.providerResponseId ?: JSONObject.NULL)
+        .put("transport_stage", attempt.transportStage.name)
+        .put("delivery_certainty", attempt.deliveryCertainty.name)
+        .put("parent_operation_id", attempt.parentOperationId)
+        .put("goal_id", attempt.goalId)
+        .put("task_id", attempt.taskId ?: JSONObject.NULL)
+        .put("execution_generation", attempt.executionGeneration)
+        .put("requested_model", attempt.requestedModel)
+        .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
+        .put("role", attempt.role?.name ?: JSONObject.NULL)
+        .put("payload_fingerprint", attempt.payloadFingerprint)
+        .put("exchange_outcome", attempt.exchangeOutcome.name)
+        .put("provider_accounting_outcome", attempt.providerAccountingOutcome.name)
+        .put("domain_commit_outcome", attempt.domainCommitOutcome.name)
+        .put("usage_source", attempt.usageSource?.name ?: JSONObject.NULL)
+        .put("prompt_tokens", attempt.promptTokens ?: JSONObject.NULL)
+        .put("completion_tokens", attempt.completionTokens ?: JSONObject.NULL)
+        .put("total_tokens", attempt.totalTokens ?: JSONObject.NULL)
+        .put("cost_usd", attempt.costUsd ?: JSONObject.NULL)
+        .put("pricing_model_id", attempt.pricingModelId ?: JSONObject.NULL)
+        .put("http_status_code", attempt.httpStatusCode ?: JSONObject.NULL)
+        .put("failure_class", attempt.failureClass ?: JSONObject.NULL)
+        .put("started_at", attempt.startedAt)
+        .put("finished_at", attempt.finishedAt ?: JSONObject.NULL)
+        .put("reconciliation_claim_owner", attempt.reconciliationClaimOwner ?: JSONObject.NULL)
+        .put("reconciliation_claimed_at", attempt.reconciliationClaimedAt ?: JSONObject.NULL)
+        .put("safe_diagnostic_summary", attempt.safeDiagnosticSummary ?: JSONObject.NULL)
+        .put("recovery_plan_id", attempt.recoveryPlanId ?: JSONObject.NULL)
+        .put("response_payload_fingerprint", attempt.responsePayloadFingerprint ?: JSONObject.NULL)
 
     private fun decodeRequestAttempt(json: JSONObject): ProviderRequestAttempt? {
         val exchangeId = json.optNullableString("exchange_id") ?: return null
@@ -1827,10 +2322,21 @@ class AgentStore private constructor(
             reconciliationClaimOwner = json.optNullableString("reconciliation_claim_owner"),
             reconciliationClaimedAt = json.optLongOrNull("reconciliation_claimed_at"),
             safeDiagnosticSummary = json.optNullableString("safe_diagnostic_summary"),
+            recoveryPlanId = json.optNullableString("recovery_plan_id"),
+            responsePayloadFingerprint = json.optNullableString("response_payload_fingerprint"),
         )
     }
 
-    private fun encodeRetryAuthorization(auth: ProviderRetryAuthorization): JSONObject = JSONObject()
+        private fun encodeRetryAuthorization(auth: ProviderRetryAuthorization): JSONObject = JSONObject()
+        .put("logical_request_id", auth.logicalRequestId)
+        .put("payload_fingerprint", auth.payloadFingerprint)
+        .put("execution_generation", auth.executionGeneration)
+        .put("previous_exchange_id", auth.previousExchangeId ?: JSONObject.NULL)
+        .put("failure_class", auth.failureClass)
+        .put("delivery_certainty", auth.deliveryCertainty.name)
+        .put("attempt_ordinal", auth.attemptOrdinal)
+        .put("authorization_timestamp", auth.authorizationTimestamp)
+
         .put("logical_request_id", auth.logicalRequestId)
         .put("payload_fingerprint", auth.payloadFingerprint)
         .put("execution_generation", auth.executionGeneration)
@@ -1851,7 +2357,22 @@ class AgentStore private constructor(
         authorizationTimestamp = json.optLong("authorization_timestamp", System.currentTimeMillis()),
     )
 
-    private fun encodeIdempotencyRecord(rec: IdempotencyRecord): JSONObject = JSONObject()
+        private fun encodeIdempotencyRecord(rec: IdempotencyRecord): JSONObject = JSONObject()
+        .put("key", rec.key)
+        .put("effect_type", rec.effectType.name)
+        .put("state", rec.state.name)
+        .put("claim_owner", rec.claimOwner)
+        .put("claim_generation", rec.claimGeneration)
+        .put("effect_fingerprint", rec.effectFingerprint ?: JSONObject.NULL)
+        .put("lease_expires_at", rec.leaseExpiresAt ?: JSONObject.NULL)
+        .put("claimed_at", rec.claimedAt)
+        .put("committed_at", rec.committedAt ?: JSONObject.NULL)
+        .put("last_attempt_at", rec.lastAttemptAt)
+        .put("completed_by", rec.completedBy ?: JSONObject.NULL)
+        .put("last_failure", rec.lastFailure ?: JSONObject.NULL)
+        .put("retry_count", rec.retryCount)
+        .put("target_object_ids", JSONArray(rec.targetObjectIds))
+
         .put("key", rec.key)
         .put("effect_type", rec.effectType.name)
         .put("state", rec.state.name)
@@ -1884,7 +2405,16 @@ class AgentStore private constructor(
         targetObjectIds = json.optJSONArray("target_object_ids").toStringList(),
     )
 
-    private fun encodeMonitorOutbox(rec: MonitorOutboxRecord): JSONObject = JSONObject()
+        private fun encodeMonitorOutbox(rec: MonitorOutboxRecord): JSONObject = JSONObject()
+        .put("event_id", rec.eventId)
+        .put("exchange_id", rec.exchangeId)
+        .put("event_type", rec.eventType)
+        .put("safe_payload_json", rec.safePayloadJson)
+        .put("state", rec.state.name)
+        .put("created_at", rec.createdAt)
+        .put("delivered_at", rec.deliveredAt ?: JSONObject.NULL)
+        .put("attempt_count", rec.attemptCount)
+
         .put("event_id", rec.eventId)
         .put("exchange_id", rec.exchangeId)
         .put("event_type", rec.eventType)
@@ -1905,7 +2435,15 @@ class AgentStore private constructor(
         attemptCount = json.optInt("attempt_count", 0),
     )
 
-    private fun encodeQuarantinedRecord(rec: QuarantinedRecord): JSONObject = JSONObject()
+        private fun encodeQuarantinedRecord(rec: QuarantinedRecord): JSONObject = JSONObject()
+        .put("id", rec.id)
+        .put("record_type", rec.recordType)
+        .put("original_index_or_id", rec.originalIndexOrId)
+        .put("sha256_hash", rec.sha256Hash)
+        .put("safe_parse_error", rec.safeParseError)
+        .put("detected_timestamp", rec.detectedTimestamp)
+        .put("source_schema_version", rec.sourceSchemaVersion)
+
         .put("id", rec.id)
         .put("record_type", rec.recordType)
         .put("original_index_or_id", rec.originalIndexOrId)
@@ -1924,7 +2462,21 @@ class AgentStore private constructor(
         sourceSchemaVersion = json.optInt("source_schema_version", 7),
     )
 
-    private fun encodeRouteFingerprint(fp: RouteFailureFingerprint): JSONObject = JSONObject()
+        private fun encodeRouteFingerprint(fp: RouteFailureFingerprint): JSONObject = JSONObject()
+        .put("goal_id", fp.goalId)
+        .put("task_id", fp.taskId ?: JSONObject.NULL)
+        .put("operation_id", fp.operationId)
+        .put("canonical_payload_hash", fp.canonicalPayloadHash)
+        .put("schema_version", fp.schemaVersion)
+        .put("role", fp.role.name)
+        .put("route", fp.route)
+        .put("resolved_model", fp.resolvedModel ?: JSONObject.NULL)
+        .put("failure_class", fp.failureClass)
+        .put("repair_applied", fp.repairApplied ?: JSONObject.NULL)
+        .put("retry_after_ms", fp.retryAfterMs ?: JSONObject.NULL)
+        .put("next_eligible_time", fp.nextEligibleTime ?: JSONObject.NULL)
+        .put("timestamp", fp.timestamp)
+
         .put("goal_id", fp.goalId)
         .put("task_id", fp.taskId ?: JSONObject.NULL)
         .put("operation_id", fp.operationId)
@@ -1955,7 +2507,19 @@ class AgentStore private constructor(
         timestamp = json.optLong("timestamp"),
     )
 
-    private fun encodeBodyBuilderClaim(claim: BodyBuilderProposalClaim): JSONObject = JSONObject()
+        private fun encodeBodyBuilderClaim(claim: BodyBuilderProposalClaim): JSONObject = JSONObject()
+        .put("claim_id", claim.claimId)
+        .put("task_id", claim.taskId)
+        .put("payload_fingerprint", claim.payloadFingerprint)
+        .put("claim_owner", claim.claimOwner)
+        .put("execution_generation", claim.executionGeneration)
+        .put("claimed_at", claim.claimedAt)
+        .put("lease_expires_at", claim.leaseExpiresAt)
+        .put("dispatch_status", claim.dispatchStatus.name)
+        .put("provider_exchange_id", claim.providerExchangeId ?: JSONObject.NULL)
+        .put("terminal_proposal_outcome", claim.terminalProposalOutcome ?: JSONObject.NULL)
+        .put("accepted_field_paths", JSONArray(claim.acceptedFieldPaths))
+
         .put("claim_id", claim.claimId)
         .put("task_id", claim.taskId)
         .put("payload_fingerprint", claim.payloadFingerprint)
@@ -1982,7 +2546,33 @@ class AgentStore private constructor(
         acceptedFieldPaths = json.optJSONArray("accepted_field_paths").toStringList(),
     )
 
-    private fun encodeAttempt(attempt: AgentAttempt): JSONObject = JSONObject()
+        private fun encodeAttempt(attempt: AgentAttempt): JSONObject = JSONObject()
+        .put("id", attempt.id)
+        .put("task_id", attempt.taskId ?: JSONObject.NULL)
+        .put("status", attempt.status.name)
+        .put("started_at", attempt.startedAt)
+        .put("finished_at", attempt.finishedAt ?: JSONObject.NULL)
+        .put("model_id", attempt.modelId)
+        .put("council_role", attempt.councilRole?.name ?: JSONObject.NULL)
+        .put("role", attempt.role?.name ?: JSONObject.NULL)
+        .put("selection_reason", attempt.selectionReason ?: JSONObject.NULL)
+        .put("previous_route", attempt.previousRoute ?: JSONObject.NULL)
+        .put("cooldown_state", attempt.cooldownState ?: JSONObject.NULL)
+        .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
+        .put("response_id", attempt.responseId ?: JSONObject.NULL)
+        .put("provider", attempt.provider ?: JSONObject.NULL)
+        .put("finish_reason", attempt.finishReason ?: JSONObject.NULL)
+        .put("native_finish_reason", attempt.nativeFinishReason ?: JSONObject.NULL)
+        .put("prompt_tokens", attempt.promptTokens ?: JSONObject.NULL)
+        .put("completion_tokens", attempt.completionTokens ?: JSONObject.NULL)
+        .put("total_tokens", attempt.totalTokens ?: JSONObject.NULL)
+        .put("cost_usd", attempt.costUsd ?: JSONObject.NULL)
+        .put("web_search_requests", attempt.webSearchRequests ?: JSONObject.NULL)
+        .put("web_fetch_requests", attempt.webFetchRequests ?: JSONObject.NULL)
+        .put("discovered_leads", attempt.discoveredLeads ?: JSONObject.NULL)
+        .put("rabbit_hole_iterations", attempt.rabbitHoleIterations ?: JSONObject.NULL)
+        .put("error", attempt.error ?: JSONObject.NULL)
+
         .put("id", attempt.id)
         .put("task_id", attempt.taskId ?: JSONObject.NULL)
         .put("status", attempt.status.name)
@@ -2037,7 +2627,29 @@ class AgentStore private constructor(
         error = json.optNullableString("error")?.let { normalizeAgentFailureMessage(it, it) },
     )
 
-    private fun encodeEvidence(evidence: AgentEvidence): JSONObject = JSONObject()
+        private fun encodeEvidence(evidence: AgentEvidence): JSONObject = JSONObject()
+        .put("id", evidence.id)
+        .put("task_id", evidence.taskId ?: JSONObject.NULL)
+        .put("cycle_id", evidence.cycleId ?: JSONObject.NULL)
+        .put("kind", evidence.kind.name)
+        .put("title", evidence.title)
+        .put("summary", evidence.summary)
+        .put("content", evidence.content)
+        .put(
+            "sources",
+            JSONArray().apply {
+                evidence.sources.forEach { source ->
+                    put(
+                        JSONObject()
+                            .put("title", source.title)
+                            .put("url", source.url)
+                            .put("excerpt", source.excerpt ?: JSONObject.NULL),
+                    )
+                }
+            },
+        )
+        .put("created_at", evidence.createdAt)
+
         .put("id", evidence.id)
         .put("task_id", evidence.taskId ?: JSONObject.NULL)
         .put("cycle_id", evidence.cycleId ?: JSONObject.NULL)
@@ -2078,7 +2690,17 @@ class AgentStore private constructor(
         createdAt = json.optLong("created_at"),
     )
 
-    private fun encodeClaim(claim: AgentClaim): JSONObject = JSONObject()
+        private fun encodeClaim(claim: AgentClaim): JSONObject = JSONObject()
+        .put("id", claim.id)
+        .put("task_id", claim.taskId)
+        .put("text", claim.text)
+        .put("type", claim.type.name)
+        .put("confidence", claim.confidence)
+        .put("support", claim.support.name)
+        .put("supporting_evidence_ids", JSONArray(claim.supportingEvidenceIds))
+        .put("source_urls", JSONArray(claim.sourceUrls))
+        .put("review_explanation", claim.reviewExplanation ?: JSONObject.NULL)
+
         .put("id", claim.id)
         .put("task_id", claim.taskId)
         .put("text", claim.text)
@@ -2101,7 +2723,13 @@ class AgentStore private constructor(
         reviewExplanation = json.optNullableString("review_explanation"),
     )
 
-    private fun encodeEvidenceLink(link: AgentEvidenceLink): JSONObject = JSONObject()
+        private fun encodeEvidenceLink(link: AgentEvidenceLink): JSONObject = JSONObject()
+        .put("id", link.id)
+        .put("claim_id", link.claimId)
+        .put("evidence_id", link.evidenceId)
+        .put("relation", link.relation.name)
+        .put("explanation", link.explanation ?: JSONObject.NULL)
+
         .put("id", link.id)
         .put("claim_id", link.claimId)
         .put("evidence_id", link.evidenceId)
@@ -2116,7 +2744,18 @@ class AgentStore private constructor(
         explanation = json.optNullableString("explanation"),
     )
 
-    private fun encodeSourceRead(read: SourceRead): JSONObject = JSONObject()
+        private fun encodeSourceRead(read: SourceRead): JSONObject = JSONObject()
+        .put("id", read.id)
+        .put("url", read.url)
+        .put("canonical_url", read.canonicalUrl)
+        .put("http_code", read.httpCode)
+        .put("content_type", read.contentType)
+        .put("content", read.content)
+        .put("source_role", read.sourceRole)
+        .put("authority_score", read.authorityScore)
+        .put("read_at", read.readAt)
+        .put("provenance", read.provenance.name)
+
         .put("id", read.id)
         .put("url", read.url)
         .put("canonical_url", read.canonicalUrl)
@@ -2141,7 +2780,14 @@ class AgentStore private constructor(
         provenance = json.optEnum("provenance", SourceReadProvenance.UNVERIFIED_CITATION),
     )
 
-    private fun encodeEvidenceCandidate(candidate: EvidenceCandidate): JSONObject = JSONObject()
+        private fun encodeEvidenceCandidate(candidate: EvidenceCandidate): JSONObject = JSONObject()
+        .put("id", candidate.id)
+        .put("source_read_id", candidate.sourceReadId)
+        .put("canonical_url", candidate.canonicalUrl)
+        .put("raw_text", candidate.rawText)
+        .put("structured_path", candidate.structuredPath ?: JSONObject.NULL)
+        .put("relevance_score", candidate.relevanceScore)
+
         .put("id", candidate.id)
         .put("source_read_id", candidate.sourceReadId)
         .put("canonical_url", candidate.canonicalUrl)
@@ -2158,7 +2804,14 @@ class AgentStore private constructor(
         relevanceScore = json.getInt("relevance_score"),
     )
 
-    private fun encodeNormalizedFact(fact: NormalizedFact): JSONObject = JSONObject()
+        private fun encodeNormalizedFact(fact: NormalizedFact): JSONObject = JSONObject()
+        .put("id", fact.id)
+        .put("evidence_candidate_id", fact.evidenceCandidateId)
+        .put("fact_value", fact.factValue)
+        .put("units", fact.units ?: JSONObject.NULL)
+        .put("entity_name", fact.entityName)
+        .put("content_hash", fact.contentHash)
+
         .put("id", fact.id)
         .put("evidence_candidate_id", fact.evidenceCandidateId)
         .put("fact_value", fact.factValue)
@@ -2175,7 +2828,18 @@ class AgentStore private constructor(
         contentHash = json.getString("content_hash"),
     )
 
-    private fun encodeAcceptedClaim(claim: AcceptedClaim): JSONObject = JSONObject()
+        private fun encodeAcceptedClaim(claim: AcceptedClaim): JSONObject = JSONObject()
+        .put("id", claim.id)
+        .put("task_id", claim.taskId)
+        .put("claim_text", claim.claimText)
+        .put("source_read_id", claim.sourceReadId)
+        .put("evidence_candidate_id", claim.evidenceCandidateId)
+        .put("canonical_url", claim.canonicalUrl)
+        .put("source_role", claim.sourceRole)
+        .put("normalized_value", claim.normalizedValue)
+        .put("units", claim.units ?: JSONObject.NULL)
+        .put("content_hash", claim.contentHash)
+
         .put("id", claim.id)
         .put("task_id", claim.taskId)
         .put("claim_text", claim.claimText)
@@ -2200,7 +2864,14 @@ class AgentStore private constructor(
         contentHash = json.getString("content_hash"),
     )
 
-    private fun encodeCheckpoint(checkpoint: AgentCheckpoint): JSONObject = JSONObject()
+        private fun encodeCheckpoint(checkpoint: AgentCheckpoint): JSONObject = JSONObject()
+        .put("id", checkpoint.id)
+        .put("sequence", checkpoint.sequence)
+        .put("created_at", checkpoint.createdAt)
+        .put("completed_task_ids", JSONArray(checkpoint.completedTaskIds))
+        .put("progress_score", checkpoint.progressScore)
+        .put("note", checkpoint.note)
+
         .put("id", checkpoint.id)
         .put("sequence", checkpoint.sequence)
         .put("created_at", checkpoint.createdAt)
@@ -2217,7 +2888,17 @@ class AgentStore private constructor(
         note = json.optString("note"),
     )
 
-    private fun encodeConcept(concept: AgentConceptCandidate): JSONObject = JSONObject()
+        private fun encodeConcept(concept: AgentConceptCandidate): JSONObject = JSONObject()
+        .put("id", concept.id)
+        .put("name", concept.name)
+        .put("definition", concept.definition)
+        .put("trigger_pattern", concept.triggerPattern)
+        .put("expected_benefit", concept.expectedBenefit)
+        .put("risks", JSONArray(concept.risks))
+        .put("validation_tests", JSONArray(concept.validationTests))
+        .put("status", concept.status.name)
+        .put("created_at", concept.createdAt)
+
         .put("id", concept.id)
         .put("name", concept.name)
         .put("definition", concept.definition)
@@ -2240,7 +2921,7 @@ class AgentStore private constructor(
         createdAt = json.optLong("created_at"),
     )
 
-    private fun encodeLease(lease: AgentExecutionLease): JSONObject = JSONObject()
+        private fun encodeLease(lease: AgentExecutionLease): JSONObject = JSONObject()
         .put("worker_id", lease.workerId)
         .put("owner_process_session_id", lease.ownerProcessSessionId)
         .put("task_id", lease.taskId)
@@ -2249,7 +2930,15 @@ class AgentStore private constructor(
         .put("acquired_at", lease.acquiredAt)
         .put("heartbeat_at", lease.heartbeatAt)
 
-    private fun encodeBlockedSource(rec: BlockedSourceRecord): JSONObject = JSONObject()
+        .put("worker_id", lease.workerId)
+        .put("owner_process_session_id", lease.ownerProcessSessionId)
+        .put("task_id", lease.taskId)
+        .put("attempt_id", lease.attemptId)
+        .put("generation", lease.generation)
+        .put("acquired_at", lease.acquiredAt)
+        .put("heartbeat_at", lease.heartbeatAt)
+
+        private fun encodeBlockedSource(rec: BlockedSourceRecord): JSONObject = JSONObject()
         .put("canonical_document_id", rec.canonicalDocumentId ?: JSONObject.NULL)
         .put("canonical_url", rec.canonicalUrl)
         .put("route_kind", rec.routeKind)
@@ -2262,7 +2951,23 @@ class AgentStore private constructor(
         .put("terminal_state", rec.terminalState)
         .put("source_task_id", rec.sourceTaskId ?: JSONObject.NULL)
 
-    private fun encodeEvent(event: AgentEvent): JSONObject = JSONObject()
+        .put("canonical_document_id", rec.canonicalDocumentId ?: JSONObject.NULL)
+        .put("canonical_url", rec.canonicalUrl)
+        .put("route_kind", rec.routeKind)
+        .put("failure_class", rec.failureClass)
+        .put("first_failed_at", rec.firstFailedAt)
+        .put("last_failed_at", rec.lastFailedAt)
+        .put("last_failure_detail_code", rec.lastFailureDetailCode ?: JSONObject.NULL)
+        .put("attempt_count", rec.attemptCount)
+        .put("alternate_routes_attempted", JSONArray(rec.alternateRoutesAttempted))
+        .put("terminal_state", rec.terminalState)
+        .put("source_task_id", rec.sourceTaskId ?: JSONObject.NULL)
+
+        private fun encodeEvent(event: AgentEvent): JSONObject = JSONObject()
+        .put("id", event.id)
+        .put("created_at", event.createdAt)
+        .put("message", event.message)
+
         .put("id", event.id)
         .put("created_at", event.createdAt)
         .put("message", event.message)
@@ -2306,18 +3011,6 @@ class AgentStore private constructor(
         alternateRoutesAttempted = json.optJSONArray("alternate_routes_attempted").toStringList(),
         terminalState = json.optBoolean("terminal_state", false),
         sourceTaskId = json.optNullableString("source_task_id"),
-    )
-
-    private fun decodeRecoveryProposal(json: JSONObject): RecoveryProposal = RecoveryProposal(
-        revisedInvestigationInterpretation = json.optString("revised_investigation_interpretation"),
-        specificUnresolvedGap = json.optString("specific_unresolved_gap"),
-        selectedSourceFamilyShift = json.optNullableString("selected_source_family_shift"),
-        evidenceTargets = json.optJSONArray("evidence_targets").toStringList(),
-        falsifiers = json.optJSONArray("falsifiers").toStringList(),
-        newQueryPortfolio = json.optJSONArray("new_query_portfolio").toStringList(),
-        followUpRule = json.optNullableString("follow_up_rule"),
-        rationale = json.optString("rationale"),
-        expectedNoveltyDimensions = json.optJSONArray("expected_novelty_dimensions").toStringList()
     )
 
     private fun decodeRejectedQuery(json: JSONObject): RejectedResearchQuery = RejectedResearchQuery(
@@ -2380,7 +3073,7 @@ class AgentStore private constructor(
         private const val ATOMIC_BACKUP_SUFFIX = ".bak"
         private const val LEGACY_RECOVERY_FILE_NAME = "legacy_snapshot_recovery.txt"
         private const val CORRUPT_RECOVERY_SUFFIX = ".corrupt-recovery.txt"
-        private const val STORAGE_VERSION = 13
+        private const val STORAGE_VERSION = 14
         private val STORE_LOCK = Any()
 
         fun isTaskBoundOperation(operation: String): Boolean {

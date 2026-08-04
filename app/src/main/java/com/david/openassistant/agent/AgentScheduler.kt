@@ -30,6 +30,7 @@ sealed interface SchedulingResult {
 
 class AgentScheduler(context: Context) {
     private val workManager = WorkManager.getInstance(context.applicationContext)
+    private val store = AgentStore(context.applicationContext)
     private val diagnostics = com.david.openassistant.data.diagnostics.RuntimeDiagnostics(context.applicationContext)
 
     fun enqueue(goalId: String, replace: Boolean = false, generation: Int = 0) {
@@ -148,45 +149,58 @@ class AgentScheduler(context: Context) {
     }
 
     fun enqueueContinuation(goalId: String, generation: Int = 0, fingerprint: String? = null): SchedulingResult {
-        if (fingerprint != null && isDuplicateNoProgressContinuation(goalId, fingerprint)) {
-            diagnostics.info(
-                event = "no_op_continuation_rejected_by_scheduler",
-                component = "scheduler",
-                fields = mapOf("goal_id" to goalId, "fingerprint" to fingerprint)
-            )
-            return SchedulingResult.RejectedNoProgress(goalId, fingerprint)
+        val f = fingerprint ?: "none"
+        val workName = uniqueWorkName(goalId, generation)
+        
+        // 1. Atomically claim the continuation fingerprint
+        val claim = store.claimContinuationAtomic(goalId, f, generation, workName)
+            ?: return SchedulingResult.EnqueueFailed(IllegalStateException("Failed to claim continuation in store"))
+        
+        if (claim.state == ContinuationSchedulingState.CONFIRMED_ACTIVE || 
+            claim.state == ContinuationSchedulingState.REUSED_ACTIVE) {
+            return SchedulingResult.CoalescedDuplicate("Continuation already confirmed active in store")
         }
         
         return try {
             val request = createRequest(goalId)
-            workManager.enqueueUniqueWork(
-                uniqueWorkName(goalId, generation),
+            
+            // 2. Enqueue unique work with APPEND_OR_REPLACE
+            val operation = workManager.enqueueUniqueWork(
+                workName,
                 ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request,
             )
             
-            if (fingerprint != null) {
-                recordProcessedFingerprint(goalId, fingerprint)
+            // 3. Wait for operation result
+            operation.result.get(OPERATION_WAIT_SECONDS, TimeUnit.SECONDS)
+            
+            // 4. Query WorkInfo
+            val infos = workManager.getWorkInfosForUniqueWork(workName).get(3, TimeUnit.SECONDS)
+            val info = infos.firstOrNull { it.id == request.id } ?: infos.firstOrNull { 
+                it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.BLOCKED
             }
-            SchedulingResult.NewlyEnqueued(request.id, WorkInfo.State.ENQUEUED)
+            
+            if (info != null) {
+                val newState = if (info.id == request.id) ContinuationSchedulingState.CONFIRMED_ACTIVE else ContinuationSchedulingState.REUSED_ACTIVE
+                store.confirmContinuationAtomic(goalId, claim.claimId, newState, info.id.toString())
+                if (newState == ContinuationSchedulingState.CONFIRMED_ACTIVE) {
+                    SchedulingResult.NewlyEnqueued(info.id, info.state)
+                } else {
+                    SchedulingResult.ReusedActive(info.id, info.state)
+                }
+            } else {
+                store.confirmContinuationAtomic(goalId, claim.claimId, ContinuationSchedulingState.FAILED_RETRYABLE, failureClass = "WORK_INFO_MISSING")
+                SchedulingResult.EnqueueFailed(IllegalStateException("WorkInfo missing after enqueue"))
+            }
         } catch (e: Throwable) {
+            store.confirmContinuationAtomic(goalId, claim.claimId, ContinuationSchedulingState.FAILED_RETRYABLE, failureClass = e.javaClass.simpleName, failureMessage = e.message)
             SchedulingResult.EnqueueFailed(e)
         }
-    }
-
-    private fun isDuplicateNoProgressContinuation(goalId: String, fingerprint: String): Boolean {
-        val lastFingerprint = lastFingerprints[goalId]
-        return lastFingerprint == fingerprint
-    }
-
-    private fun recordProcessedFingerprint(goalId: String, fingerprint: String) {
-        lastFingerprints[goalId] = fingerprint
     }
 
     fun cancel(goalId: String, generation: Int = 0) {
         AgentCallCancellationRegistry.cancel(goalId)
         workManager.cancelUniqueWork(uniqueWorkName(goalId, generation))
-        lastFingerprints.remove(goalId)
     }
 
     fun cancelAndWait(goalId: String, generation: Int = 0) {
@@ -249,7 +263,6 @@ class AgentScheduler(context: Context) {
     companion object {
         private const val CANCELLATION_WAIT_SECONDS = 20L
         private const val OPERATION_WAIT_SECONDS = 10L
-        private val lastFingerprints = java.util.concurrent.ConcurrentHashMap<String, String>()
 
         fun uniqueWorkName(goalId: String, generation: Int = 0): String {
             return if (generation > 0) {

@@ -14,7 +14,34 @@ data class ObjectiveContract(
     val contractHash: String? = null,
 )
 
+enum class ContinuationSchedulingState {
+    PENDING,
+    CONFIRMED_ACTIVE,
+    REUSED_ACTIVE,
+    FAILED_RETRYABLE,
+    REJECTED_NO_PROGRESS,
+    CANCELLED,
+    SUPERSEDED
+}
+
+data class ContinuationSchedulingClaim(
+    val claimId: String = UUID.randomUUID().toString(),
+    val goalId: String,
+    val continuationFingerprint: String,
+    val claimantGeneration: Int,
+    val workName: String,
+    val workId: String? = null,
+    val state: ContinuationSchedulingState = ContinuationSchedulingState.PENDING,
+    val claimedAt: Long = System.currentTimeMillis(),
+    val lastCheckedAt: Long = claimedAt,
+    val confirmedAt: Long? = null,
+    val failureClass: String? = null,
+    val failureMessage: String? = null,
+    val attemptCount: Int = 1,
+)
+
 data class AgentGoal(
+
     val id: String = UUID.randomUUID().toString(),
     val conversationId: String,
     val submissionId: String? = null,
@@ -101,6 +128,7 @@ data class AgentGoal(
     val researchCycles: List<ResearchCycle> = emptyList(),
     val objectiveRevisions: List<ObjectiveRevision> = emptyList(),
     val activeResearchCycleId: String? = null,
+    val activeContinuationSchedulingClaim: ContinuationSchedulingClaim? = null,
 ) {
     fun allocationSnapshot(policy: AutonomyPolicy = AutonomyPolicy.DEFAULT): ResearchAllocationSnapshot {
         val profile = AgentResearchAllocator.profileForGoal(this, policy)

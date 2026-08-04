@@ -153,15 +153,15 @@ class Slice1LifecycleTest {
     private fun createTestGoal(
         goalId: String = "goal-" + UUID.randomUUID(),
         status: AgentGoalStatus = AgentGoalStatus.RUNNING,
-        workerId: String = "w1",
+        workerId: String = "test-worker",
         taskId: String = "t1",
-        attemptId: String = "a1",
+        attemptId: String = "test-attempt",
         generation: Int = 1,
         heartbeatAt: Long = System.currentTimeMillis(),
     ): AgentGoal {
         val lease = AgentExecutionLease(
             workerId = workerId,
-            ownerProcessSessionId = "session-1",
+            ownerProcessSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID,
             taskId = taskId,
             attemptId = attemptId,
             generation = generation,
@@ -457,11 +457,11 @@ class Slice1LifecycleTest {
         store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
 
         // First transition -> Updated
-        val t1 = store.transitionExchangeOutcome(goal.id, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
+        val t1 = store.transitionExchangeOutcomeWithResultAtomic(goal.id, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
         assertTrue(t1 is TransitionOutcomeResult.Updated)
 
         // Matching duplicate transition -> AlreadyTerminal(RESPONSE_SUCCESS)
-        val t2 = store.transitionExchangeOutcome(goal.id, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
+        val t2 = store.transitionExchangeOutcomeWithResultAtomic(goal.id, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
         assertTrue(t2 is TransitionOutcomeResult.AlreadyTerminal)
         assertEquals(ExchangeOutcome.RESPONSE_SUCCESS, (t2 as TransitionOutcomeResult.AlreadyTerminal).outcome)
     }
@@ -485,10 +485,10 @@ class Slice1LifecycleTest {
         store.createActiveRequestAttempt(goal.id, attemptRecord, ctx)
 
         // Transition to RESPONSE_SUCCESS
-        store.transitionExchangeOutcome(goal.id, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
+        store.transitionExchangeOutcomeWithResultAtomic(goal.id, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
 
         // Conflicting transition to RESPONSE_ERROR via store directly
-        val result = store.transitionExchangeOutcome(goal.id, exchangeId, ExchangeOutcome.RESPONSE_ERROR, ctx, statusCode = 500)
+        val result = store.transitionExchangeOutcomeWithResultAtomic(goal.id, exchangeId, ExchangeOutcome.RESPONSE_ERROR, ctx, statusCode = 500)
         assertTrue(result is TransitionOutcomeResult.AlreadyTerminal)
         assertEquals(ExchangeOutcome.RESPONSE_SUCCESS, (result as TransitionOutcomeResult.AlreadyTerminal).outcome)
     }
@@ -586,7 +586,7 @@ class Slice1LifecycleTest {
             }
         })
 
-        val termRes = store.transitionExchangeOutcome(goal.id, "ex-fail-both", ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
+        val termRes = store.transitionExchangeOutcomeWithResultAtomic(goal.id, "ex-fail-both", ExchangeOutcome.RESPONSE_SUCCESS, ctx, statusCode = 200)
         assertTrue(termRes is TransitionOutcomeResult.StorageFailure)
 
         store.setTestWriterInjection(null)
@@ -1683,7 +1683,7 @@ class Slice1LifecycleTest {
         assertEquals(CreateAttemptResult.Created, createResult)
 
         // Transition to terminal RESPONSE_SUCCESS
-        val transitionResult = store.transitionExchangeOutcome(
+        val transitionResult = store.transitionExchangeOutcomeWithResultAtomic(
             goalId = goalId,
             exchangeId = exchangeId,
             newOutcome = ExchangeOutcome.RESPONSE_SUCCESS,
@@ -1740,11 +1740,11 @@ class Slice1LifecycleTest {
         val ctx = createMissionContext(goal)
 
         // Test missing exchange
-        val missingExResult = store.transitionExchangeOutcome(goalId, "non-existent-ex", ExchangeOutcome.RESPONSE_SUCCESS, ctx)
+        val missingExResult = store.transitionExchangeOutcomeWithResultAtomic(goalId, "non-existent-ex", ExchangeOutcome.RESPONSE_SUCCESS, ctx)
         assertTrue(missingExResult is TransitionOutcomeResult.ExchangeMissing)
 
         // Test missing goal
-        val missingGoalResult = store.transitionExchangeOutcome("non-existent-goal", "ex-1", ExchangeOutcome.RESPONSE_SUCCESS, ctx)
+        val missingGoalResult = store.transitionExchangeOutcomeWithResultAtomic("non-existent-goal", "ex-1", ExchangeOutcome.RESPONSE_SUCCESS, ctx)
         assertEquals(TransitionOutcomeResult.GoalMissing, missingGoalResult)
     }
 }

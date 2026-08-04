@@ -73,13 +73,11 @@ class AgentTaskExecutor internal constructor(
         if (freshTask.lastRequestFingerprint == currentFingerprint && freshTask.attemptCount >= 1 && !isAuthorizedRetry) {
             taskDiagnostics.warning("identical_context_pre_dispatch_suppressed", mapOf("fingerprint" to currentFingerprint))
             
-            // REQUIRED CHANGE 6: Replace machine pause with adaptive recovery preparation
-            store.updateGoalAtomic(goal.id, ticket) { current ->
-                val stalledTask = current.tasks.firstOrNull { it.id == task.id } ?: return@updateGoalAtomic current
-                val diagnosis = ExecutionStallDiagnosis.REPEATED_CONTEXT
-                val tactic = ResearchRecoveryEngine.selectTactic(current, stalledTask, diagnosis)
-                
-                if (tactic == EscalationTactic.NONE || tactic == EscalationTactic.ASK_USER || tactic == EscalationTactic.MARK_EXHAUSTED) {
+            val diagnosis = ExecutionStallDiagnosis.REPEATED_CONTEXT
+            val tactic = ResearchRecoveryEngine.selectTactic(freshGoal, freshTask, diagnosis)
+            
+            if (tactic == EscalationTactic.NONE || tactic == EscalationTactic.ASK_USER || tactic == EscalationTactic.MARK_EXHAUSTED) {
+                store.updateGoalAtomic(goal.id, ticket) { current ->
                     val (newStatus, eventMessage) = when (tactic) {
                         EscalationTactic.ASK_USER -> AgentGoalStatus.REQUIRES_USER_CLARIFICATION to "Execution blocked: identical context fingerprint detected. User clarification required."
                         else -> AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED to "Execution finished: research strategies exhausted for the current objective."
@@ -90,42 +88,42 @@ class AgentTaskExecutor internal constructor(
                         tasks = current.tasks.map { if (it.id == task.id) it.copy(status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE, failureClass = "STRUCTURED_SYNTHESIS_DEFICIT") else it },
                         events = appendEvent(current.events, eventMessage)
                     )
-                } else {
-                    val planId = ResearchRecoveryEngine.generatePlanIdentity(current.id, stalledTask.id, currentFingerprint, diagnosis, tactic)
-                    val recoveryPlan = ResearchRecoveryPlan(
-                        id = planId,
-                        goalId = current.id,
-                        taskId = stalledTask.id,
-                        inputExecutionFingerprint = currentFingerprint,
-                        diagnosis = diagnosis,
-                        selectedTactic = tactic,
-                        status = RecoveryPlanStatus.PREPARED,
-                        logicalProviderRequestId = null,
-                        proposal = null,
-                        proposalFingerprint = null,
-                        validationResult = null,
-                        failureClassification = null,
-                        failureMessage = null
+                }
+            } else {
+                val planId = ResearchRecoveryEngine.generatePlanIdentity(freshGoal.id, freshTask.id, currentFingerprint, diagnosis, tactic)
+                val recoveryPlan = ResearchRecoveryPlan(
+                    id = planId,
+                    goalId = freshGoal.id,
+                    taskId = freshTask.id,
+                    inputExecutionFingerprint = currentFingerprint,
+                    diagnosis = diagnosis,
+                    selectedTactic = tactic,
+                    status = RecoveryPlanStatus.PREPARED,
+                    logicalProviderRequestId = null,
+                    proposal = null,
+                    proposalFingerprint = null,
+                    validationResult = null,
+                    failureClassification = null,
+                    failureMessage = null
+                )
+                diagnostics.info(
+                    event = "duplicate_context_recovery_prepared",
+                    component = "recovery",
+                    fields = mapOf(
+                        "goal_id" to freshGoal.id,
+                        "task_id" to freshTask.id,
+                        "plan_id" to planId,
+                        "diagnosis" to diagnosis.name,
+                        "tactic" to tactic.name,
+                        "fingerprint" to currentFingerprint
                     )
-                    diagnostics.info(
-                        event = "duplicate_context_recovery_prepared",
-                        component = "recovery",
-                        fields = mapOf(
-                            "goal_id" to current.id,
-                            "task_id" to stalledTask.id,
-                            "plan_id" to planId,
-                            "diagnosis" to diagnosis.name,
-                            "tactic" to tactic.name,
-                            "fingerprint" to currentFingerprint
-                        )
-                    )
-                    val isNewPlan = current.recoveryPlans.none { it.id == planId }
-                    current.copy(
-                        status = AgentGoalStatus.RECOVERING,
-                        activeRecoveryPlanId = planId,
-                        recoveryPlans = if (isNewPlan) current.recoveryPlans + recoveryPlan else current.recoveryPlans,
-                        events = if (isNewPlan) appendEvent(current.events, "Identical context detected. Prepared adaptive recovery tactic: ${tactic.name}.") else current.events
-                    )
+                )
+                
+                val created = store.createRecoveryPlanAtomic(ticket, recoveryPlan)
+                if (created) {
+                    store.updateGoalAtomic(goal.id, ticket) { g ->
+                        g.copy(events = appendEvent(g.events, "Identical context detected. Prepared adaptive recovery tactic: ${tactic.name}."))
+                    }
                 }
             }
             return WorkerOutcome.CONTINUE

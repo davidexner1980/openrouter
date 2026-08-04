@@ -174,12 +174,10 @@ class AgentGoalWorker(
                     }
 
                     // RECOVERY PRIORITY: Check for active nonterminal recovery plan before ordinary task allocation
-                    val activeRecoveryId = goalSnapshot.activeRecoveryPlanId
-                    val activeRecoveryPlan = if (activeRecoveryId != null) goalSnapshot.recoveryPlans.firstOrNull { it.id == activeRecoveryId } else null
-                    val hasActiveRecovery = goalSnapshot.status == AgentGoalStatus.RECOVERING || (activeRecoveryPlan != null && activeRecoveryPlan.status.isNonTerminal())
+                    var hasActiveRecovery = checkActiveRecovery(goalSnapshot)
 
-                    val allocationProfile = AgentResearchAllocator.profileForGoal(goalSnapshot, autonomyPolicy)
-                    val gaps = AgentResearchAllocator.evaluateGaps(goalSnapshot, allocationProfile)
+                    var allocationProfile = AgentResearchAllocator.profileForGoal(goalSnapshot, autonomyPolicy)
+                    var gaps = AgentResearchAllocator.evaluateGaps(goalSnapshot, allocationProfile)
                     
                     diagnostics.info(
                         event = "runnable_task_selection_started",
@@ -222,8 +220,20 @@ class AgentGoalWorker(
                             }
                             NoTaskDecision.REPAIR_ONCE -> {
                                 diagnostics.info(event = "stranded_recovery_goal_repaired", component = "worker", fields = mapOf("goal_id" to goalId))
-                                repairBlockedWorkflow(goalSnapshot, null)
-                                return@coroutineScope Result.success()
+                                val repairOutcome = repairBlockedWorkflow(goalSnapshot, null)
+                                if (repairOutcome == WorkerOutcome.CONTINUE) {
+                                    goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
+                                    hasActiveRecovery = checkActiveRecovery(goalSnapshot)
+                                    allocationProfile = AgentResearchAllocator.profileForGoal(goalSnapshot, autonomyPolicy)
+                                    gaps = AgentResearchAllocator.evaluateGaps(goalSnapshot, allocationProfile)
+                                    taskSelection = if (hasActiveRecovery) {
+                                        AllocatedTaskSelection(null, "Active recovery priority.")
+                                    } else {
+                                        AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
+                                    }
+                                } else {
+                                    return@coroutineScope Result.success()
+                                }
                             }
                             NoTaskDecision.ACTION_REQUIRED -> {
                                 diagnostics.warning(event = "stranded_goal_requires_action", component = "worker", fields = mapOf("goal_id" to goalId))
@@ -241,14 +251,17 @@ class AgentGoalWorker(
                                 } else {
                                     // REQUIRED CHANGE 5: Durable no-runnable recovery handoff
                                     diagnostics.info(event = "queued_goal_recovery_prepared", component = "worker", fields = mapOf("goal_id" to goalId))
-                                    repairBlockedWorkflow(goalSnapshot, null)
+                                    val repairOutcome = repairBlockedWorkflow(goalSnapshot, null)
                                     // V43: Re-load snapshot after mutation to avoid stale decision path
                                     goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
                                     
-                                    val nextPlanId = goalSnapshot.activeRecoveryPlanId
-                                    val nextPlan = if (nextPlanId != null) goalSnapshot.recoveryPlans.firstOrNull { it.id == nextPlanId } else null
-                                    if (goalSnapshot.status != AgentGoalStatus.RECOVERING && nextPlan?.status?.isNonTerminal() != true) {
+                                    hasActiveRecovery = checkActiveRecovery(goalSnapshot)
+                                    allocationProfile = AgentResearchAllocator.profileForGoal(goalSnapshot, autonomyPolicy)
+                                    gaps = AgentResearchAllocator.evaluateGaps(goalSnapshot, allocationProfile)
+                                    if (!hasActiveRecovery) {
                                         taskSelection = AgentResearchAllocator.chooseNextTask(goalSnapshot, allocationProfile, now)
+                                    } else {
+                                        taskSelection = AllocatedTaskSelection(null, "Active recovery priority.")
                                     }
                                 }
                             }
@@ -388,7 +401,7 @@ class AgentGoalWorker(
                         
                         if (latestPlan == null || latestPlan.status.isTerminal()) {
                             goalDiagnostics.warning("recovery_plan_missing_or_terminal_after_lease")
-                        } else if (activeRecoveryId != null && latestPlan.id != activeRecoveryId) {
+                        } else if (goalSnapshot.activeRecoveryPlanId != null && latestPlan.id != goalSnapshot.activeRecoveryPlanId) {
                             goalDiagnostics.warning("recovery_plan_mismatch_after_lease")
                             return@coroutineScope Result.retry()
                         }
@@ -1198,6 +1211,12 @@ class AgentGoalWorker(
         
         // Cancel all generations for this goal ID using tag
         scheduler.cancelAllForGoal(goalId)
+    }
+
+    private fun checkActiveRecovery(goal: AgentGoal): Boolean {
+        val activeRecoveryId = goal.activeRecoveryPlanId
+        val activeRecoveryPlan = if (activeRecoveryId != null) goal.recoveryPlans.firstOrNull { it.id == activeRecoveryId } else null
+        return goal.status == AgentGoalStatus.RECOVERING || (activeRecoveryPlan != null && activeRecoveryPlan.status.isNonTerminal())
     }
 
     companion object {
