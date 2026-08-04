@@ -112,14 +112,20 @@ class AgentStore private constructor(
     constructor(baseDir: File) : this(context = null, baseDir = baseDir, prefs = null)
 
     private val preferences: SharedPreferences? = prefs ?: context?.applicationContext?.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = context?.let { com.david.openassistant.data.diagnostics.RuntimeDiagnostics(it) }
     private val goalsDirectory: File = when {
         baseDir != null -> File(baseDir, GOALS_DIRECTORY_NAME)
         context != null -> File(context.applicationContext.filesDir, GOALS_DIRECTORY_NAME)
         else -> throw IllegalArgumentException("AgentStore requires either a Context or a base directory File.")
-    }.also { println("DEBUG: AgentStore goalsDirectory: ${it.absolutePath}") }
+    }.also { 
+        diagnostics?.info(
+            event = "agent_store_directory_initialized",
+            component = "storage",
+            fields = mapOf("path" to it.absolutePath)
+        )
+    }
 
     private val goalCache = ConcurrentHashMap<String, CachedGoal>()
-    private val diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = context?.let { com.david.openassistant.data.diagnostics.RuntimeDiagnostics(it) }
     
     private data class CachedGoal(
         val goal: AgentGoal,
@@ -161,8 +167,11 @@ class AgentStore private constructor(
         writeSelectionAndSignalLocked(selectedId)
         val finalSnapshot = loadSnapshotFromFilesLocked()
         if (finalSnapshot.goals.none { it.id == goal.id }) {
-            println("DEBUG: upsertGoal FAILED to find goal ${goal.id} in final snapshot. Goal count: ${finalSnapshot.goals.size}")
-            finalSnapshot.goals.forEach { println("DEBUG: existing goal: ${it.id}") }
+            diagnostics?.warning(
+                event = "upsert_goal_not_found_in_snapshot",
+                component = "storage",
+                fields = mapOf("goal_id" to goal.id, "total_goals" to finalSnapshot.goals.size)
+            )
         }
         finalSnapshot
     }
@@ -414,7 +423,7 @@ class AgentStore private constructor(
         }
 
         val updatedGoal = goal.copy(
-            status = AgentGoalStatus.RUNNING,
+            status = AgentGoalStatus.QUEUED,
             tasks = repairedTasks,
             noProgressCount = 0,
             idempotencyRecords = goal.idempotencyRecords + migrationRecord,
@@ -1181,11 +1190,14 @@ class AgentStore private constructor(
             .asSequence()
             .mapNotNull { file ->
                 try {
-                    val goal = readGoalLocked(file)
-                    println("DEBUG: Loaded goal ${goal.id} from ${file.name}")
-                    goal
+                    readGoalLocked(file)
                 } catch (error: Throwable) {
-                    println("DEBUG: Failed to read goal from ${file.name}: ${error.message}")
+                    diagnostics?.error(
+                        event = "goal_read_failed",
+                        component = "storage",
+                        throwable = error,
+                        fields = mapOf("file" to file.name)
+                    )
                     val recoveryArtifact = preserveCorruptGoalLocked(file, error)
                     quarantined += MissionQuarantineEntry(
                         fileName = file.name,
@@ -1208,14 +1220,6 @@ class AgentStore private constructor(
     private fun discoverGoalFilesLocked(): List<File> {
         goalsDirectory.mkdirs()
         val files = goalsDirectory.listFiles()
-        if (files == null || files.isEmpty()) {
-            println("DEBUG: discoverGoalFilesLocked: directory empty or missing: ${goalsDirectory.absolutePath}")
-            // Check parent
-            val parent = goalsDirectory.parentFile
-            if (parent != null && parent.exists()) {
-                println("DEBUG: parent contents: ${parent.listFiles()?.joinToString { it.name }}")
-            }
-        }
         return files
             .orEmpty()
             .asSequence()
@@ -1331,7 +1335,12 @@ class AgentStore private constructor(
         try {
             target.writeText(text)
         } catch (e: Exception) {
-            println("DEBUG: Failed to write goal ${goal.id}: ${e.message}")
+            diagnostics?.error(
+                event = "goal_write_failed",
+                component = "storage",
+                throwable = e,
+                fields = mapOf("goal_id" to goal.id)
+            )
             throw e
         }
 

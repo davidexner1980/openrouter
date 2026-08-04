@@ -55,9 +55,6 @@ class RecoveryStarvationTest {
             ticket = ticketGen1,
             recoveryPlanId = planId
         )
-        if (res1 !is ReconciliationResult.NewDispatchClaimed) {
-            println("DEBUG: res1 is $res1")
-        }
         assertTrue(res1 is ReconciliationResult.NewDispatchClaimed)
         val exchangeId = (res1 as ReconciliationResult.NewDispatchClaimed).attempt.exchangeId
         

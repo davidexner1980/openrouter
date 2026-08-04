@@ -1496,7 +1496,6 @@ open class AgentOpenRouterClient internal constructor(
             }
         } catch (error: Throwable) {
             if (error is TerminalPersistenceException || error is CancellationException) throw error
-            // println("DEBUG: executeTask caught error: $error (type=${error.javaClass.name})")
             buildResearchBootstrapFailureCheckpoint(error, researchBootstrap)
                 ?: throw error.withAgentUsage(researchBootstrap.summary)
         }
@@ -4629,7 +4628,12 @@ open class AgentOpenRouterClient internal constructor(
                 }
             }
             is TransitionOutcomeResult.StorageFailure -> {
-                println("DEBUG: handleTerminalTransition throwing StorageFailure for exchange $exchangeId: ${result.cause}")
+                diagnostics?.error(
+                    event = "handle_terminal_transition_storage_failure",
+                    component = "provider",
+                    throwable = result.cause,
+                    fields = mapOf("exchange_id" to exchangeId)
+                )
                 throw TerminalPersistenceException(
                     goalId = requestContext.goalId,
                     taskId = requestContext.taskId,
