@@ -1616,9 +1616,16 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             )
         }
 
-        val useTools = (automationDecision.route == AutomationRoute.TOOL_ASSISTED_CHAT) &&
-            (pendingImage == null)
         val freeOnly = state.selectedModelProfile == com.david.openassistant.domain.model.ModelProfile.FREE
+        val hasTools = com.david.openassistant.agent.AgentToolRegistry.hasOperationalTools(
+            runtime = autonomousToolRuntime,
+            networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
+            credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
+            isFreeOnly = freeOnly
+        )
+        val useTools = (automationDecision.route == AutomationRoute.TOOL_ASSISTED_CHAT || hasTools) &&
+            (pendingImage == null)
+        
         if (useTools) {
             startAutomaticToolLoop(apiKey, modelId, requestMessages, freeOnly)
         } else {
@@ -1932,6 +1939,14 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     messages = requestMessages,
                     listener = listener,
                     freeOnly = freeOnly,
+                    toolDefinitions = {
+                        com.david.openassistant.agent.AgentToolRegistry.attachedToolsPayload(
+                            runtime = autonomousToolRuntime,
+                            networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
+                            credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
+                            isFreeOnly = freeOnly
+                        )
+                    }
                 )
             }.onSuccess { call ->
                 if (stopRequested.get()) call.cancel() else activeCall = call
@@ -1964,12 +1979,25 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         modelId = modelId,
                         messages = requestMessages,
                         toolDefinitions = {
-                            com.david.openassistant.agent.AgentToolRegistry.attachedToolsPayload(
+                            val payloadWithAudit = com.david.openassistant.agent.AgentToolRegistry.attachedToolsPayloadWithAudit(
                                 runtime = autonomousToolRuntime,
-                                networkAvailable = true,
-                                credentialsAvailable = true,
+                                networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
+                                credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
                                 isFreeOnly = freeOnly
                             )
+                            val audit = payloadWithAudit.audit
+                            diagnostics.info(
+                                event = "tool_registry_audit",
+                                component = "chat",
+                                fields = mapOf(
+                                    "model_id" to modelId,
+                                    "total_configured" to audit.totalConfigured,
+                                    "total_operational" to audit.operational.size,
+                                    "unavailable_count" to audit.unavailable.size,
+                                    "unavailable_reasons" to org.json.JSONObject(audit.unavailable).toString()
+                                )
+                            )
+                            payloadWithAudit.tools
                         },
                         executeTool = { call -> autonomousToolRuntime.execute(call, apiKey, modelId) },
                         shouldStop = stopRequested::get,

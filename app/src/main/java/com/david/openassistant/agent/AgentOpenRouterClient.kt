@@ -1281,6 +1281,9 @@ open class AgentOpenRouterClient internal constructor(
                 task = task,
                 modelId = modelId,
                 focusedRecovery = executionStrategy.profile == AgentExecutionProfile.FOCUSED_TOOL,
+                networkAvailable = toolRuntime?.isNetworkAvailable() ?: true,
+                credentialsAvailable = AgentOperationalState.areCredentialsAvailable(apiKey),
+                goalId = goal.id
             )
         } else {
             TaskToolPlan.EMPTY
@@ -1328,6 +1331,9 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("Complete this milestone without asking the user to enable a mode, press an automation button, or approve a low-risk local tool.")
             if (allowInteractiveToolsForCall) {
                 appendLine("Select and call available tools whenever they increase correctness. You may make several deterministic, workspace, recipe, or hosted-sandbox tool calls before returning the structured result.")
+                if (bootstrapCompletedResearchTools) {
+                    appendLine("The deterministic research bootstrap already completed the required distinct searches, full-source reads, and evidence-driven follow-up for this pass. Reuse preserved evidence first before repeating work. You may still use new searches and tools when they address an unresolved evidence gap.")
+                }
                 when (executionStrategy.profile) {
                     AgentExecutionProfile.FOCUSED_TOOL -> {
                         appendLine("FOCUSED TOOL RECOVERY: the previous response skipped a required local tool. Begin with one relevant deterministic function call before writing the milestone result.")
@@ -1342,14 +1348,12 @@ open class AgentOpenRouterClient internal constructor(
                 }
             } else {
                 appendLine("EXECUTION PROFILE: ${executionStrategy.explanation}")
-                if (bootstrapCompletedResearchTools) {
-                    appendLine("The deterministic research bootstrap already completed the required distinct searches, full-source reads, and evidence-driven follow-up for this pass. Reuse preserved evidence first before repeating work.")
-                }
             }
             appendLine("Separate facts, inferences, recommendations, and uncertainty in the claims array.")
             appendLine("A factual claim must cite a source URL returned by research or a preserved evidence ID. Never invent a citation.")
             appendLine("Do not claim any device action, external side effect, permission, file operation, purchase, message, or code installation that is not evidenced here.")
             appendLine("Score each acceptance criterion honestly; unresolved questions must remain explicit.")
+            appendLine("Stop using tools when the result is sufficiently grounded.")
             if (task.capability == AgentCapability.SYNTHESIZE && completedSynthesisRecoveries > 0) {
                 appendLine("SYNTHESIS GAP RECOVERY: $completedSynthesisRecoveries focused alternate-angle pass(es) were inserted because an earlier synthesis exposed a concrete evidence gap. Integrate their new evidence and method; do not repeat the earlier answer unchanged.")
             }
@@ -1775,7 +1779,10 @@ open class AgentOpenRouterClient internal constructor(
                 order = 0,
             ),
             modelId = modelId,
-            focusedRecovery = false
+            focusedRecovery = false,
+            networkAvailable = toolRuntime?.isNetworkAvailable() ?: true,
+            credentialsAvailable = AgentOperationalState.areCredentialsAvailable(apiKey),
+            goalId = goal.id
         )
         
         fun configuredPayload(payload: JSONObject): JSONObject = payload.apply {
@@ -2135,16 +2142,33 @@ open class AgentOpenRouterClient internal constructor(
         task: AgentTask,
         modelId: String,
         focusedRecovery: Boolean,
+        networkAvailable: Boolean,
+        credentialsAvailable: Boolean,
+        goalId: String? = null
     ): TaskToolPlan {
         val researchRole = researchPassRole(task)
         val includeAdvanced = researchRole in setOf(ResearchPassRole.CONTRADICTION, ResearchPassRole.GAP_CLOSURE)
         
-        val tools = AgentToolRegistry.attachedToolsPayload(
+        val payloadWithAudit = AgentToolRegistry.attachedToolsPayloadWithAudit(
             runtime = toolRuntime,
-            networkAvailable = true, // Assumed available for the purpose of definition attachment
-            credentialsAvailable = true, // Assumed available
+            networkAvailable = networkAvailable,
+            credentialsAvailable = credentialsAvailable,
             isFreeOnly = isFreeOnlyModel(modelId),
             includeAdvancedResearchTools = includeAdvanced
+        )
+        
+        val audit = payloadWithAudit.audit
+        diagnostics?.info(
+            event = "tool_registry_audit",
+            component = "agent",
+            fields = mapOf(
+                "goal_id" to goalId,
+                "task_id" to task.id,
+                "total_configured" to audit.totalConfigured,
+                "total_operational" to audit.operational.size,
+                "unavailable_count" to audit.unavailable.size,
+                "unavailable_reasons" to JSONObject(audit.unavailable).toString()
+            )
         )
         
         val localSelection = if (autonomyPolicy.autoExecuteLocalTools) {
@@ -2158,7 +2182,7 @@ open class AgentOpenRouterClient internal constructor(
         }
 
         return TaskToolPlan(
-            tools = tools,
+            tools = payloadWithAudit.tools,
             preferredFunctionName = localSelection.preferredToolName,
         )
     }

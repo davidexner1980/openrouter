@@ -1067,6 +1067,40 @@ JVM VERIFIED
 ### Next Action
 - Scope: Physical acceptance on Samsung SM-G998U.
 
+## 2026-08-04: UNIVERSAL TOOL AVAILABILITY REPAIR
+
+### Diagnosis
+Runtime-reproduced capability inversion where OpenAssistant required stronger grounded evidence while disabling search and tools during correction, verification, synthesis, and recovery.
+
+### Changes
+- **AgentExecutionRecovery.kt**: Modified all strategies to set `allowsInteractiveTools = true`. Rewrote explanations to describe strategy preference instead of restriction.
+- **AgentOpenRouterClient.kt**: 
+    - Removed `!bootstrapCompletedResearchTools` restriction from `executeTask`.
+    - Updated `finalToolFreeCompletionPayload` to retain `tools` and `parallel_tool_calls` while relaxing `tool_choice`.
+    - Updated prompts to emphasize reuse of evidence without prohibiting follow-up tools.
+    - Integrated tool attachment into `verifyGoal`.
+    - Replaced hardcoded `networkAvailable = true` with real operational state check.
+- **AgentToolRegistry.kt**: Added `availableToolsForUserWork` to determine operational tool set from real network and credential state.
+- **AutomationRouter.kt**: Updated routing logic to prefer `TOOL_ASSISTED_CHAT` for conversation/writing if the model supports tools, ensuring universal tool availability in ordinary chat.
+- **OpenAssistantViewModel.kt**: 
+    - Wired real network/credential state to tool registry calls.
+    - Added diagnostic recording for the tool registry audit in both mission and chat paths.
+- **AgentStore.kt**: Added idempotent structural repair in `readGoalLocked` to re-queue missions stuck in restricted states with full tool access.
+
+### Verification Results
+- **Compilation**: PASSED
+- **Unit Tests**:
+    - `AgentUniversalToolAvailabilityTest`: PASSED (8 tests)
+    - `AgentExecutionRecoveryTest`: PASSED (17 tests)
+    - `VerificationConvergenceTest`: PASSED (1 test)
+    - `RecoveryStarvationTest`: PASSED (6 tests)
+- **Tool Availability**: Verified that tools remain attached even in "tool-free" finalization rounds.
+- **Chat Routing**: Verified that ordinary conversation now routes to tool-capable paths when supported.
+
+### Status: PARTIALLY VERIFIED
+- Automated gates pass.
+- Physical acceptance on Samsung SM-G998U pending.
+
 ---
 
 ## Run CE-20260804-0630-7ba57fc7 — 2026-08-04T06:30:00
@@ -1144,3 +1178,187 @@ JVM VERIFIED
 
 ### Next Action
 - Scope: Physical acceptance on Samsung SM-G998U.
+
+## 2026-08-04: UNIVERSAL TOOL AVAILABILITY REPAIR
+
+### Diagnosis
+Runtime-reproduced capability inversion where OpenAssistant required stronger grounded evidence while disabling search and tools during correction, verification, synthesis, and recovery.
+
+### Changes
+- **AgentExecutionRecovery.kt**: Modified all strategies to set `allowsInteractiveTools = true`. Rewrote explanations to describe strategy preference instead of restriction.
+- **AgentOpenRouterClient.kt**: 
+    - Removed `!bootstrapCompletedResearchTools` restriction from `executeTask`.
+    - Updated `finalToolFreeCompletionPayload` to retain `tools` and `parallel_tool_calls` while relaxing `tool_choice`.
+    - Updated prompts to emphasize reuse of evidence without prohibiting follow-up tools.
+    - Integrated tool attachment into `verifyGoal`.
+    - Replaced hardcoded `networkAvailable = true` with real operational state check.
+- **AgentToolRegistry.kt**: Added `availableToolsForUserWork` to determine operational tool set from real network and credential state.
+- **AutomationRouter.kt**: Updated routing logic to prefer `TOOL_ASSISTED_CHAT` for conversation/writing if the model supports tools, ensuring universal tool availability in ordinary chat.
+- **OpenAssistantViewModel.kt**: 
+    - Wired real network/credential state to tool registry calls.
+    - Added diagnostic recording for the tool registry audit in both mission and chat paths.
+- **AgentStore.kt**: Added idempotent structural repair in `readGoalLocked` to re-queue missions stuck in restricted states with full tool access.
+
+### Verification Results
+- **Compilation**: PASSED
+- **Unit Tests**:
+    - `AgentUniversalToolAvailabilityTest`: PASSED (8 tests)
+    - `AgentExecutionRecoveryTest`: PASSED (17 tests)
+    - `VerificationConvergenceTest`: PASSED (1 test)
+    - `RecoveryStarvationTest`: PASSED (6 tests)
+- **Tool Availability**: Verified that tools remain attached even in "tool-free" finalization rounds.
+- **Chat Routing**: Verified that ordinary conversation now routes to tool-capable paths when supported.
+
+### Status: PARTIALLY VERIFIED
+- Automated gates pass.
+- Physical acceptance on Samsung SM-G998U pending.
+
+---
+
+## Run CE-20260804-0638-3c799c7 — 2026-08-04T06:38:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 3c799c71eaf6a61c58845b589c395d418d4155fe
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement: enforce universal tool availability across user work and improve diagnostics
+- Remote checked before commit: Yes
+
+### Selected Scope
+- Problem: Runtime-reproduced capability inversion where tools were disabled during Synthesis, Verification, and Correction. Existing missions stuck in "evidence-only" loops.
+- Why selected: Restore the core invariant that operational tools must remain available regardless of lifecycle phase.
+- Correct owner: AgentOpenRouterClient, AgentExecutionRecovery, AgentToolRegistry, AgentVerifier.
+- Violated invariant: Lifecycle phase must never remove a tool.
+
+### Root Cause
+- Root cause:
+    1. Hardcoded `allowsInteractiveTools = false` in several strategies (partially fixed in prior run but prompt instructions were still restrictive).
+    2. Prompt instructions in `AgentOpenRouterClient` explicitly prohibited tools when a research bootstrap was complete or during structured-output phases.
+    3. Tool registry audit did not record real-world network/credential blockers in diagnostics.
+    4. Missing high-level integration tests for "Ordinary Chat" and "Failed Correction" recovery paths.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Moved bootstrap tool instructions into active block; added tool-use priority to prompts; improved registry audit diagnostics)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (New `attachedToolsPayloadWithAudit` to expose tool availability truth with reasons)
+- Test files:
+    - app/src/test/java/com/david/openassistant/AgentUniversalToolAvailabilityTest.kt (New: integration-level proof for strategy selection, instructions, and recovery)
+- Behavior changed: All mission phases and chat now have access to the full tool registry. Prompts encourage evidence gathering when gaps exist. Registry audit logs exact reasons for tool unavailability.
+
+### Verification
+- Full unit total: 596
+- Passed: 596
+- Failed: 0
+- Focused tests: PASSED (AgentUniversalToolAvailabilityTest, AgentExecutionRecoveryTest)
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known: Slight increase in token usage due to model choosing more tool calls in correction phases.
+
+### Open Issues Updated
+- Closed: UNIVERSAL-TOOL-AVAILABILITY (Verified via full test pass).
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Next Action
+- Scope: Physical acceptance on Samsung SM-G998U.
+
+## 2026-08-04: UNIVERSAL TOOL AVAILABILITY REPAIR
+
+### Diagnosis
+Runtime-reproduced capability inversion where OpenAssistant required stronger grounded evidence while disabling search and tools during correction, verification, synthesis, and recovery.
+
+### Changes
+- **AgentExecutionRecovery.kt**: Modified all strategies to set `allowsInteractiveTools = true`. Rewrote explanations to describe strategy preference instead of restriction.
+- **AgentOpenRouterClient.kt**: 
+    - Removed `!bootstrapCompletedResearchTools` restriction from `executeTask`.
+    - Updated `finalToolFreeCompletionPayload` to retain `tools` and `parallel_tool_calls` while relaxing `tool_choice`.
+    - Updated prompts to emphasize reuse of evidence without prohibiting follow-up tools.
+    - Integrated tool attachment into `verifyGoal`.
+    - Replaced hardcoded `networkAvailable = true` with real operational state check.
+- **AgentToolRegistry.kt**: Added `availableToolsForUserWork` to determine operational tool set from real network and credential state.
+- **AutomationRouter.kt**: Updated routing logic to prefer `TOOL_ASSISTED_CHAT` for conversation/writing if the model supports tools, ensuring universal tool availability in ordinary chat.
+- **OpenAssistantViewModel.kt**: 
+    - Wired real network/credential state to tool registry calls.
+    - Added diagnostic recording for the tool registry audit in both mission and chat paths.
+- **AgentStore.kt**: Added idempotent structural repair in `readGoalLocked` to re-queue missions stuck in restricted states with full tool access.
+
+### Verification Results
+- **Compilation**: PASSED
+- **Unit Tests**:
+    - `AgentUniversalToolAvailabilityTest`: PASSED (8 tests)
+    - `AgentExecutionRecoveryTest`: PASSED (17 tests)
+    - `VerificationConvergenceTest`: PASSED (1 test)
+    - `RecoveryStarvationTest`: PASSED (6 tests)
+- **Tool Availability**: Verified that tools remain attached even in "tool-free" finalization rounds.
+- **Chat Routing**: Verified that ordinary conversation now routes to tool-capable paths when supported.
+
+### Status: PARTIALLY VERIFIED
+- Automated gates pass.
+- Physical acceptance on Samsung SM-G998U pending.
+
+---
+
+## Run CE-20260804-0845-UNIVERSAL-TOOL-REPAIR — 2026-08-04T08:45:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 3c799c71eaf6a61c58845b589c395d418d4155fe
+- Run commit: SELF
+- Commit message: Continuous improvement: enforce universal tool availability across user work
+
+### Selected Scope
+- Problem: Runtime-reproduced capability inversion where tools were disabled during Synthesis, Verification, and Correction. Missions stuck in restricted states without progress.
+- Why selected: Restore the core invariant that every configured, operational tool remains available until request completion.
+- Correct owner: AgentOpenRouterClient, AgentExecutionRecovery, AgentToolRegistry, AgentStore, AutomationRouter.
+- Violated invariant: Lifecycle phase must never remove a tool.
+
+### Evidence and Reproduction
+- Original symptom: Activity ledger recorded "evidence-only" execution; 0% progress stalls; insufficient grounded claims error while tools like web_search were disabled.
+- Automated reproduction: `AgentUniversalToolAvailabilityTest` and `AgentExecutionRecoveryTest` verified strategy selection and tool attachment.
+- Root cause: Hardcoded `allowsInteractiveTools = false` in strategies and restrictive prompt instructions.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionRecovery.kt (Enabled tools for all strategies; permissive milestone instructions)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Tool-aware verification; removed bootstrap cutoff; permissive prompts)
+    - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (Authoritative tool availability with reasons)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Idempotent structural repair for restricted missions)
+    - app/src/main/java/com/david/openassistant/agent/AutonomyPolicy.kt (AutomationRouter preference for TOOL_ASSISTED_CHAT in ordinary conversation)
+- Test files:
+    - app/src/test/java/com/david/openassistant/AgentUniversalToolAvailabilityTest.kt
+    - app/src/test/java/com/david/openassistant/AgentExecutionRecoveryTest.kt
+    - app/src/test/java/com/david/openassistant/AutonomyRuntimeTest.kt (Updated to align with universal tools)
+- Behavior changed: All mission phases and ordinary chat now have access to the full tool registry. Restricted profiles removed. Stuck missions are automatically repaired and re-queued with tools.
+
+### Verification
+- Baseline commands: .\gradlew.bat testDebugUnitTest
+- Baseline results: PASSED (596 tests)
+- Focused tests: PASSED (AgentUniversalToolAvailabilityTest, AgentExecutionRecoveryTest, AutonomyRuntimeTest)
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known: Token usage may increase slightly as models use tools in previously restricted phases.
+- Data integrity: Preserved; structural repairs are idempotent.
+
+### Repository Hygiene
+- git diff --check: Passed
+- Secret scan: Passed
+- Final status: Clean (after commit)
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.

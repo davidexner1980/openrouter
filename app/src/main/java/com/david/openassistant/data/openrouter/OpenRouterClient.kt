@@ -50,9 +50,18 @@ class OpenRouterClient(
         messages: List<ChatMessage>,
         listener: ChatStreamListener,
         freeOnly: Boolean = false,
+        toolDefinitions: (() -> JSONArray)? = null,
     ): Call {
         val payload = createBaseChatPayload(modelId, messages).apply {
             put("stream", true)
+            toolDefinitions?.let { 
+                val tools = it()
+                if (tools.length() > 0) {
+                    put("tools", tools)
+                    put("tool_choice", "auto")
+                    put("parallel_tool_calls", true)
+                }
+            }
         }
         com.david.openassistant.agent.AgentRoutingPolicy.guardPayload(freeOnly, payload)
         return enqueueStream(apiKey, payload, listener)

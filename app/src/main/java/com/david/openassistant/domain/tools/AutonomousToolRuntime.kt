@@ -24,7 +24,7 @@ private const val MAX_TOOL_RECIPE_LIST = 40
  * install executable code, or mutate application policy.
  */
 open class AutonomousToolRuntime internal constructor(
-    context: Context?,
+    private val context: Context?,
     private val researchMonitor: ResearchMonitor?,
     private val recipeStore: ToolRecipeStore?,
     private val recipeEngine: ToolRecipeEngine?,
@@ -72,6 +72,10 @@ open class AutonomousToolRuntime internal constructor(
             PublicWebToolCatalog.definitions +
             HostedSandboxToolCatalog.definitions +
             activeRecipes
+    }
+
+    fun isNetworkAvailable(): Boolean {
+        return com.david.openassistant.agent.AgentOperationalState.isNetworkAvailable(context)
     }
 
     open suspend fun execute(call: OpenRouterToolCall): ToolExecutionResult = execute(

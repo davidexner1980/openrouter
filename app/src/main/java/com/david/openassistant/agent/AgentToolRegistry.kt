@@ -20,11 +20,17 @@ object AgentToolRegistry {
         val unavailable: Map<String, String> // name -> reason
     )
 
+    data class PayloadWithAudit(
+        val tools: JSONArray,
+        val audit: ToolAvailabilityAudit
+    )
+
     fun availableToolsForUserWork(
         runtime: AutonomousToolRuntime?,
         networkAvailable: Boolean,
         credentialsAvailable: Boolean,
-        isFreeOnly: Boolean = false
+        isFreeOnly: Boolean = false,
+        includeAdvancedResearchTools: Boolean = false
     ): ToolAvailabilityAudit {
         val operational = mutableListOf<SafeToolDefinition>()
         val unavailable = mutableMapOf<String, String>()
@@ -47,6 +53,14 @@ object AgentToolRegistry {
                 else -> operational.add(tool)
             }
         }
+
+        if (!isFreeOnly && networkAvailable && credentialsAvailable) {
+            // These would be included in attachedToolsPayload
+        } else {
+            if (isFreeOnly) unavailable["openrouter:research_tools"] = "Search tools unavailable for free-only models"
+            if (!networkAvailable) unavailable["openrouter:research_tools"] = "Network unavailable"
+            if (!credentialsAvailable) unavailable["openrouter:research_tools"] = "Credentials missing"
+        }
         
         return ToolAvailabilityAudit(
             totalConfigured = allDefinitions.size,
@@ -58,14 +72,14 @@ object AgentToolRegistry {
     /**
      * Returns the OpenRouter-compatible tool definitions for the current operational state.
      */
-    fun attachedToolsPayload(
+    fun attachedToolsPayloadWithAudit(
         runtime: AutonomousToolRuntime?,
         networkAvailable: Boolean,
         credentialsAvailable: Boolean,
         isFreeOnly: Boolean = false,
         includeAdvancedResearchTools: Boolean = false
-    ): JSONArray {
-        val audit = availableToolsForUserWork(runtime, networkAvailable, credentialsAvailable, isFreeOnly)
+    ): PayloadWithAudit {
+        val audit = availableToolsForUserWork(runtime, networkAvailable, credentialsAvailable, isFreeOnly, includeAdvancedResearchTools)
         val array = JSONArray()
         
         // Add basic research-specific "openrouter:" tools if operational
@@ -92,8 +106,34 @@ object AgentToolRegistry {
             }
         }
         
-        return array
+        return PayloadWithAudit(array, audit)
     }
+
+    /** Legacy compatibility method */
+    fun attachedToolsPayload(
+        runtime: AutonomousToolRuntime?,
+        networkAvailable: Boolean,
+        credentialsAvailable: Boolean,
+        isFreeOnly: Boolean = false,
+        includeAdvancedResearchTools: Boolean = false
+    ): JSONArray = attachedToolsPayloadWithAudit(
+        runtime, networkAvailable, credentialsAvailable, isFreeOnly, includeAdvancedResearchTools
+    ).tools
+
+    fun hasOperationalTools(
+        runtime: AutonomousToolRuntime?,
+        networkAvailable: Boolean,
+        credentialsAvailable: Boolean,
+        isFreeOnly: Boolean = false,
+        includeAdvancedResearchTools: Boolean = false
+    ): Boolean {
+        val audit = availableToolsForUserWork(runtime, networkAvailable, credentialsAvailable, isFreeOnly, includeAdvancedResearchTools)
+        if (audit.operational.isNotEmpty()) return true
+        
+        // Also consider the "openrouter:" tools which are added in attachedToolsPayloadWithAudit
+        return !isFreeOnly && networkAvailable && credentialsAvailable
+    }
+
 
     private fun searchToolDefinition() = JSONObject()
         .put("type", "openrouter:web_search")

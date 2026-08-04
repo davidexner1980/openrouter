@@ -73,7 +73,7 @@ class AutonomyRuntimeTest {
     fun casualConversationStaysImmediate() {
         val decision = AutomationRouter.decide("Hello", hasImage = false, modelSupportsTools = true)
 
-        assertEquals(AutomationRoute.DIRECT_CHAT, decision.route)
+        assertEquals(AutomationRoute.TOOL_ASSISTED_CHAT, decision.route)
         assertFalse(decision.researchPolicy.requiresResearch)
     }
 
@@ -97,7 +97,7 @@ class AutonomyRuntimeTest {
             modelSupportsTools = true,
         )
 
-        assertEquals(AutomationRoute.DIRECT_CHAT, decision.route)
+        assertEquals(AutomationRoute.TOOL_ASSISTED_CHAT, decision.route)
         assertEquals(AgentResearchDepth.NONE, decision.researchPolicy.depth)
     }
 
@@ -109,7 +109,7 @@ class AutonomyRuntimeTest {
             modelSupportsTools = true,
         )
 
-        assertEquals(AutomationRoute.DIRECT_CHAT, decision.route)
+        assertEquals(AutomationRoute.TOOL_ASSISTED_CHAT, decision.route)
         assertFalse(decision.researchPolicy.requiresResearch)
     }
 

@@ -150,16 +150,16 @@ object AutomationRouter {
         }
         if (normalized.isBlank() || CASUAL_PATTERN.matches(normalized) || SafetyClassifier.isInternalMetadata(normalized)) {
             return AutomationDecision(
-                route = AutomationRoute.DIRECT_CHAT,
+                route = if (modelSupportsTools) AutomationRoute.TOOL_ASSISTED_CHAT else AutomationRoute.DIRECT_CHAT,
                 researchPolicy = AgentResearchPolicy(),
-                reason = "Simple conversation or internal metadata does not need a durable mission.",
+                reason = "Simple conversation or internal metadata.",
             )
         }
         if (LOCAL_CREATIVE_PATTERN.containsMatchIn(normalized) && !researchPolicy.requiresResearch) {
             return AutomationDecision(
-                route = AutomationRoute.DIRECT_CHAT,
+                route = if (modelSupportsTools) AutomationRoute.TOOL_ASSISTED_CHAT else AutomationRoute.DIRECT_CHAT,
                 researchPolicy = AgentResearchPolicy(),
-                reason = "Supplied-text and creative work can be completed immediately without external research.",
+                reason = "Supplied-text and creative work.",
             )
         }
         if (modelSupportsTools && LOCAL_TOOL_PATTERN.containsMatchIn(normalized) && !researchPolicy.requiresResearch) {
@@ -174,6 +174,7 @@ object AutomationRouter {
             normalized.length >= 150 ||
             normalized.count { it == '\n' } >= 2 ||
             normalized.count { it == ',' } >= 3
+        
         return if (researchPolicy.requiresResearch || looksMultiStep) {
             AutomationDecision(
                 route = AutomationRoute.AUTONOMOUS_GOAL,
@@ -184,9 +185,15 @@ object AutomationRouter {
                     "The request benefits from planning, durable execution, recovery, and verification."
                 },
             )
+        } else if (modelSupportsTools) {
+            AutomationDecision(
+                route = AutomationRoute.TOOL_ASSISTED_CHAT,
+                researchPolicy = researchPolicy,
+                reason = "The request can be completed interactively with tool support.",
+            )
         } else {
             AutomationDecision(
-                route = if (modelSupportsTools) AutomationRoute.TOOL_ASSISTED_CHAT else AutomationRoute.DIRECT_CHAT,
+                route = AutomationRoute.DIRECT_CHAT,
                 researchPolicy = researchPolicy,
                 reason = "The request can be completed interactively.",
             )
