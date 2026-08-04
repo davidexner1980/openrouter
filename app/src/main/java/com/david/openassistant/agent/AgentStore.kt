@@ -218,14 +218,20 @@ class AgentStore private constructor(
         val currentSnapshot = loadSnapshotFromFilesLocked()
         val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return false
         
-        if (goal.status != AgentGoalStatus.RECOVERING) return false
-        val planId = goal.activeRecoveryPlanId ?: return false
-        val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return false
-        if (plan.status != RecoveryPlanStatus.PREPARED && plan.status != RecoveryPlanStatus.GENERATING) return false
+        val activeRecoveryPlan = goal.activeRecoveryPlanId?.let { id -> goal.recoveryPlans.firstOrNull { it.id == id } }
+        val isRecoveryActive = goal.status == AgentGoalStatus.RECOVERING || (activeRecoveryPlan != null && activeRecoveryPlan.status.isNonTerminal())
         
-        // Match structural provable stalling: no runnable task and active recovery plan
+        if (!isRecoveryActive) return false
+        val plan = activeRecoveryPlan ?: return false
+        if (plan.status.isTerminal()) return false
+        
+        // Match structural provable stalling: active recovery plan owns execution, or no runnable task
         val allocationProfile = AgentResearchAllocator.profileForGoal(goal)
-        val taskSelection = AgentResearchAllocator.chooseNextTask(goal, allocationProfile)
+        val taskSelection = if (isRecoveryActive) {
+            AllocatedTaskSelection(null, "Active recovery priority.")
+        } else {
+            AgentResearchAllocator.chooseNextTask(goal, allocationProfile)
+        }
         if (taskSelection.taskId != null) return false // A task is runnable, no starvation yet
         
         // Ownership Safety: do not clear a live lease

@@ -992,7 +992,7 @@ STATIC TRACE + JVM VERIFIED
 
 ---
 
-## Run CE-20260804-0133-26e4932 � 2026-08-04T01:33:00
+## Run CE-20260804-0133-26e4932 — 2026-08-04T01:33:00
 
 ### Status
 VERIFIED
@@ -1003,7 +1003,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 26e493259867c8edac99c3c0912674678749db63
-- Run commit: SELF � commit containing this entry
+- Run commit: SELF — commit containing this entry
 - Commit message: Continuous improvement CE-20260804-0133-26e4932: repair baseline test failures and resolve environment blockers
 - Remote checked before commit: Yes
 
@@ -1062,6 +1062,84 @@ JVM VERIFIED
 
 ### Open Issues Updated
 - Closed: UNIVERSAL-TOOL-AVAILABILITY (Verified via baseline pass), RECOVERY-STARVATION (Verified via baseline pass).
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Next Action
+- Scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-0630-7ba57fc7 — 2026-08-04T06:30:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 7ba57fc79257e3f34745189d403b0517714e5dbf
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-0630-7ba57fc7: repair recovery loop in QUEUED state and resolve stale goal snapshots
+
+### Selected Scope
+- Problem: Missions in QUEUED status with active non-terminal recovery plans could enter an infinite no-progress loop. Stale goal snapshots after provider reconciliation delayed progress.
+- Why selected: Addressed Priority 3 (Infinite loop) and Priority 13 (Current Recovery Priority).
+- Correct owner: AgentGoalWorker, AgentStore, MissionRecoveryWorker.
+- Violated invariant: "Active recovery runs before ordinary tasks."
+
+### Reproduction
+- Starting state: Goal status QUEUED, recovery plan READY_TO_COMMIT.
+- Trigger: AgentGoalWorker runs.
+- Expected: Recovery plan committed, status updated to QUEUED with new strategy.
+- Actual: Worker acquires PlanningLease but bypasses driveRecoveryProtocol due to status check; calls repairBlockedWorkflow which re-queues mission.
+- Repeatability: 100% logic trace.
+- Evidence level: JVM VERIFIED (via logic-reproduction in RecoveryLoopTest).
+
+### Root Cause
+- Root cause: 
+    1. AgentGoalWorker.executeGoalWorker had a strict check for AgentGoalStatus.RECOVERING before calling driveRecoveryProtocol, missing cases where a plan is active but status was reset (e.g., by watchdog or repair).
+    2. repairBlockedWorkflow fell through to structural repair if a non-PREPARED plan existed for the same taskId/fingerprint.
+    3. executeGoalWorker used a stale initialGoal snapshot even after reconcileStaleExchanges modified the store.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Drive recovery for active plans regardless of status; re-load snapshot after reconciliation; repair stall loop)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Broaden starvation repair to include all active phases and non-terminal plans)
+    - app/src/main/java/com/david/openassistant/agent/MissionRecoveryWorker.kt (Terminalize stale NOT_DISPATCHED provider claims)
+- Behavior changed: Recovery plans are now durably committed even if the goal status was temporarily reset to QUEUED. Mismatches between goal status and active plan status are automatically repaired.
+- Behavior preserved: User pause priority and terminal state safety.
+
+### Regression Proof
+- Test: RecoveryLoopTest.kt (Simulated starvation repair for QUEUED status and active plan).
+- Passed after repair: Yes.
+- Why recurrence is detected: Starvation repair and worker orchestration now share the same recovery priority logic.
+
+### Verification
+- Baseline compilation: PASSED
+- Baseline unit tests: PASSED (590 tests)
+- Focused tests: PASSED (RecoveryLoopTest)
+- Full unit total: 590
+- Passed: 590
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Known: None.
+- Data integrity: Preserved; structural repairs are idempotent.
+
+### Repository Hygiene
+- Diff check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues Updated
 - Still open: Physical acceptance on Samsung SM-G998U.
 
 ### Next Action

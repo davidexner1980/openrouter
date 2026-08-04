@@ -136,8 +136,10 @@ class AgentGoalWorker(
                     ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
 
                     val now = System.currentTimeMillis()
-                    var goalSnapshot = if (initialGoal.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
-                        if (initialGoal.nextRetryAt == null || now >= initialGoal.nextRetryAt) {
+                    var goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
+                    
+                    if (goalSnapshot.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                        if (goalSnapshot.nextRetryAt == null || now >= goalSnapshot.nextRetryAt) {
                             store.updateGoalAtomic(goalId, null) { current ->
                                 if (current.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
                                     current.copy(
@@ -147,15 +149,15 @@ class AgentGoalWorker(
                                     )
                                 } else current
                             }.goals.firstOrNull { it.id == goalId } ?: return@coroutineScope Result.failure()
+                            
+                            goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
                         } else {
                             goalDiagnostics.info(
                                 "agent_worker_waiting_for_network_retry",
-                                mapOf("next_retry" to initialGoal.nextRetryAt)
+                                mapOf("next_retry" to goalSnapshot.nextRetryAt)
                             )
                             return@coroutineScope Result.retry()
                         }
-                    } else {
-                        initialGoal
                     }
                     resumedGoalForContinuation = goalSnapshot
 
@@ -504,12 +506,13 @@ class AgentGoalWorker(
 
                         val models = runCatching { client.fetchModels(apiKey) }.getOrDefault(emptyList())
 
+                        val hasActiveRecoveryAfterLease = checkActiveRecovery(leasedGoal)
                         val outcome = when {
                             leasedGoal.status == AgentGoalStatus.PLANNING && ticket is PlanningTicket -> {
                                 notifier.updateNotification(goalId, leasedGoal.title, "Planning")
                                 planner.plan(apiKey, leasedGoal, ticket, models)
                             }
-                            leasedGoal.status == AgentGoalStatus.RECOVERING && ticket is PlanningTicket -> {
+                            (leasedGoal.status == AgentGoalStatus.RECOVERING || hasActiveRecoveryAfterLease) && ticket is PlanningTicket -> {
                                 notifier.updateNotification(goalId, leasedGoal.title, "Recovering Research")
                                 driveRecoveryProtocol(apiKey, leasedGoal, ticket)
                             }
@@ -1027,6 +1030,18 @@ class AgentGoalWorker(
                                 researchCycles = updatedCycles,
                                 events = if (isNewPlan) appendEvent(current.events, "Research stalled: ${diagnosis.name}. Prepared tactic pivot: ${tactic.name}.") else current.events
                             )
+                        }
+                        return WorkerOutcome.CONTINUE
+                    } else if (existingPlan.status.isNonTerminal()) {
+                        // V43: Align goal status with existing active recovery plan to avoid loop in QUEUED state
+                        store.updateGoalAtomic(goal.id, ticket) { current ->
+                            if (current.status != AgentGoalStatus.RECOVERING) {
+                                current.copy(
+                                    status = AgentGoalStatus.RECOVERING,
+                                    activeRecoveryPlanId = planId,
+                                    events = appendEvent(current.events, "Resumed existing recovery plan: ${tactic.name}.")
+                                )
+                            } else current
                         }
                         return WorkerOutcome.CONTINUE
                     }

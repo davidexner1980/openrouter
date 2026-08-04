@@ -39,10 +39,19 @@ class MissionRecoveryWorker(
                 val isStaleReconciliation = attempt.reconciliationClaimedAt?.let { now - it > 120_000L } ?: false
                 if (isStaleReconciliation && attempt.transportStage == ProviderTransportStage.NOT_DISPATCHED) {
                     diagnostics.info("watchdog_reconciling_stale_provider_claim", mapOf("goal_id" to goal.id, "exchange_id" to attempt.exchangeId))
-                    // Reclaim or terminalize? The user addendum says "Reconcile stale provider reconciliation claims without dispatching ambiguous requests."
-                    // If NOT_DISPATCHED, it's safe to just clear the claim or let another worker pick it up.
-                    // Actually, if it's NOT_DISPATCHED, we can just leave it for the next worker who claims it.
-                    // But we should probably mark it as FAILED if it's been too long without dispatch.
+                    // REPAIR: Terminalize stale NOT_DISPATCHED claim to allow other workers to proceed safely
+                    store.updateGoal(goal.id) { current ->
+                        val updatedAttempts = current.requestAttempts.map {
+                            if (it.exchangeId == attempt.exchangeId && it.exchangeOutcome == ExchangeOutcome.ACTIVE) {
+                                it.copy(
+                                    exchangeOutcome = ExchangeOutcome.CANCELLED,
+                                    finishedAt = now,
+                                    safeDiagnosticSummary = "Watchdog terminalized stale NOT_DISPATCHED provider claim after owner process died."
+                                )
+                            } else it
+                        }
+                        current.copy(requestAttempts = updatedAttempts, updatedAt = now)
+                    }
                 }
             }
 
