@@ -269,7 +269,7 @@ JVM VERIFIED
 - Branch: main
 - Starting commit: 65050bf080cfef5425877c546e2a1d28657fc92a
 - Run commit: 802f345d8d994fe085028f5ffc017d3cbdd9252f
-- Commit message: Continuous improvement CE-20260803-0748-65050bf0: break identical context loops by integrating recovery strategy into execution fingerprint and prompt
+- Commit message: Continuous improvement CE-20260804-0748-65050bf0: break identical context loops by integrating recovery strategy into execution fingerprint and prompt
 
 ### Selected Scope
 - Problem: Research missions could get stuck in an infinite loop of suppressed "identical context" requests. Even after a recovery tactic (like changing the query angle) was chosen, the next request's input fingerprint remained identical, re-triggering the safety guard.
@@ -343,7 +343,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 802f345d8d994fe085028f5ffc017d3cbdd9252f
-- Run commit: 50a329f8f1caca7249a68f0fa9ff6facca03878d
+- Final commit: 50a329f8f1caca7249a68f0fa9ff6facca03878d
 - Commit message: Continuous improvement CE-20260803-1227-802f345d: replace untruthful machine-generated PAUSED status with RESEARCH_CYCLES_EXHAUSTED or REQUIRES_USER_CLARIFICATION
 
 ### Selected Scope
@@ -1248,7 +1248,7 @@ JVM VERIFIED
     - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Moved bootstrap tool instructions into active block; added tool-use priority to prompts; improved registry audit diagnostics)
     - app/src/main/java/com/david/openassistant/agent/AgentToolRegistry.kt (New `attachedToolsPayloadWithAudit` to expose tool availability truth with reasons)
 - Test files:
-    - app/src/test/java/com/david/openassistant/AgentUniversalToolAvailabilityTest.kt (New: integration-level proof for strategy selection, instructions, and recovery)
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt (New: integration-level proof for strategy selection, instructions, and recovery)
 - Behavior changed: All mission phases and chat now have access to the full tool registry. Prompts encourage evidence gathering when gaps exist. Registry audit logs exact reasons for tool unavailability.
 
 ### Verification
@@ -1338,8 +1338,8 @@ JVM VERIFIED
     - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Idempotent structural repair for restricted missions)
     - app/src/main/java/com/david/openassistant/agent/AutonomyPolicy.kt (AutomationRouter preference for TOOL_ASSISTED_CHAT in ordinary conversation)
 - Test files:
-    - app/src/test/java/com/david/openassistant/AgentUniversalToolAvailabilityTest.kt
-    - app/src/test/java/com/david/openassistant/AgentExecutionRecoveryTest.kt
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt
+    - app/src/test/java/com/david/openassistant/agent/AgentExecutionRecoveryTest.kt
     - app/src/test/java/com/david/openassistant/AutonomyRuntimeTest.kt (Updated to align with universal tools)
 - Behavior changed: All mission phases and ordinary chat now have access to the full tool registry. Restricted profiles removed. Stuck missions are automatically repaired and re-queued with tools.
 
@@ -1362,3 +1362,77 @@ JVM VERIFIED
 ### Rollback
 - Revert method: git revert <commit>
 - Data compatibility: Full compatibility.
+
+---
+
+## Run CE-20260804-1042-34df884e — 2026-08-04T10:42:00
+
+### Status
+VERIFIED
+
+### Evidence Level
+JVM VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: 34df884e43678e2a86202bd77767bf18be956c78
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1042-34df884e: implement durable content reconciliation for task execution and planning
+- Remote checked before commit: Yes
+
+### Selected Scope
+- Problem: Missions could get stuck with parsing failures if a process restart occurred after a successful provider response but before the domain result was durably committed.
+- Why selected: Addressed identified defect in logical request reconciliation [PB-003]. Improved stability and research resilience. Fixed 2 baseline test failures.
+- Correct owner: AgentOpenRouterClient, AgentStore.
+- Violated invariant: Logical request reconciliation must be stable across process restarts.
+
+### Reproduction
+- Starting state: Successful provider response received but not committed to domain state.
+- Trigger: Simulated restart and re-dispatch of the same logical request.
+- Expected behavior: Reconciled attempt retrieves the prior successful body and parses it correctly.
+- Actual behavior: Reconciled attempt returned "SUCCESS_RECONCILED" placeholder, causing parsing failure in the next step.
+- Automated reproduction: DurableContentReconciliationTest.kt verified the fix.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentExecutionModels.kt (Added reconciledResponseContent to ProviderRequestAttempt)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Wired raw body persistence and retrieval)
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Implemented durable storage for response content; fixed duplicate code in encodeRequestAttempt)
+    - app/src/main/java/com/david/openassistant/agent/AutonomyPolicy.kt (Aligned local tool patterns for better routing)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/DurableContentReconciliationTest.kt (New: integration proof)
+    - app/src/test/java/com/david/openassistant/agent/AgentUniversalToolAvailabilityTest.kt (Fixed baseline failures)
+- Behavior changed: Successful provider responses are now durably persisted in the request ledger. Reconciled requests now pick up the actual prior content, eliminating "SUCCESS_RECONCILED" parsing stalls.
+
+### Regression Proof
+- Test name: DurableContentReconciliationTest.testReconcilesDurableContentAfterProcessRestart
+- Passed after fix: Yes.
+- Real owner exercised: Yes (AgentStore, AgentOpenRouterClient).
+
+### Verification
+- Baseline compilation: PASSED
+- Full unit total: 598
+- Passed: 598
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+- Migration: Schema-compatible addition.
+- Performance: Increased disk usage for active request ledger (mitigated by bounded attempts).
+
+### Repository Hygiene
+- git diff --check: Passed
+- Secret scan: Passed
+- Final status: Clean
+
+### Rollback
+- Revert method: git revert <commit>
+- Data compatibility: Full compatibility.
+
+### Open Issues Updated
+- Closed with evidence: 2 pre-existing baseline failures.
+- Still unresolved: Physical acceptance on Samsung SM-G998U.
+
+### Next Action
+- Scope: Physical acceptance on Samsung SM-G998U.

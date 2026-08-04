@@ -37,7 +37,7 @@ sealed class ReconciliationResult {
     data class ExistingActive(val attempt: ProviderRequestAttempt) : ReconciliationResult()
     data class ExistingInFlight(val attempt: ProviderRequestAttempt) : ReconciliationResult()
     data class ExistingAmbiguous(val attempt: ProviderRequestAttempt) : ReconciliationResult()
-    data class ExistingSuccessfulResultAvailable(val attempt: ProviderRequestAttempt, val proposal: RecoveryProposal?, val summary: AgentApiSummary?) : ReconciliationResult()
+    data class ExistingSuccessfulResultAvailable(val attempt: ProviderRequestAttempt, val proposal: RecoveryProposal?, val summary: AgentApiSummary?, val responseContent: String? = null) : ReconciliationResult()
     data class ExistingSuccessfulResultMissing(val attempt: ProviderRequestAttempt) : ReconciliationResult()
     data class ExistingTerminalFailure(val attempt: ProviderRequestAttempt) : ReconciliationResult()
     data class RetryDispatchClaimed(val attempt: ProviderRequestAttempt) : ReconciliationResult()
@@ -782,7 +782,9 @@ class AgentStore private constructor(
                     // DESIGN A: Check if proposal exists in the recovery plan
                     val plan = goal.recoveryPlans.firstOrNull { it.id == recoveryPlanId }
                     if (plan != null && plan.proposal != null) {
-                        ReconciliationResult.ExistingSuccessfulResultAvailable(latestAttempt, plan.proposal, plan.accountingSummary)
+                        ReconciliationResult.ExistingSuccessfulResultAvailable(latestAttempt, plan.proposal, plan.accountingSummary, latestAttempt.reconciledResponseContent)
+                    } else if (latestAttempt.reconciledResponseContent != null) {
+                        ReconciliationResult.ExistingSuccessfulResultAvailable(latestAttempt, null, null, latestAttempt.reconciledResponseContent)
                     } else {
                         ReconciliationResult.ExistingSuccessfulResultMissing(latestAttempt)
                     }
@@ -1008,6 +1010,7 @@ class AgentStore private constructor(
         failureClass: String? = null,
         safeDiagnosticSummary: String? = null,
         providerResponseId: String? = null,
+        responseContent: String? = null,
     ): TransitionOutcomeResult = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
         val current = loadSnapshotFromFilesLocked()
@@ -1036,6 +1039,7 @@ class AgentStore private constructor(
             failureClass = failureClass ?: existingAttempt.failureClass,
             safeDiagnosticSummary = safeDiagnosticSummary ?: existingAttempt.safeDiagnosticSummary,
             providerResponseId = providerResponseId ?: existingAttempt.providerResponseId,
+            reconciledResponseContent = responseContent ?: existingAttempt.reconciledResponseContent,
             finishedAt = now,
         )
 
@@ -2367,40 +2371,7 @@ class AgentStore private constructor(
         .put("safe_diagnostic_summary", attempt.safeDiagnosticSummary ?: JSONObject.NULL)
         .put("recovery_plan_id", attempt.recoveryPlanId ?: JSONObject.NULL)
         .put("response_payload_fingerprint", attempt.responsePayloadFingerprint ?: JSONObject.NULL)
-
-        .put("exchange_id", attempt.exchangeId)
-        .put("logical_request_id", attempt.logicalRequestId)
-        .put("wire_attempt_ordinal", attempt.wireAttemptOrdinal)
-        .put("previous_exchange_id", attempt.previousExchangeId ?: JSONObject.NULL)
-        .put("provider_response_id", attempt.providerResponseId ?: JSONObject.NULL)
-        .put("transport_stage", attempt.transportStage.name)
-        .put("delivery_certainty", attempt.deliveryCertainty.name)
-        .put("parent_operation_id", attempt.parentOperationId)
-        .put("goal_id", attempt.goalId)
-        .put("task_id", attempt.taskId ?: JSONObject.NULL)
-        .put("execution_generation", attempt.executionGeneration)
-        .put("requested_model", attempt.requestedModel)
-        .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
-        .put("role", attempt.role?.name ?: JSONObject.NULL)
-        .put("payload_fingerprint", attempt.payloadFingerprint)
-        .put("exchange_outcome", attempt.exchangeOutcome.name)
-        .put("provider_accounting_outcome", attempt.providerAccountingOutcome.name)
-        .put("domain_commit_outcome", attempt.domainCommitOutcome.name)
-        .put("usage_source", attempt.usageSource?.name ?: JSONObject.NULL)
-        .put("prompt_tokens", attempt.promptTokens ?: JSONObject.NULL)
-        .put("completion_tokens", attempt.completionTokens ?: JSONObject.NULL)
-        .put("total_tokens", attempt.totalTokens ?: JSONObject.NULL)
-        .put("cost_usd", attempt.costUsd ?: JSONObject.NULL)
-        .put("pricing_model_id", attempt.pricingModelId ?: JSONObject.NULL)
-        .put("http_status_code", attempt.httpStatusCode ?: JSONObject.NULL)
-        .put("failure_class", attempt.failureClass ?: JSONObject.NULL)
-        .put("started_at", attempt.startedAt)
-        .put("finished_at", attempt.finishedAt ?: JSONObject.NULL)
-        .put("reconciliation_claim_owner", attempt.reconciliationClaimOwner ?: JSONObject.NULL)
-        .put("reconciliation_claimed_at", attempt.reconciliationClaimedAt ?: JSONObject.NULL)
-        .put("safe_diagnostic_summary", attempt.safeDiagnosticSummary ?: JSONObject.NULL)
-        .put("recovery_plan_id", attempt.recoveryPlanId ?: JSONObject.NULL)
-        .put("response_payload_fingerprint", attempt.responsePayloadFingerprint ?: JSONObject.NULL)
+        .put("reconciled_response_content", attempt.reconciledResponseContent ?: JSONObject.NULL)
 
     private fun decodeRequestAttempt(json: JSONObject): ProviderRequestAttempt? {
         val exchangeId = json.optNullableString("exchange_id") ?: return null
@@ -2438,6 +2409,7 @@ class AgentStore private constructor(
             safeDiagnosticSummary = json.optNullableString("safe_diagnostic_summary"),
             recoveryPlanId = json.optNullableString("recovery_plan_id"),
             responsePayloadFingerprint = json.optNullableString("response_payload_fingerprint"),
+            reconciledResponseContent = json.optNullableString("reconciled_response_content"),
         )
     }
 

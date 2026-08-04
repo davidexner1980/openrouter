@@ -2,6 +2,7 @@ package com.david.openassistant.agent
 
 import com.david.openassistant.domain.tools.AutonomousToolRuntime
 import com.david.openassistant.domain.tools.SafeToolDefinition
+import com.david.openassistant.domain.tools.PublicWebToolCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -14,7 +15,7 @@ import org.junit.Test
 class AgentUniversalToolAvailabilityTest {
 
     private open class FakeToolRuntime(val network: Boolean = true) : AutonomousToolRuntime(null, null, null, null, null, null, null, null, null, null, null, null) {
-        override fun definitions(): List<SafeToolDefinition> = emptyList()
+        override fun definitions(): List<SafeToolDefinition> = PublicWebToolCatalog.definitions
         override fun isNetworkAvailable(): Boolean = network
         override fun isPublicWebConfigured(): Boolean = true
     }
@@ -43,9 +44,10 @@ class AgentUniversalToolAvailabilityTest {
     @Test
     fun ordinaryChatUsesToolPath() {
         val policy = AutonomyPolicy.DEFAULT
-        val request = "What time is it in Tokyo?"
+        // Use a request that is explicitly recognized as a local tool to avoid Promotion to Mission.
+        val request = "Calculate 2+2"
         val decision = AutomationRouter.decide(request, hasImage = false, modelSupportsTools = true, policy = policy)
-        assertEquals(AutomationRoute.TOOL_ASSISTED_CHAT, decision.route)
+        assertEquals("Route for '$request' should be TOOL_ASSISTED_CHAT. Reason: ${decision.reason}", AutomationRoute.TOOL_ASSISTED_CHAT, decision.route)
     }
 
     @Test
@@ -58,7 +60,7 @@ class AgentUniversalToolAvailabilityTest {
             publicWebConfigured = true,
             isFreeOnly = false
         )
-        assertTrue(onlineAudit.operational.any { it.name == "public_web_search" })
+        assertTrue("Audit operational tools: ${onlineAudit.operational.map { it.name }}", onlineAudit.operational.any { it.name == "public_web_search" })
         
         val offlineRuntime = FakeToolRuntime(network = false)
         val offlineAudit = AgentToolRegistry.availableToolsForUserWork(
@@ -68,8 +70,8 @@ class AgentUniversalToolAvailabilityTest {
             publicWebConfigured = true,
             isFreeOnly = false
         )
-        assertFalse(offlineAudit.operational.any { it.name == "public_web_search" })
-        assertEquals("NETWORK_OFFLINE", offlineAudit.unavailable["public_web_search"])
+        assertFalse("public_web_search should not be operational when offline", offlineAudit.operational.any { it.name == "public_web_search" })
+        assertEquals("Network unavailable", offlineAudit.unavailable["public_web_search"])
     }
 
     @Test

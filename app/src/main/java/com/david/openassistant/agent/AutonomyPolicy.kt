@@ -105,7 +105,7 @@ data class AgentResearchPolicy(
             "^\\s*(?:what (?:is|are)|calculate|compute)?\\s*[-+]?\\d[\\d\\s().+\\-*/%^]*[?]?\\s*$",
         )
         private val DETERMINISTIC_LOCAL_PATTERN = Regex(
-            "\\b(calculate|calculator|equation|convert|conversion|count words|count characters|date difference|days between|format json|validate json|hash|sha[- ]?256|base64|url encode|url decode|sort lines|deduplicate lines|statistics|average|median|uuid|read workspace|write workspace|search workspace|list workspace|workspace file)\\b",
+            "\\b(calculate|calculator|equation|convert|conversion|how many|count words|count characters|date difference|days between|time in|timezone|format json|validate json|hash|sha[- ]?256|base64|url encode|url decode|sort lines|deduplicate lines|statistics|average|median|uuid|read workspace|write workspace|search workspace|list workspace|workspace file)\\b",
         )
         private val CREATIVE_LOCAL_PATTERN = Regex(
             "\\b(translate|rewrite|proofread|fix (the )?grammar|summarize (this|the following|the provided|the pasted)|format (this|the following|the provided|the pasted)|roleplay)\\b|" +

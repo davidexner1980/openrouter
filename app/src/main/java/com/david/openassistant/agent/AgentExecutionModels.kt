@@ -99,6 +99,7 @@ data class ProviderRequestAttempt(
     val safeDiagnosticSummary: String? = null,
     val recoveryPlanId: String? = null,
     val responsePayloadFingerprint: String? = null,
+    val reconciledResponseContent: String? = null,
 )
 
 data class RouteFailureFingerprint(

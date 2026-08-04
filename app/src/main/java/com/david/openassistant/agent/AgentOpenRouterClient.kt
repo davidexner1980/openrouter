@@ -4453,7 +4453,13 @@ open class AgentOpenRouterClient internal constructor(
         val result = executeCapturedOpenRouterBody(apiKey, payload, "agent_tool_aware_chat", generation, requestContext)
         return when (result) {
             is MissionDispatchResult.Success -> JsonEnvelopeParser.requireObject(result.body, "OpenRouter tool response")
-            is MissionDispatchResult.Reconciled -> JSONObject().put("status", "SUCCESS_RECONCILED")
+            is MissionDispatchResult.Reconciled -> {
+                if (result.responseContent != null) {
+                    JsonEnvelopeParser.requireObject(result.responseContent, "Reconciled OpenRouter response")
+                } else {
+                    JSONObject().put("status", "SUCCESS_RECONCILED")
+                }
+            }
         }
     }
 
@@ -4549,13 +4555,17 @@ open class AgentOpenRouterClient internal constructor(
         return when (result) {
             is MissionDispatchResult.Success -> parseResponse(result.body, apiKey, payload, result.statusCode, System.currentTimeMillis() - startedAt, result.exchangeId)
             is MissionDispatchResult.Reconciled -> {
-                RawAgentResponse(
-                    content = "SUCCESS_RECONCILED",
-                    summary = result.summary ?: AgentApiSummary(responseId = "reconciled-${result.exchangeId}", httpStatusCode = 200),
-                    sources = emptyList(),
-                    reconciledProposal = result.proposal,
-                    reconciledSummary = result.summary
-                )
+                if (result.responseContent != null) {
+                    parseResponse(result.responseContent, apiKey, payload, 200, 0L, result.exchangeId)
+                } else {
+                    RawAgentResponse(
+                        content = "SUCCESS_RECONCILED",
+                        summary = result.summary ?: AgentApiSummary(responseId = "reconciled-${result.exchangeId}", httpStatusCode = 200),
+                        sources = emptyList(),
+                        reconciledProposal = result.proposal,
+                        reconciledSummary = result.summary
+                    )
+                }
             }
         }
     }
@@ -4568,6 +4578,7 @@ open class AgentOpenRouterClient internal constructor(
         val providerResponseId: String? = null,
         val proposal: RecoveryProposal? = null,
         val summary: AgentApiSummary? = null,
+        val rawBody: String? = null,
     )
 
     private fun handleTerminalTransition(
@@ -4593,6 +4604,7 @@ open class AgentOpenRouterClient internal constructor(
             failureClass = resolution.failureClass,
             safeDiagnosticSummary = resolution.safeDiagnosticSummary,
             providerResponseId = resolution.providerResponseId,
+            responseContent = resolution.rawBody,
         )
 
         when (result) {
@@ -4682,7 +4694,7 @@ open class AgentOpenRouterClient internal constructor(
 
     internal sealed class MissionDispatchResult {
         data class Success(val body: String, val statusCode: Int, val exchangeId: String) : MissionDispatchResult()
-        data class Reconciled(val proposal: RecoveryProposal?, val summary: AgentApiSummary?, val exchangeId: String) : MissionDispatchResult()
+        data class Reconciled(val proposal: RecoveryProposal?, val summary: AgentApiSummary?, val exchangeId: String, val responseContent: String? = null) : MissionDispatchResult()
     }
 
     private suspend fun executeCapturedOpenRouterBody(
@@ -4720,7 +4732,7 @@ open class AgentOpenRouterClient internal constructor(
                 is ReconciliationResult.RetryDispatchClaimed -> reconciliation.attempt
                 is ReconciliationResult.ExistingNotDispatched -> reconciliation.attempt
                 is ReconciliationResult.ExistingSuccessfulResultAvailable -> {
-                    return MissionDispatchResult.Reconciled(reconciliation.proposal, reconciliation.summary, reconciliation.attempt.exchangeId)
+                    return MissionDispatchResult.Reconciled(reconciliation.proposal, reconciliation.summary, reconciliation.attempt.exchangeId, reconciliation.responseContent)
                 }
                 is ReconciliationResult.ExistingActive, is ReconciliationResult.ExistingInFlight -> {
                     throw OpenRouterException(null, "Existing active request owned by another worker or session.")
@@ -4840,7 +4852,8 @@ open class AgentOpenRouterClient internal constructor(
                             statusCode = response.code, 
                             providerResponseId = providerRespId,
                             proposal = proposalToPersist,
-                            summary = summaryToPersist
+                            summary = summaryToPersist,
+                            rawBody = rawBody
                         )
                     } else {
                         ExchangeResolution(
