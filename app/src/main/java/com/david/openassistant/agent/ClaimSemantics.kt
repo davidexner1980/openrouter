@@ -47,6 +47,14 @@ data class AcceptedClaim(
 )
 
 /**
+ * Stable ID for a source read based on its canonical URL.
+ */
+internal fun scopedSourceReadId(canonicalUrl: String): String {
+    if (canonicalUrl.isBlank()) return "src_unknown_${java.util.UUID.randomUUID()}"
+    return "src_${FingerprintUtils.hash(canonicalUrl).takeLast(16)}"
+}
+
+/**
  * Provider claim IDs are usually generic (for example, `claim-1`) and repeat
  * in every milestone. Scope them to the durable task identity before they
  * enter the goal-wide evidence graph so reviews and links cannot collide.
@@ -137,6 +145,15 @@ internal fun normalizeClaimConfidence(claim: AgentClaim): AgentClaim {
  * refinements update existing claims instead of duplicating them.
  */
 internal fun mergeClaims(existing: List<AgentClaim>, incoming: List<AgentClaim>): List<AgentClaim> {
+    if (incoming.isEmpty()) return existing
+    val incomingIds = incoming.mapTo(mutableSetOf()) { it.id }
+    return existing.filterNot { it.id in incomingIds } + incoming
+}
+
+/**
+ * Idempotent upsert of source reads into the goal-wide record.
+ */
+internal fun mergeSourceReads(existing: List<SourceRead>, incoming: List<SourceRead>): List<SourceRead> {
     if (incoming.isEmpty()) return existing
     val incomingIds = incoming.mapTo(mutableSetOf()) { it.id }
     return existing.filterNot { it.id in incomingIds } + incoming

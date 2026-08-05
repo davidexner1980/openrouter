@@ -2830,10 +2830,11 @@ open class AgentOpenRouterClient internal constructor(
                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
                 
+                val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl)
                 val sourceRead = SourceRead(
-                    id = java.util.UUID.randomUUID().toString(),
+                    id = scopedSourceReadId(canonicalUrl),
                     url = resolvedUrl,
-                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
+                    canonicalUrl = canonicalUrl,
                     httpCode = 200,
                     contentType = contentType,
                     content = text,
@@ -3146,10 +3147,11 @@ open class AgentOpenRouterClient internal constructor(
                                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
                                 
+                                val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl)
                                 val sourceRead = SourceRead(
-                                    id = java.util.UUID.randomUUID().toString(),
+                                    id = scopedSourceReadId(canonicalUrl),
                                     url = resolvedUrl,
-                                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
+                                    canonicalUrl = canonicalUrl,
                                     httpCode = 200,
                                     contentType = contentType,
                                     content = text,

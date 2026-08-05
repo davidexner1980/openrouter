@@ -2306,7 +2306,129 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260805-1049-9a7ec189 — 2026-08-05T10:49:00
+## Run CE-20260805-1207-0952953e — 2026-08-05T12:07:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R1
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 0952953e53e26408e920bdf1b3e56b4164f6ba94
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-1207-0952953e: implement canonical source URL normalization for progress detection
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: PROGRESS-PRECISION-REPAIR-FOLLOWUP
+- Subsystem: Orchestration
+- Mission requirement: Evidence Preservation, Research Convergence
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for canonical URL matching in gaps and progress.
+
+### Scope Contract
+
+- Problem: 
+    1. `AgentResearchAllocator.evaluateGaps` used raw URLs, failing to count redundant sources with minor formatting differences (e.g. trailing slashes).
+    2. `AgentTaskExecutor.madeMeaningfulProgress` used raw URLs for substantive source novelty detection.
+    3. `AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED` was not used when `MARK_EXHAUSTED` was chosen.
+- First causal failure: Inconsistent URL normalization policy in the gap-evaluation boundary.
+- Correct owner: `AgentResearchAllocator.kt`, `AgentTaskExecutor.kt`, `ResearchQualityGate.kt`.
+- Violated invariant: Truthful Progress Reporting.
+- Protected behavior: Research quality gates and allocation profiles.
+- Compatibility: Schema compatible.
+- Out of scope: Physical device verification.
+
+### Reproduction
+
+- Starting state: `evaluateGaps` used raw `it.url`.
+- Trigger: Evidence with `https://example.com/` and `https://example.com`.
+- Expected: 1 unique source.
+- Actual: 2 unique sources.
+- Durable result: False progress and inaccurate gaps.
+- Repeatability: 100% (logic trace and unit tests).
+
+### Hypotheses
+
+- Accepted: Using `ResearchQualityGate.canonicalSourceUrl` consistently in both `evaluateGaps` and `madeMeaningfulProgress` ensures a robust measure of informational novelty. Explicitly mapping `MARK_EXHAUSTED` to its truthful goal status improves lifecycle clarity.
+
+### Root Cause
+
+- Root cause: Late-stage refinement of research metrics revealed gaps in earlier URL normalization strategies.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentResearchAllocator.kt (Used `canonicalSourceUrl` and `domainOf` for gaps)
+    - app/src/main/java/com/david/openassistant/agent/AgentTaskExecutor.kt (Used `canonicalUrl` for novelty detection; added `RESEARCH_CYCLES_EXHAUSTED` status)
+    - app/src/main/java/com/david/openassistant/agent/ResearchQualityGate.kt (Exposed `domainOf` as internal)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/ProgressPrecisionIntegrationTest.kt (New: consolidated precision tests)
+- Behavior changed: Source redundancy is now detected canonically across all tasks. Exhausted missions carry the correct terminal status.
+- Behavior preserved: Existing task selection and allocation rules.
+
+### Regression Proof
+
+- Test: `ProgressPrecisionIntegrationTest.testProgressDetectorUsesCanonicalUrlsForRedundancyAcrossTasks`, `ProgressPrecisionIntegrationTest.testGoalTransitionsToResearchCyclesExhausted`, `AllocationGapTest` (temporary)
+- Failed before repair: YES
+- Expected failure: `AssertionError` (duplicate counts or wrong status)
+- Passed after repair: YES.
+- Real owner exercised: YES.
+- Durable output reloaded: YES.
+
+### Verification
+
+- Baseline: PASSED (621 tests)
+- Full unit total: 621
+- Passed: 621
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None.
+- Migration: None.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe.
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 
@@ -3378,3 +3500,4 @@ JVM VERIFIED
 ### Recommended Next Pass
 
 - Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
+$entry

@@ -537,22 +537,28 @@ open class AgentStore private constructor(
             return if (existingRead != null) RecordSourceReadResult.ReusedExisting(existingRead) else RecordSourceReadResult.FetchClaimAmbiguous
         }
         
+        val existingReadById = goal.sourceReads.firstOrNull { it.id == sourceRead.id }
+        
         val now = System.currentTimeMillis()
         val updatedAttempt = attempt.copy(
             status = SourceFetchStatus.SOURCE_READ_COMMITTED,
-            sourceReadId = sourceRead.id,
+            sourceReadId = existingReadById?.id ?: sourceRead.id,
             updatedAt = now
         )
         
         val updatedGoal = goal.copy(
             fetchAttempts = goal.fetchAttempts.map { if (it.id == attempt.id) updatedAttempt else it },
-            sourceReads = goal.sourceReads + sourceRead,
+            sourceReads = mergeSourceReads(goal.sourceReads, listOf(existingReadById ?: sourceRead)),
             toolExecutions = goal.toolExecutions + toolAccounting,
             updatedAt = now
         )
         writeGoalLocked(updatedGoal)
         
-        return RecordSourceReadResult.Persisted(sourceRead)
+        return if (existingReadById != null) {
+            RecordSourceReadResult.ReusedExisting(existingReadById)
+        } else {
+            RecordSourceReadResult.Persisted(sourceRead)
+        }
     }
 
     fun updateProviderTransportStage(

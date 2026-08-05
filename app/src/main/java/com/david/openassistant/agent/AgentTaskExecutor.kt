@@ -1391,25 +1391,29 @@ class AgentTaskExecutor internal constructor(
                 },
             ),
             evidence = upsertEvidence(routedCurrent.evidence, evidenceItem),
-            sourceReads = (routedCurrent.sourceReads + result.sources.map { s ->
-                val textLength = s.excerpt.orEmpty().length
-                val provenance = if (textLength >= 600) { // MIN_PROVIDER_EXTRACT_CHARS = 600
-                    SourceReadProvenance.PROVIDER_EXTRACT
-                } else {
-                    SourceReadProvenance.UNVERIFIED_CITATION
-                }
-                SourceRead(
-                    id = UUID.randomUUID().toString(),
-                    url = s.url,
-                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(s.url),
-                    httpCode = 0, // Unverified citations don't have telemetry
-                    contentType = "text/html",
-                    content = s.excerpt.orEmpty(),
-                    sourceRole = researchPassRole(task).name,
-                    authorityScore = computeSourceAuthorityScore(s.url, s.excerpt.orEmpty()),
-                    provenance = provenance,
-                )
-            } + result.sourceReads).distinctBy { it.url },
+            sourceReads = mergeSourceReads(
+                routedCurrent.sourceReads,
+                result.sources.map { s ->
+                    val textLength = s.excerpt.orEmpty().length
+                    val provenance = if (textLength >= 600) { // MIN_PROVIDER_EXTRACT_CHARS = 600
+                        SourceReadProvenance.PROVIDER_EXTRACT
+                    } else {
+                        SourceReadProvenance.UNVERIFIED_CITATION
+                    }
+                    val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(s.url)
+                    SourceRead(
+                        id = scopedSourceReadId(canonicalUrl),
+                        url = s.url,
+                        canonicalUrl = canonicalUrl,
+                        httpCode = 0, // Unverified citations don't have telemetry
+                        contentType = "text/html",
+                        content = s.excerpt.orEmpty(),
+                        sourceRole = researchPassRole(task).name,
+                        authorityScore = computeSourceAuthorityScore(s.url, s.excerpt.orEmpty()),
+                        provenance = provenance,
+                    )
+                } + result.sourceReads
+            ),
             claims = mergedClaims,
             evidenceLinks = retainEvidenceLinks(
                 (retainedLinks + newLinks)
