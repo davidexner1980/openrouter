@@ -355,7 +355,7 @@ class AgentGoalWorker(
                         }
                     }
                     
-                    val (ticket, leasedGoal) = when (acquisition) {
+                    val (ticket, _) = when (acquisition) {
                         is LeaseAcquisitionResult.Acquired -> {
                             diagnostics.info(
                                 event = "execution_ticket_created",
@@ -397,6 +397,10 @@ class AgentGoalWorker(
 
                     // Canonical controlled stale-exchange reconciliation under goal lease lock
                     ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
+                    
+                    // Protocol 42.6: Reload snapshot after potential reconciliation mutations to ensure
+                    // subsequent priority and allocation checks use the ground truth.
+                    val leasedGoal = findGoal(goalId) ?: return@coroutineScope Result.failure()
                     
                     // RECOVERY OWNERSHIP TRUTH: Validate plan after lease acquisition
                     if (hasActiveRecovery) {

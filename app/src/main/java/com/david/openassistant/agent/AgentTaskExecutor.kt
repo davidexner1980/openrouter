@@ -1189,9 +1189,8 @@ class AgentTaskExecutor internal constructor(
             proposedEvidenceItem
         }
 
-        val priorSourceUrls = priorTaskEvidence?.sources?.mapTo(mutableSetOf()) { it.url }.orEmpty()
+        val priorSourceUrls = routedCurrent.sourceReads.mapTo(mutableSetOf()) { it.url }
         val priorClaimTexts = routedCurrent.claims.asSequence()
-            .filter { it.taskId == task.id }
             .map { it.text.normalizedClaimText() }
             .toSet()
 

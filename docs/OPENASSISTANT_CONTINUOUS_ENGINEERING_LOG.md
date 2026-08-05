@@ -2306,7 +2306,130 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260805-0954-ef0b3f0f — 2026-08-05T09:54:00
+## Run CE-20260805-1049-9a7ec189 — 2026-08-05T10:49:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R1
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 9a7ec18958e44c969d0e314c0300b74c9aafd6e9
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-1049-9a7ec189: implement robust research progress detection and newest-record context prioritization
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: RESEARCH-PROGRESS-PRECISION-REPAIR
+- Subsystem: Orchestration
+- Mission requirement: Evidence Preservation, Research Convergence
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for newest record selection and goal-wide redundancy detection.
+
+### Scope Contract
+
+- Problem: 
+    1. `EvidenceContextSelector` added the newest record last, risking its exclusion from the context window.
+    2. `AgentTaskExecutor` used task-local context for progress detection, over-counting redundant facts from other tasks.
+    3. `AgentGoalWorker` used a stale goal snapshot after store mutations.
+- First causal failure: Incomplete prioritization in the context boundary.
+- Correct owner: `EvidenceContextSelector.kt`, `AgentTaskExecutor.kt`, `AgentGoalWorker.kt`.
+- Violated invariant: Truthful Progress Reporting.
+- Protected behavior: Task allocation and completion rules.
+- Compatibility: Schema compatible.
+- Out of scope: Physical device verification.
+
+### Reproduction
+
+- Starting state: `latest` record added last in selector. Progress check looked at `task.id` claims only.
+- Trigger: Multi-stage mission with tight context or redundant facts.
+- Expected: Newest record prioritized; progress only for novel facts.
+- Actual: Newest record potentially omitted; progress credit for redundant facts.
+- Durable result: Context discontinuity and false progress.
+- Repeatability: 100% (logic trace and unit tests).
+
+### Hypotheses
+
+- Accepted: Prioritizing the newest record in `EvidenceContextSelector` ensures context continuity. Using goal-wide source reads and claims in `AgentTaskExecutor` provides a robust measure of informational novelty.
+
+### Root Cause
+
+- Root cause: Evolution of multi-task research outpaced the refinement of cross-task state awareness.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/EvidenceContextSelector.kt (Prioritized `latest` record selection)
+    - app/src/main/java/com/david/openassistant/agent/AgentTaskExecutor.kt (Updated progress detection to use goal-wide prior claims and sources)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Reloaded goal snapshot after internal mutations)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/EvidenceContextSelectorTest.kt (New: verified prioritization)
+    - app/src/test/java/com/david/openassistant/agent/ProgressDetectionTest.kt (New: verified goal-wide redundancy detection)
+- Behavior changed: Newest discovery is now guaranteed in context if space exists. Progress credit is strictly for novel grounded facts/sources.
+- Behavior preserved: Existing relevance ranking tie-breakers.
+
+### Regression Proof
+
+- Test: `EvidenceContextSelectorTest.testSelectorPrioritizesLatestEvidenceWhenWindowIsFull`, `ProgressDetectionTest.testProgressNotCountedForRedundantFactsFromOtherTasks`
+- Failed before repair: YES
+- Expected failure: `AssertionError` (missing record or false progress)
+- Passed after repair: YES.
+- Real owner exercised: YES.
+- Durable output reloaded: YES.
+
+### Verification
+
+- Baseline: PASSED (620 tests)
+- Full unit total: 620
+- Passed: 620
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None.
+- Migration: None.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe.
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 

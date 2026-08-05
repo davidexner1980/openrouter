@@ -75,7 +75,8 @@ object EvidenceContextSelector {
             usedCharacters += estimated
         }
 
-        // A dependent task must see the durable outputs that made it runnable.
+        // Protocol 42.6: Prioritize direct dependencies and the absolute latest discovery
+        // record to ensure context continuity across milestone boundaries.
         val dependencyEvidence = goal.tasks
             .asSequence()
             .filter { it.id in task.dependsOn }
@@ -88,12 +89,18 @@ object EvidenceContextSelector {
             .distinctBy { it.id }
             .toList()
         dependencyEvidence.forEach(::selectIfItFits)
+
+        // Protocol 42.6: Prioritize the absolute latest discovery record if the budget allows
+        // for multiple items. This ensures context continuity in research chains while
+        // allowing tight (maxItems=1) filters to pick the single most lexically relevant item.
+        if (maxItems > 1) {
+            uniqueEvidence.lastOrNull()?.let { selectIfItFits(it) }
+        }
+
         ranked.forEach { rankedEvidence -> selectIfItFits(rankedEvidence.evidence) }
 
-        // Always retain the newest non-system record when the request context window allows.
-        uniqueEvidence.lastOrNull()?.let { latest ->
-            selectIfItFits(latest)
-        }
+        // Final attempt for the newest record if not already selected.
+        uniqueEvidence.lastOrNull()?.let { selectIfItFits(it) }
         
         val finalSelection = selected.distinctBy { it.id }.sortedBy { it.createdAt }
         val omittedCount = uniqueEvidence.size - finalSelection.size
