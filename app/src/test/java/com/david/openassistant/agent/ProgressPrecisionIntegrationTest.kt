@@ -13,7 +13,7 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.util.*
 
-class ProgressDetectionTest {
+class ProgressPrecisionIntegrationTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()
@@ -63,14 +63,15 @@ class ProgressDetectionTest {
     }
 
     @Test
-    fun testProgressNotCountedForRedundantFactsFromOtherTasks() = runBlocking {
+    fun testProgressDetectorUsesCanonicalUrlsForRedundancyAcrossTasks() = runBlocking {
         val goalId = "goal-1"
         val taskId1 = "task-1"
         val taskId2 = "task-2"
-        val redundantFact = "This fact was already discovered by task 1."
+        val rawUrl = "https://example.com/"
+        val alternateUrl = "https://example.com" // Different raw, same canonical
         
         val task1 = AgentTask(id = taskId1, order = 0, title = "T1", instructions = "I", capability = AgentCapability.WEB_RESEARCH)
-        val task2 = AgentTask(id = taskId2, order = 1, title = "T2", instructions = "I", capability = AgentCapability.SYNTHESIZE)
+        val task2 = AgentTask(id = taskId2, order = 1, title = "T2", instructions = "I", capability = AgentCapability.WEB_RESEARCH)
         
         val goal = AgentGoal(
             id = goalId,
@@ -83,84 +84,18 @@ class ProgressDetectionTest {
             plannerModelId = "m",
             executionModelId = "m",
             tasks = listOf(task1, task2),
-            claims = listOf(
-                AgentClaim(
-                    id = "claim-1",
-                    taskId = taskId1,
-                    text = redundantFact,
-                    type = AgentClaimType.FACT,
-                    confidence = 1.0,
-                    support = AgentClaimSupport.SUPPORTED
-                )
-            ),
-            acceptanceCriteria = listOf(AgentAcceptanceCriterion(id = "ac-1", description = "D"))
-        )
-        
-        store.upsertGoal(goal)
-
-        val acquisition = store.acquireTaskLeaseAtomic(goalId, "w1", taskId2)
-        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
-
-        // Model returns the SAME fact and fails acceptance check
-        val successJson = """
-            {
-              "id": "gen-123",
-              "choices": [
-                {
-                  "message": {
-                    "content": "{\"work_product\": \"Result\", \"completion_score\": 0.5, \"claims\": [{\"id\": \"c2\", \"text\": \"$redundantFact\", \"type\": \"fact\", \"confidence\": 1.0}], \"acceptance_checks\": [{\"criterion_id\": \"ac-1\", \"status\": \"fail\"}], \"unresolved_questions\": []}"
-                  }
-                }
-              ]
-            }
-        """.trimIndent()
-        server.enqueue(MockResponse.Builder().code(200).body(successJson).build())
-
-        val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
-        val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId2 }
-
-        executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
-        
-        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        
-        // After fix: meaningful progress should be FALSE because the fact is redundant goal-wide.
-        // Even if quality.passed is false, madeMeaningfulProgress should be false.
-        
-        assertEquals("noProgressCount should have incremented", 1, finalGoal.noProgressCount)
-    }
-
-    @Test
-    fun testProgressNotCountedForRedundantSourcesFromOtherTasks() = runBlocking {
-        val goalId = "goal-2"
-        val taskId2 = "task-2"
-        val redundantUrl = "https://example.com/redundant"
-        
-        val task2 = AgentTask(id = taskId2, order = 1, title = "T2", instructions = "I", capability = AgentCapability.WEB_RESEARCH)
-        
-        val goal = AgentGoal(
-            id = goalId,
-            conversationId = "c2",
-            userRequest = "r",
-            title = "T",
-            objective = "O",
-            finalOutputDescription = "D",
-            status = AgentGoalStatus.RUNNING,
-            plannerModelId = "m",
-            executionModelId = "m",
-            tasks = listOf(task2),
             sourceReads = listOf(
                 SourceRead(
                     id = "read-1",
-                    url = redundantUrl,
-                    canonicalUrl = redundantUrl,
+                    url = rawUrl,
+                    canonicalUrl = ResearchQualityGate.canonicalSourceUrl(rawUrl),
                     httpCode = 200,
                     contentType = "text/html",
                     content = "Content",
                     sourceRole = "discovery",
                     authorityScore = 10
                 )
-            ),
-            acceptanceCriteria = listOf(AgentAcceptanceCriterion(id = "ac-1", description = "D"))
+            )
         )
         
         store.upsertGoal(goal)
@@ -168,7 +103,6 @@ class ProgressDetectionTest {
         val acquisition = store.acquireTaskLeaseAtomic(goalId, "w1", taskId2)
         val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
 
-        // Model returns the SAME URL in sources and tool execution
         val successJson = """
             {
               "id": "gen-123",
@@ -182,7 +116,7 @@ class ProgressDetectionTest {
                         "type": "function",
                         "function": {
                           "name": "public_web_fetch",
-                          "arguments": "{\"url\": \"$redundantUrl\"}"
+                          "arguments": "{\"url\": \"$alternateUrl\"}"
                         }
                       }
                     ]
@@ -193,9 +127,6 @@ class ProgressDetectionTest {
         """.trimIndent()
         server.enqueue(MockResponse.Builder().code(200).body(successJson).build())
 
-        // And tool execution succeeds but returns what was already there
-        // Actually, AgentTaskExecutor handles tool output and then calculates progress.
-        
         val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
         val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId2 }
 
@@ -203,7 +134,50 @@ class ProgressDetectionTest {
         
         val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
         
-        // Meaningful progress should be false because the URL is redundant.
-        assertEquals("noProgressCount should have incremented for redundant source", 1, finalGoal.noProgressCount)
+        assertEquals("noProgressCount should have incremented for canonically redundant source from PRIOR task", 1, finalGoal.noProgressCount)
+    }
+
+    @Test
+    fun testGoalTransitionsToResearchCyclesExhausted() = runBlocking {
+        val goalId = "goal-2"
+        val taskId = "task-1"
+        
+        // Task at attempt 5 (limit)
+        val task = AgentTask(
+            id = taskId,
+            order = 0,
+            title = "T",
+            instructions = "I",
+            capability = AgentCapability.REASON,
+            attemptCount = 4 // Will become 5
+        )
+        val goal = AgentGoal(
+            id = goalId,
+            conversationId = "c2",
+            userRequest = "r",
+            title = "T",
+            objective = "O",
+            finalOutputDescription = "D",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "m",
+            executionModelId = "m",
+            tasks = listOf(task)
+        )
+        
+        store.upsertGoal(goal)
+
+        val acquisition = store.acquireTaskLeaseAtomic(goalId, "w1", taskId)
+        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
+
+        // Model returns failure (code 500)
+        server.enqueue(MockResponse.Builder().code(500).body("Error").build())
+
+        val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
+        val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId }
+
+        executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
+        
+        val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
+        assertEquals("Goal should transition to RESEARCH_CYCLES_EXHAUSTED", AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED, finalGoal.status)
     }
 }

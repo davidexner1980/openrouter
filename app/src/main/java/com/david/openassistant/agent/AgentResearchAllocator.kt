@@ -160,12 +160,12 @@ object AgentResearchAllocator {
             it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH)
         }
         val sourceUrls = researchEvidence
-            .flatMap { it.sources.map { s -> s.url.trim() } }
+            .flatMap { it.sources.map { s -> ResearchQualityGate.canonicalSourceUrl(s.url) } }
             .filter { it.isNotBlank() }
             .distinct()
         
         val domains = sourceUrls.mapNotNull { url ->
-            runCatching { java.net.URI(url).host?.lowercase()?.removePrefix("www.") }.getOrNull()
+            ResearchQualityGate.domainOf(url)
         }.distinct()
         
         val remainingSourceGap = (profile.targetDistinctSources - sourceUrls.size).coerceAtLeast(0)

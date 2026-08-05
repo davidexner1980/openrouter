@@ -785,6 +785,7 @@ class AgentTaskExecutor internal constructor(
                     decision.action == ProviderRecoveryAction.ROUTE_EXHAUSTED -> AgentGoalStatus.BLOCKED
                     decision.action == ProviderRecoveryAction.REJECTED -> AgentGoalStatus.REJECTED
                     decision.action == ProviderRecoveryAction.BLOCKED_NEEDS_ACTION -> AgentGoalStatus.BLOCKED_NEEDS_ACTION
+                    allocationRecovery == AllocationRecoveryDecision.MARK_EXHAUSTED -> AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED
                     attemptWindowExhausted &&
                         !automaticResearchRecovery &&
                         !automaticCorrectionRecovery &&
@@ -1189,7 +1190,7 @@ class AgentTaskExecutor internal constructor(
             proposedEvidenceItem
         }
 
-        val priorSourceUrls = routedCurrent.sourceReads.mapTo(mutableSetOf()) { it.url }
+        val priorSourceUrls = routedCurrent.sourceReads.mapTo(mutableSetOf()) { it.canonicalUrl }
         val priorClaimTexts = routedCurrent.claims.asSequence()
             .map { it.text.normalizedClaimText() }
             .toSet()
@@ -1204,7 +1205,8 @@ class AgentTaskExecutor internal constructor(
         }
 
         val addedSubstantiveSources = result.sources.any { s -> 
-            s.url !in priorSourceUrls && result.toolExecutions.any { it.toolName == "public_web_fetch" && it.succeeded && it.summary.contains(s.url) && !it.summary.contains("Rejected") }
+            val canonical = ResearchQualityGate.canonicalSourceUrl(s.url)
+            canonical !in priorSourceUrls && result.toolExecutions.any { it.toolName == "public_web_fetch" && it.succeeded && it.summary.contains(s.url) && !it.summary.contains("Rejected") }
         }
         val addedFactualClaims = candidateClaimsForTask.any { c -> 
             c.type == AgentClaimType.FACT && c.support == AgentClaimSupport.SUPPORTED && c.text.normalizedClaimText() !in priorClaimTexts 

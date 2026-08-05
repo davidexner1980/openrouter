@@ -565,7 +565,7 @@ object ResearchQualityGate {
         }.getOrDefault(trimmed.removeSuffix("/"))
     }
 
-    private fun domainOf(url: String): String? = runCatching {
+    internal fun domainOf(url: String): String? = runCatching {
         URI(url).host?.lowercase(Locale.US)?.removePrefix("www.")
     }.getOrNull()?.takeIf(String::isNotBlank)
 
