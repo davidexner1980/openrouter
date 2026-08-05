@@ -1365,6 +1365,14 @@ open class AgentOpenRouterClient internal constructor(
             appendLine()
             appendLine("Task acceptance criteria:")
             appendLine(criteriaText)
+            
+            if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
+                val claimsPrompt = buildStructuredClaimsPrompt(goal.claims)
+                appendLine()
+                appendLine("Structured claims and their current support status:")
+                appendLine(claimsPrompt)
+            }
+
             appendLine()
             appendLine("Prior evidence and checkpoints:")
             appendLine(evidenceContext)
@@ -1777,7 +1785,7 @@ open class AgentOpenRouterClient internal constructor(
             .joinToString("\n") { task ->
                 "- ${task.id}: ${task.title}; status=${task.status}; score=${"%.2f".format(task.effectiveProgressScore)}"
             }
-        val claims = buildVerificationClaimsPrompt(goal.claims)
+        val claims = buildStructuredClaimsPrompt(goal.claims)
         val prompt = buildString {
             appendLine("Independently verify whether the work satisfies the original user request.")
             appendLine("Do not pass the work merely because another model said it was complete.")
@@ -2103,7 +2111,7 @@ open class AgentOpenRouterClient internal constructor(
         )
     }
 
-    private fun buildVerificationClaimsPrompt(claims: List<AgentClaim>): String {
+    internal fun buildStructuredClaimsPrompt(claims: List<AgentClaim>): String {
         if (claims.isEmpty()) return "No structured claims were produced."
         val lines = claims.map { claim ->
             buildString {
@@ -2127,7 +2135,7 @@ open class AgentOpenRouterClient internal constructor(
         val omitted = lines.size - selected.size
         return buildString {
             if (omitted > 0) {
-                appendLine("[Runtime note: $omitted older claim(s) were omitted from this verifier request to fit the request context window; their structured records remain persisted and still pass through deterministic checks.]")
+                appendLine("[Runtime note: $omitted older claim(s) were omitted from this request to fit the context window; their structured records remain persisted.]")
             }
             append(selected.joinToString("\n"))
         }

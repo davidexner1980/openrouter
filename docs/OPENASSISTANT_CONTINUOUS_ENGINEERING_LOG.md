@@ -2306,7 +2306,94 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-2300-99f69956 — 2026-08-04T23:00:00
+## Run CE-20260804-2313-15404823 — 2026-08-04T23:13:00
+
+### Status
+
+VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 154048237ef3869f955fd8ec56273f676f2942fb
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-2313-15404823: inject structured claims context into synthesis and correction tasks
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Prior entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Selected Scope
+
+- Problem: Synthesis and Correction tasks lacked awareness of previously established claims and their verification status (e.g. contradictions), forcing models to re-evaluate raw evidence without grounding in prior conclusions.
+- Why selected: Enhance research consistency and contradiction handling as per mission requirements.
+- Correct owner: AgentOpenRouterClient.
+- Violated invariant: "Reconcile disagreements and state unresolved gaps explicitly".
+- Protected behavior: Verified citation extraction and universal tool availability.
+
+### Reproduction
+
+- Starting state: Goal with contradicted claims.
+- Trigger: SYNTHESIZE task execution.
+- Expected: Prompt contains structured claims and their support status.
+- Actual: Prompt only contained raw evidence content.
+- Repeatability: 100% (logic trace).
+
+### Hypotheses
+
+- Accepted: Injecting structured claims (including CONTRADICTED status) into SYNTHESIZE and CORRECT tasks enables the model to explicitly reconcile or report disagreements.
+- Rejected: Including claims in all tasks (too much noise for discovery/research tasks).
+
+### Root Cause
+
+- Root cause: executeTask prompt builder only accounted for raw evidence context, missing the higher-level claim graph.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Renamed buildVerificationClaimsPrompt to buildStructuredClaimsPrompt; injected into executeTask for SYNTHESIZE and CORRECT)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentClaimContextTest.kt (New: verified prompt builder and usage)
+- Behavior changed: SYNTHESIZE and CORRECT tasks now receive a "Structured claims and their current support status" block in their prompt.
+- Behavior preserved: VERIFY task still receives claims.
+
+### Regression Proof
+
+- Test: AgentClaimContextTest.testBuildStructuredClaimsPrompt
+- Passed after repair: YES.
+- Real production owner exercised: YES.
+- Why recurrence is detected: Direct unit test for the prompt builder ensures claim text and status are present in the output.
+
+### Verification
+
+- Baseline: PASSED (606 tests)
+- Focused: PASSED (AgentClaimContextTest)
+- Full unit total: 607
+- Passed: 607
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Migration: None.
+- Performance: Negligible (small addition to prompt).
+
+### Repository Hygiene
+
+- Final status: CLEAN
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U; RUNTIME-PACKET-METADATA-MINIMIZATION.
 
 ### Status
 
