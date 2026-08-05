@@ -1211,30 +1211,50 @@ open class AgentStore private constructor(
         expectedStatus: RecoveryPlanStatus,
         nextStatus: RecoveryPlanStatus,
         expectedInputFingerprint: String,
+        targetProposalFingerprint: String? = null,
+        targetLogicalRequestId: String? = null,
         mutation: (AgentGoal, ResearchRecoveryPlan) -> AgentGoal
-    ): Boolean = synchronized(STORE_LOCK) {
+    ): RecoveryPlanTransitionResult = synchronized(STORE_LOCK) {
         val currentSnapshot = loadSnapshotFromFilesLocked()
-        val goal = currentSnapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return false
+        val goal = currentSnapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return RecoveryPlanTransitionResult.GoalMissing
         
+        if (goal.status.isFinalTerminalStatus()) return RecoveryPlanTransitionResult.GoalTerminal
+
         val validation = validateTicketInternalLocked(ticket)
-        if (validation !is TicketValidationResult.Valid) return false
+        if (validation !is TicketValidationResult.Valid) return RecoveryPlanTransitionResult.OwnershipRejected
         
-        val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return false
-        if (plan.status != expectedStatus) return false
-        if (!plan.status.canTransitionTo(nextStatus)) return false
-        if (plan.inputExecutionFingerprint != expectedInputFingerprint) return false
+        val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return RecoveryPlanTransitionResult.PlanMissing
+
+        // Idempotency check: Already at target?
+        if (plan.status == nextStatus) {
+            val idMatch = plan.id == planId
+            val inputMatch = plan.inputExecutionFingerprint == expectedInputFingerprint
+            val proposalMatch = targetProposalFingerprint == null || plan.proposalFingerprint == targetProposalFingerprint
+            val requestMatch = targetLogicalRequestId == null || plan.logicalProviderRequestId == targetLogicalRequestId
+            
+            return if (idMatch && inputMatch && proposalMatch && requestMatch) {
+                RecoveryPlanTransitionResult.AlreadyAtTarget(goal, plan)
+            } else {
+                RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+            }
+        }
+
+        if (plan.status != expectedStatus) return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+        if (!plan.status.canTransitionTo(nextStatus)) return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+        if (plan.inputExecutionFingerprint != expectedInputFingerprint) return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
         
         val updatedGoal = mutation(goal, plan)
         // Ensure status transition is applied even if mutation forgets it
+        val finalPlan = updatedGoal.recoveryPlans.firstOrNull { it.id == planId }?.copy(status = nextStatus) ?: return RecoveryPlanTransitionResult.PlanMissing
         val finalGoal = updatedGoal.copy(
             recoveryPlans = updatedGoal.recoveryPlans.map { 
-                if (it.id == planId) it.copy(status = nextStatus) else it 
+                if (it.id == planId) finalPlan else it 
             },
             updatedAt = System.currentTimeMillis()
         )
         
         writeGoalLocked(finalGoal)
-        return true
+        return RecoveryPlanTransitionResult.Committed(finalGoal, finalPlan)
     }
 
     fun createRecoveryPlanAtomic(
@@ -3206,11 +3226,14 @@ open class AgentStore private constructor(
         .put("id", read.id)
         .put("url", read.url)
         .put("canonical_url", read.canonicalUrl)
+        .put("document_id", read.documentId)
+        .put("content_hash", read.contentHash)
         .put("http_code", read.httpCode)
         .put("content_type", read.contentType)
         .put("content", read.content)
         .put("source_role", read.sourceRole)
         .put("authority_score", read.authorityScore)
+        .put("retrieved_at", read.retrievedAt)
         .put("read_at", read.readAt)
         .put("provenance", read.provenance.name)
 
@@ -3266,11 +3289,14 @@ open class AgentStore private constructor(
         id = json.getString("id"),
         url = json.getString("url"),
         canonicalUrl = json.getString("canonical_url"),
+        documentId = json.optString("document_id", "doc_legacy"),
+        contentHash = json.optString("content_hash", ""),
         httpCode = json.getInt("http_code"),
         contentType = json.getString("content_type"),
         content = json.getString("content"),
         sourceRole = json.getString("source_role"),
         authorityScore = json.getInt("authority_score"),
+        retrievedAt = json.optLong("retrieved_at", json.optLong("read_at", System.currentTimeMillis())),
         readAt = json.getLong("read_at"),
         provenance = json.optEnum("provenance", SourceReadProvenance.UNVERIFIED_CITATION),
     )

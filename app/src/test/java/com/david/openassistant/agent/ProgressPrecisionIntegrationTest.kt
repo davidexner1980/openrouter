@@ -89,6 +89,8 @@ class ProgressPrecisionIntegrationTest {
                     id = "read-1",
                     url = rawUrl,
                     canonicalUrl = ResearchQualityGate.canonicalSourceUrl(rawUrl),
+                    documentId = "doc-1",
+                    contentHash = "hash-1",
                     httpCode = 200,
                     contentType = "text/html",
                     content = "Content",

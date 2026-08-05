@@ -2015,6 +2015,10 @@ open class AgentOpenRouterClient internal constructor(
             goal.evidence.flatMapTo(this) { evidence -> evidence.sources.map { it.url } }
             response.sources.mapTo(this) { it.url }
         }
+
+        val allAvailableSourceReads = response.sourceReads + goal.sourceReads
+        val canonicalToSourceRead = allAvailableSourceReads.associateBy { ResearchQualityGate.canonicalSourceUrl(it.url) }
+
         val seenClaimIds = mutableSetOf<String>()
         val claims = responseJsonList(root.optJSONArray("claims")) { raw, index ->
             val requestedId = raw.optString("id").trim()
@@ -2026,9 +2030,23 @@ open class AgentOpenRouterClient internal constructor(
                 .filter(validEvidenceIds::contains)
                 .distinct()
             val sourceUrls = raw.optJSONArray("source_urls").toStringList()
-            .filter { (it.startsWith("https://")) && (it in allowedUrls) }
+                .filter { (it.startsWith("https://")) && (it in allowedUrls) }
                 .distinct()
-            val support = determineClaimSupport(type, evidenceIds, sourceUrls, sourceBackedEvidenceIds)
+
+            val citationBindings = sourceUrls.mapNotNull { url ->
+                val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(url)
+                canonicalToSourceRead[canonicalUrl]?.let { matchingRead ->
+                    CitationBinding(
+                        claimId = claimId,
+                        sourceReadId = matchingRead.id,
+                        documentId = matchingRead.documentId,
+                        contentHash = matchingRead.contentHash,
+                        confidence = 1.0
+                    )
+                }
+            }
+
+            val support = determineClaimSupport(type, evidenceIds, sourceUrls, sourceBackedEvidenceIds, citationBindings, allAvailableSourceReads)
             AgentClaim(
                 id = claimId,
                 taskId = task.id,
@@ -2038,6 +2056,7 @@ open class AgentOpenRouterClient internal constructor(
                 support = support,
                 supportingEvidenceIds = evidenceIds,
                 sourceUrls = sourceUrls,
+                citationBindings = citationBindings,
             )
         }.filter { it.text.isNotBlank() }
             .let { normalizeDurableClaims(task, it) }
@@ -2831,10 +2850,13 @@ open class AgentOpenRouterClient internal constructor(
                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
                 
                 val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl)
+                val contentHash = FingerprintUtils.hash(text)
                 val sourceRead = SourceRead(
-                    id = scopedSourceReadId(canonicalUrl),
+                    id = scopedSourceReadId(canonicalUrl, contentHash),
                     url = resolvedUrl,
                     canonicalUrl = canonicalUrl,
+                    documentId = scopedSourceDocumentId(canonicalUrl),
+                    contentHash = contentHash,
                     httpCode = 200,
                     contentType = contentType,
                     content = text,
@@ -3148,10 +3170,13 @@ open class AgentOpenRouterClient internal constructor(
                                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
                                 
                                 val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl)
+                                val contentHash = FingerprintUtils.hash(text)
                                 val sourceRead = SourceRead(
-                                    id = scopedSourceReadId(canonicalUrl),
+                                    id = scopedSourceReadId(canonicalUrl, contentHash),
                                     url = resolvedUrl,
                                     canonicalUrl = canonicalUrl,
+                                    documentId = scopedSourceDocumentId(canonicalUrl),
+                                    contentHash = contentHash,
                                     httpCode = 200,
                                     contentType = contentType,
                                     content = text,
@@ -6420,15 +6445,24 @@ open class AgentOpenRouterClient internal constructor(
         evidenceIds: List<String>,
         sourceUrls: List<String>,
         sourceBackedEvidenceIds: Set<String>,
-    ): AgentClaimSupport = when {
-        type == AgentClaimType.ORIGINAL_HYPOTHESIS -> AgentClaimSupport.PARTIAL
-        type == AgentClaimType.UNCERTAINTY -> AgentClaimSupport.SUPPORTED
-        sourceUrls.isNotEmpty() -> AgentClaimSupport.SUPPORTED
-        type == AgentClaimType.FACT && evidenceIds.any(sourceBackedEvidenceIds::contains) -> AgentClaimSupport.SUPPORTED
-        evidenceIds.isNotEmpty() && type != AgentClaimType.FACT -> AgentClaimSupport.SUPPORTED
-        evidenceIds.isNotEmpty() -> AgentClaimSupport.PARTIAL
-        type == AgentClaimType.RECOMMENDATION -> AgentClaimSupport.PARTIAL
-        else -> AgentClaimSupport.UNSUPPORTED
+        citationBindings: List<CitationBinding> = emptyList(),
+        sourceReads: List<SourceRead> = emptyList(),
+    ): AgentClaimSupport {
+        val hasVerifiedFetchBinding = citationBindings.any { binding ->
+            sourceReads.any { it.id == binding.sourceReadId && it.provenance == SourceReadProvenance.VERIFIED_FETCH }
+        }
+
+        return when {
+            hasVerifiedFetchBinding -> AgentClaimSupport.SUPPORTED
+            type == AgentClaimType.ORIGINAL_HYPOTHESIS -> AgentClaimSupport.PARTIAL
+            type == AgentClaimType.UNCERTAINTY -> AgentClaimSupport.SUPPORTED
+            sourceUrls.isNotEmpty() -> AgentClaimSupport.SUPPORTED
+            type == AgentClaimType.FACT && evidenceIds.any(sourceBackedEvidenceIds::contains) -> AgentClaimSupport.SUPPORTED
+            evidenceIds.isNotEmpty() && type != AgentClaimType.FACT -> AgentClaimSupport.SUPPORTED
+            evidenceIds.isNotEmpty() -> AgentClaimSupport.PARTIAL
+            type == AgentClaimType.RECOMMENDATION -> AgentClaimSupport.PARTIAL
+            else -> AgentClaimSupport.UNSUPPORTED
+        }
     }
 
     private fun RawAgentResponse.mergeRepair(repair: RawAgentResponse): RawAgentResponse = RawAgentResponse(

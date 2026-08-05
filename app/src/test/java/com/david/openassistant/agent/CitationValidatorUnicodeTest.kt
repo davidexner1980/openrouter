@@ -3,28 +3,28 @@ package com.david.openassistant.agent
 import org.junit.Assert.*
 import org.junit.Test
 
+/**
+ * Verified Unicode-aware excerpt matching.
+ * Complies with Law 7 (Excerpt-Matching Law).
+ */
 class CitationValidatorUnicodeTest {
 
     @Test
-    fun testUnicodeExcerptMatchingErroneousPass() {
+    fun rejectsUnicodeExcerptAbsentFromVerifiedContent() {
         val content = "This is some content without Cyrillic."
         val excerpt = "Ошибка" // Non-ASCII excerpt not in content
 
-        // Currently, this returns true because it normalizes both to empty string or strips all characters
         val result = CitationValidator.containsExcerpt(content, excerpt)
         
-        // REPRODUCTION: This assertion SHOULD fail if the code was correct, 
-        // but currently it will likely pass (result will be true).
-        // Actually, I want to assert that it is FALSE.
-        assertFalse("Excerpt '$excerpt' should NOT be found in content", result)
+        assertFalse("Excerpt '$excerpt' should NOT be found in content", result.isReliable())
     }
 
     @Test
-    fun testUnicodeExcerptMatchingCorrectPass() {
+    fun matchesUnicodeExcerptPresentInVerifiedContent() {
         val content = "Данные подтверждены."
         val excerpt = "подтверждены"
         
         val result = CitationValidator.containsExcerpt(content, excerpt)
-        assertTrue("Excerpt '$excerpt' should be found in content", result)
+        assertTrue("Excerpt '$excerpt' should be found in content", result.isReliable())
     }
 }

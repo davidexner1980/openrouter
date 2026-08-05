@@ -97,7 +97,7 @@ class CitationValidationTest {
             goal = goal
         )
         assertFalse("Expected ResearchQualityGate to detect fabricated excerpt", qualityDecision.passed)
-        assertTrue(qualityDecision.reasons.any { it.contains("not found in any matching evidence record") })
+        assertTrue(qualityDecision.reasons.any { it.contains("failed semantic verification") })
     }
     
     @Test
@@ -118,6 +118,6 @@ class CitationValidationTest {
         )
         val validation = CitationValidator.validateStepResult(result, emptyList())
         assertFalse("Expected validator to detect unverified URL", validation.isValid)
-        assertTrue(validation.reasons.any { it.contains("cites unverified URL") })
+        assertTrue(validation.reasons.any { it.contains("cites URL not present in durable evidence") })
     }
 }

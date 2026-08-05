@@ -6,11 +6,14 @@ data class SourceRead(
     val id: String,
     val url: String,
     val canonicalUrl: String,
+    val documentId: String,
+    val contentHash: String,
     val httpCode: Int,
     val contentType: String,
     val content: String,
     val sourceRole: String,
     val authorityScore: Int,
+    val retrievedAt: Long = System.currentTimeMillis(),
     val readAt: Long = System.currentTimeMillis(),
     val provenance: SourceReadProvenance = SourceReadProvenance.UNVERIFIED_CITATION,
 )
@@ -47,11 +50,23 @@ data class AcceptedClaim(
 )
 
 /**
- * Stable ID for a source read based on its canonical URL.
+ * Stable ID for a source read based on its canonical URL and content hash.
+ * Follows the Immutable Source-Read Law.
  */
-internal fun scopedSourceReadId(canonicalUrl: String): String {
+internal fun scopedSourceReadId(canonicalUrl: String, contentHash: String): String {
     if (canonicalUrl.isBlank()) return "src_unknown_${java.util.UUID.randomUUID()}"
-    return "src_${FingerprintUtils.hash(canonicalUrl).takeLast(16)}"
+    // Incorporate content hash to ensure immutability if content changes for the same URL
+    val identityInput = if (contentHash.isNotBlank()) canonicalUrl + contentHash else canonicalUrl
+    return "src_${FingerprintUtils.hash(identityInput).takeLast(16)}"
+}
+
+/**
+ * Stable logical identity for a document based on its canonical URL.
+ * Follows the Immutable Source-Read Law.
+ */
+internal fun scopedSourceDocumentId(canonicalUrl: String): String {
+    if (canonicalUrl.isBlank()) return "doc_unknown_${java.util.UUID.randomUUID()}"
+    return "doc_${FingerprintUtils.hash(canonicalUrl).takeLast(16)}"
 }
 
 /**
@@ -151,12 +166,51 @@ internal fun mergeClaims(existing: List<AgentClaim>, incoming: List<AgentClaim>)
 }
 
 /**
- * Idempotent upsert of source reads into the goal-wide record.
+ * Merges source reads following the Source-Merge Law.
+ * Preserves distinct snapshots of the same URL if content differs, 
+ * resolves provenance conflicts, and ensures ID uniqueness.
  */
 internal fun mergeSourceReads(existing: List<SourceRead>, incoming: List<SourceRead>): List<SourceRead> {
     if (incoming.isEmpty()) return existing
-    val incomingIds = incoming.mapTo(mutableSetOf()) { it.id }
-    return existing.filterNot { it.id in incomingIds } + incoming
+    
+    val result = existing.associateBy { it.id }.toMutableMap()
+    
+    incoming.forEach { incomingRead ->
+        val existingRead = result[incomingRead.id]
+        if (existingRead == null) {
+            result[incomingRead.id] = incomingRead
+        } else {
+            // Resolve provenance conflicts (favor stronger provenance)
+            val existingStrength = existingRead.provenance.provenanceStrength()
+            val incomingStrength = incomingRead.provenance.provenanceStrength()
+            
+            if (incomingStrength > existingStrength) {
+                result[incomingRead.id] = incomingRead
+            } else if (incomingStrength == existingStrength) {
+                // If same strength, favor the more recent retrieval
+                if (incomingRead.retrievedAt > existingRead.retrievedAt) {
+                    result[incomingRead.id] = incomingRead
+                }
+            }
+            // If incoming is weaker or older same-strength, preserve existing
+        }
+    }
+    
+    val mergedList = result.values.toList()
+    // Assert no duplicate IDs in the final list
+    val distinctIds = mergedList.map { it.id }.distinct()
+    if (mergedList.size != distinctIds.size) {
+        throw IllegalStateException("Duplicate SourceRead IDs detected after merge")
+    }
+    
+    return mergedList
+}
+
+private fun SourceReadProvenance.provenanceStrength(): Int = when (this) {
+    SourceReadProvenance.VERIFIED_FETCH -> 4
+    SourceReadProvenance.PROVIDER_EXTRACT -> 3
+    SourceReadProvenance.LEGACY_ASSUMED -> 2
+    SourceReadProvenance.UNVERIFIED_CITATION -> 1
 }
 
 private val PLANNING_ITEM_PREFIX = Regex("""^(?:step|task|phase|criterion|milestone|objective|constraint|decision|question)\s*\d*""", RegexOption.IGNORE_CASE)

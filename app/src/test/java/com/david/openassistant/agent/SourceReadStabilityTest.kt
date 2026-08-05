@@ -61,13 +61,17 @@ class SourceReadStabilityTest {
         assertTrue(claim1 is SourceFetchClaimResult.Claimed)
         val claim1Id = (claim1 as SourceFetchClaimResult.Claimed).attempt.id
         
+        val content = "Content 1"
+        val contentHash = FingerprintUtils.hash(content)
         val sourceRead1 = SourceRead(
-            id = scopedSourceReadId(canonicalUrl),
+            id = scopedSourceReadId(canonicalUrl, contentHash),
             url = canonicalUrl,
             canonicalUrl = canonicalUrl,
+            documentId = "doc-1",
+            contentHash = contentHash,
             httpCode = 200,
             contentType = "text/html",
-            content = "Content 1",
+            content = content,
             sourceRole = "research",
             authorityScore = 9,
             provenance = SourceReadProvenance.VERIFIED_FETCH
@@ -80,13 +84,17 @@ class SourceReadStabilityTest {
         assertTrue(claim2 is SourceFetchClaimResult.Claimed)
         val claim2Id = (claim2 as SourceFetchClaimResult.Claimed).attempt.id
         
+        val content2 = "Content 1" // Identical content
+        val contentHash2 = FingerprintUtils.hash(content2)
         val sourceRead2 = SourceRead(
-            id = scopedSourceReadId(canonicalUrl),
+            id = scopedSourceReadId(canonicalUrl, contentHash2),
             url = canonicalUrl,
             canonicalUrl = canonicalUrl,
+            documentId = "doc-1",
+            contentHash = contentHash2,
             httpCode = 200,
             contentType = "text/html",
-            content = "Content 1", // Identical content
+            content = content2,
             sourceRole = "research",
             authorityScore = 9,
             provenance = SourceReadProvenance.VERIFIED_FETCH

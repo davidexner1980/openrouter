@@ -20,6 +20,19 @@ data class AgentEvidence(
     val createdAt: Long = System.currentTimeMillis(),
 )
 
+data class CitationBinding(
+    val id: String = UUID.randomUUID().toString(),
+    val claimId: String,
+    val sourceReadId: String,
+    val documentId: String,
+    val contentHash: String,
+    val passageStart: Int? = null,
+    val passageEnd: Int? = null,
+    val passageHash: String? = null,
+    val confidence: Double = 1.0,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
 data class AgentClaim(
     val id: String = UUID.randomUUID().toString(),
     val taskId: String,
@@ -29,6 +42,7 @@ data class AgentClaim(
     val support: AgentClaimSupport,
     val supportingEvidenceIds: List<String> = emptyList(),
     val sourceUrls: List<String> = emptyList(),
+    val citationBindings: List<CitationBinding> = emptyList(),
     val reviewExplanation: String? = null,
 ) {
     val isSpeculative: Boolean

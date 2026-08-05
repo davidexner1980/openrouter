@@ -368,7 +368,7 @@ class AgentPlanner(
             when (proposalResult) {
                 is RecoveryProposalGenerationResult.AlternateStrategyRequired -> {
                     val descriptor = proposalResult.kind?.let { FailureClassifier.classifyReconciliation(it, goal.id, plan.taskId, logicalRequestId) }
-                    store.transitionRecoveryPlanAtomic(
+                    val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = plan.id,
                         expectedStatus = plan.status,
@@ -379,11 +379,14 @@ class AgentPlanner(
                             events = appendEvent(currentGoal.events, "Recovery failed: ${descriptor?.safeDiagnosticSummary ?: proposalResult.reason}")
                         )
                     }
-                    return WorkerOutcome.RETRY
+                    return when (transition) {
+                        is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+                        else -> WorkerOutcome.RETRY
+                    }
                 }
                 is RecoveryProposalGenerationResult.NeedsUserAction -> {
                     val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, goal.id, plan.taskId, logicalRequestId)
-                    store.transitionRecoveryPlanAtomic(
+                    val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = plan.id,
                         expectedStatus = plan.status,
@@ -394,11 +397,14 @@ class AgentPlanner(
                             events = appendEvent(currentGoal.events, "Recovery failed: ${descriptor.safeDiagnosticSummary}")
                         )
                     }
-                    return WorkerOutcome.DONE
+                    return when (transition) {
+                        is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+                        else -> WorkerOutcome.DONE
+                    }
                 }
                 is RecoveryProposalGenerationResult.ReconciliationRequired -> {
                     val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, goal.id, plan.taskId, logicalRequestId)
-                    store.transitionRecoveryPlanAtomic(
+                    val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = plan.id,
                         expectedStatus = plan.status,
@@ -409,10 +415,13 @@ class AgentPlanner(
                             events = appendEvent(currentGoal.events, "Recovery failed: ${descriptor.safeDiagnosticSummary}")
                         )
                     }
-                    return WorkerOutcome.RETRY
+                    return when (transition) {
+                        is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+                        else -> WorkerOutcome.RETRY
+                    }
                 }
                 is RecoveryProposalGenerationResult.RetryableTransportFailure -> {
-                    store.transitionRecoveryPlanAtomic(
+                    val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = plan.id,
                         expectedStatus = plan.status,
@@ -423,7 +432,10 @@ class AgentPlanner(
                             events = appendEvent(currentGoal.events, "Recovery failed: ${proposalResult.descriptor.failureClass}")
                         )
                     }
-                    return WorkerOutcome.RETRY
+                    return when (transition) {
+                        is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+                        else -> WorkerOutcome.RETRY
+                    }
                 }
                 is RecoveryProposalGenerationResult.StorageFailure -> throw proposalResult.cause
                 is RecoveryProposalGenerationResult.ProposalAvailable -> {
@@ -451,7 +463,7 @@ class AgentPlanner(
                     // Novelty validation
                     if (!ResearchRecoveryEngine.validateNovelty(proposal, goal.recoveryPlans)) {
                         diagnostics.info("recovery_transition_rejected", mapOf("goal_id" to goal.id, "plan_id" to plan.id, "reason" to "NOT_NOVEL"))
-                        store.transitionRecoveryPlanAtomic(
+                        val transition = store.transitionRecoveryPlanAtomic(
                             ticket = ticket,
                             planId = plan.id,
                             expectedStatus = plan.status,
@@ -462,18 +474,23 @@ class AgentPlanner(
                                 events = appendEvent(currentGoal.events, "Recovery proposal rejected: not materially novel.")
                             )
                         }
-                        return WorkerOutcome.DONE
+                        return when (transition) {
+                            is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+                            else -> WorkerOutcome.DONE
+                        }
                     }
 
                     val isExtremeDrift = driftReport.isDrifted && driftReport.driftSeverity > 0.8
                     val nextStatus = if (isExtremeDrift) RecoveryPlanStatus.FAILED_NEEDS_ACTION else RecoveryPlanStatus.READY_TO_COMMIT
                     
-                    store.transitionRecoveryPlanAtomic(
+                    val transitionResult = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = plan.id,
                         expectedStatus = plan.status,
                         nextStatus = nextStatus,
-                        expectedInputFingerprint = plan.inputExecutionFingerprint
+                        expectedInputFingerprint = plan.inputExecutionFingerprint,
+                        targetProposalFingerprint = proposalFingerprint,
+                        targetLogicalRequestId = logicalRequestId
                     ) { currentGoal, currentPlan ->
                         currentGoal.copy(
                             requiresUserClarification = isExtremeDrift,
@@ -494,7 +511,13 @@ class AgentPlanner(
                             }
                         )
                     }
-                    return WorkerOutcome.CONTINUE
+                    
+                    return when (transitionResult) {
+                        is RecoveryPlanTransitionResult.Committed, is RecoveryPlanTransitionResult.AlreadyAtTarget -> WorkerOutcome.CONTINUE
+                        is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+                        is RecoveryPlanTransitionResult.OwnershipRejected -> WorkerOutcome.FAIL
+                        else -> WorkerOutcome.RETRY
+                    }
                 }
             }
         } catch (error: CancellationException) {
@@ -548,7 +571,7 @@ class AgentPlanner(
         )
         val portfolioFp = FingerprintUtils.calculatePortfolioFingerprint(proposal.newQueryPortfolio)
 
-        val success = store.transitionRecoveryPlanAtomic(
+        val transitionResult = store.transitionRecoveryPlanAtomic(
             ticket = ticket,
             planId = plan.id,
             expectedStatus = RecoveryPlanStatus.READY_TO_COMMIT,
@@ -603,7 +626,12 @@ class AgentPlanner(
                 )
             }
         }
-        return if (success) WorkerOutcome.CONTINUE else WorkerOutcome.FAIL
+        return when (transitionResult) {
+            is RecoveryPlanTransitionResult.Committed, is RecoveryPlanTransitionResult.AlreadyAtTarget -> WorkerOutcome.CONTINUE
+            is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+            is RecoveryPlanTransitionResult.OwnershipRejected -> WorkerOutcome.FAIL
+            else -> WorkerOutcome.RETRY
+        }
     }
 
     private fun commitCycleAdvance(
@@ -655,7 +683,7 @@ class AgentPlanner(
             activatedAt = System.currentTimeMillis()
         )
 
-        val success = store.transitionRecoveryPlanAtomic(
+        val transitionResult = store.transitionRecoveryPlanAtomic(
             ticket = ticket,
             planId = plan.id,
             expectedStatus = RecoveryPlanStatus.READY_TO_COMMIT,
@@ -722,7 +750,12 @@ class AgentPlanner(
                 )
             }
         }
-        return if (success) WorkerOutcome.CONTINUE else WorkerOutcome.FAIL
+        return when (transitionResult) {
+            is RecoveryPlanTransitionResult.Committed, is RecoveryPlanTransitionResult.AlreadyAtTarget -> WorkerOutcome.CONTINUE
+            is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
+            is RecoveryPlanTransitionResult.OwnershipRejected -> WorkerOutcome.FAIL
+            else -> WorkerOutcome.RETRY
+        }
     }
 
     private fun persistRecoveryFailure(

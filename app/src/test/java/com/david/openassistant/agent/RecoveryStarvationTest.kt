@@ -158,7 +158,13 @@ class RecoveryStarvationTest {
         val proposal = createTestProposal()
         val summary = AgentApiSummary(responseId = "resp-1", totalTokens = 100)
         
-        store.transitionRecoveryPlanAtomic(ticket, planId, RecoveryPlanStatus.PREPARED, RecoveryPlanStatus.GENERATING, "fp1") { g, _ ->
+        store.transitionRecoveryPlanAtomic(
+            ticket = ticket, 
+            planId = planId, 
+            expectedStatus = RecoveryPlanStatus.PREPARED, 
+            nextStatus = RecoveryPlanStatus.GENERATING, 
+            expectedInputFingerprint = "fp1"
+        ) { g, _ ->
             g.copy(recoveryPlans = g.recoveryPlans.map { 
                 if (it.id == planId) it.copy(proposal = proposal, accountingSummary = summary) else it 
             })

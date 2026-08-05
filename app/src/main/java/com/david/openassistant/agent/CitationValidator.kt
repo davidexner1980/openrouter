@@ -2,7 +2,7 @@ package com.david.openassistant.agent
 
 /**
  * Validates research citations for truthful provenance and content alignment.
- * [PB-001] Mission recovery must preserve evidence and provenance.
+ * Complies with Citation Non-Self-Authorization Law (Law 5) and Excerpt-Matching Law (Law 7).
  */
 object CitationValidator {
 
@@ -14,7 +14,19 @@ object CitationValidator {
     )
 
     /**
-     * Validates that all citations in a step result are grounded in the provided evidence.
+     * Confidence levels for excerpt matching.
+     */
+    enum class MatchConfidence(val score: Double) {
+        NONE(0.0),
+        MEDIUM(0.5),
+        HIGH(0.8),
+        EXACT(1.0);
+
+        fun isReliable(): Boolean = this.score >= 0.5
+    }
+
+    /**
+     * Validates that all citations in a step result are grounded in the provided durable evidence.
      */
     fun validateStepResult(
         result: AgentStepResult,
@@ -33,39 +45,43 @@ object CitationValidator {
         val unverifiedUrls = mutableListOf<String>()
         val reasons = mutableListOf<String>()
 
-        // 1. Validate excerpts in the sources list
+        val verifiedUrls = evidenceByUrl.keys
+
+        // 1. Validate excerpts and URLs in the sources list
         result.sources.forEach { citation ->
-            val excerpt = citation.excerpt
-            if (!excerpt.isNullOrBlank()) {
-                val matchingEvidence = evidenceByUrl[citation.url].orEmpty()
-                if (matchingEvidence.isEmpty()) {
-                    if (!isDummyContext) {
-                        unverifiedUrls.add(citation.url)
-                        reasons.add("Citation URL '${citation.url}' has no matching evidence record.")
+            val matchingEvidence = evidenceByUrl[citation.url].orEmpty()
+            if (matchingEvidence.isEmpty()) {
+                if (!isDummyContext) {
+                    unverifiedUrls.add(citation.url)
+                    reasons.add("Source URL '${citation.url}' has no matching record in durable evidence (Law 5).")
+                    val excerpt = citation.excerpt
+                    if (!excerpt.isNullOrBlank()) {
+                        invalidExcerpts.add(excerpt)
                     }
-                } else {
-                    val foundInAny = matchingEvidence.any { ev ->
+                }
+            } else {
+                val excerpt = citation.excerpt
+                if (!excerpt.isNullOrBlank()) {
+                    val bestConfidence = matchingEvidence.maxOf { ev ->
                         containsExcerpt(ev.content, excerpt)
                     }
-                    if (!foundInAny) {
+                    if (!bestConfidence.isReliable()) {
                         invalidExcerpts.add(excerpt)
-                        reasons.add("Excerpt for '${citation.url}' not found in any matching evidence record.")
+                        reasons.add("Excerpt for '${citation.url}' failed semantic verification (Confidence: ${bestConfidence.name}) (Law 7).")
                     }
                 }
             }
         }
 
-        // 2. Cross-reference claims with verified sources
-        val verifiedUrls = evidenceByUrl.keys
-        val resultSourceUrls = result.sources.map { it.url }.toSet()
-        
+        // 2. Cross-reference claims with verified sources only (Law 5)
+        // Prohibit self-authorization: result.sources cannot authorize a URL, it must be in evidence.
         result.claims.forEach { claim ->
             if (claim.type == AgentClaimType.FACT) {
                 claim.sourceUrls.forEach { url ->
-                    if (url !in verifiedUrls && url !in resultSourceUrls) {
+                    if (url !in verifiedUrls) {
                         if (!isDummyContext) {
                             unverifiedUrls.add(url)
-                            reasons.add("Factual claim '${claim.text.take(50)}...' cites unverified URL: $url")
+                            reasons.add("Factual claim '${claim.text.take(50)}...' cites URL not present in durable evidence: $url")
                         }
                     }
                 }
@@ -81,23 +97,42 @@ object CitationValidator {
     }
 
     /**
-     * Flexible excerpt matching to account for minor whitespace or punctuation differences.
+     * Robust excerpt matching (Law 7).
+     * Rejects blank inputs, performs exact match, then boundary-preserving normalization match.
      */
-    fun containsExcerpt(content: String, excerpt: String): Boolean {
-        if (excerpt.isBlank()) return true
-        if (content.contains(excerpt, ignoreCase = true)) return true
+    fun containsExcerpt(content: String, excerpt: String): MatchConfidence {
+        if (excerpt.isBlank() || content.isBlank()) return MatchConfidence.NONE
 
+        // 1. Exact Unicode-aware substring matching (case-sensitive)
+        if (content.contains(excerpt)) return MatchConfidence.EXACT
+
+        // 2. Case-insensitive matching
+        if (content.contains(excerpt, ignoreCase = true)) return MatchConfidence.HIGH
+
+        // 3. Token-boundary preserving normalization for flexible matching
         val normalizedContent = normalizeForComparison(content)
         val normalizedExcerpt = normalizeForComparison(excerpt)
 
-        if (normalizedExcerpt.length < 10) return normalizedContent.contains(normalizedExcerpt)
+        if (normalizedExcerpt.isBlank()) return MatchConfidence.NONE
 
-        // Try fuzzy match if long enough: allowed to miss some characters if it's a large block
-        return normalizedContent.contains(normalizedExcerpt)
+        // Ensure we don't match across different token boundaries by padding with spaces
+        val paddedContent = " $normalizedContent "
+        val paddedExcerpt = " $normalizedExcerpt "
+
+        return if (paddedContent.contains(paddedExcerpt)) {
+            MatchConfidence.MEDIUM
+        } else {
+            MatchConfidence.NONE
+        }
     }
 
+    /**
+     * Normalizes text by preserving Unicode letter/digit boundaries and collapsing whitespace.
+     */
     private fun normalizeForComparison(text: String): String {
         return text.lowercase()
-            .filter { it.isLetterOrDigit() }
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 }

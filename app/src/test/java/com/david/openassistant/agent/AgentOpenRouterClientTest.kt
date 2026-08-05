@@ -186,6 +186,8 @@ class AgentOpenRouterClientTest {
                     id = "read-1",
                     url = verifiedUrl,
                     canonicalUrl = ResearchQualityGate.canonicalSourceUrl(verifiedUrl),
+                    documentId = "doc-1",
+                    contentHash = "hash-1",
                     httpCode = 200,
                     contentType = "text/html",
                     content = "Verified content",

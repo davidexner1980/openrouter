@@ -69,6 +69,8 @@ class SearchToSourceProgressionTest {
             id = UUID.randomUUID().toString(),
             url = canonicalUrl,
             canonicalUrl = canonicalUrl,
+            documentId = "doc-1",
+            contentHash = "hash-1",
             httpCode = 200,
             contentType = "text/html",
             content = "Substantive content here",

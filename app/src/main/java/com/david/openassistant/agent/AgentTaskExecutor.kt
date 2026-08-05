@@ -1400,16 +1400,20 @@ class AgentTaskExecutor internal constructor(
                     } else {
                         SourceReadProvenance.UNVERIFIED_CITATION
                     }
+                    val content = s.excerpt.orEmpty()
+                    val contentHash = FingerprintUtils.hash(content)
                     val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(s.url)
                     SourceRead(
-                        id = scopedSourceReadId(canonicalUrl),
+                        id = scopedSourceReadId(canonicalUrl, contentHash),
                         url = s.url,
                         canonicalUrl = canonicalUrl,
+                        documentId = scopedSourceDocumentId(canonicalUrl),
+                        contentHash = contentHash,
                         httpCode = 0, // Unverified citations don't have telemetry
                         contentType = "text/html",
-                        content = s.excerpt.orEmpty(),
+                        content = content,
                         sourceRole = researchPassRole(task).name,
-                        authorityScore = computeSourceAuthorityScore(s.url, s.excerpt.orEmpty()),
+                        authorityScore = computeSourceAuthorityScore(s.url, content),
                         provenance = provenance,
                     )
                 } + result.sourceReads

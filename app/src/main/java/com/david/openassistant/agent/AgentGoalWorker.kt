@@ -561,7 +561,13 @@ class AgentGoalWorker(
                                 Result.retry()
                             }
                             outcome == WorkerOutcome.DONE -> {
-                                goalDiagnostics.info("worker_mission_done")
+                                val status = finalGoalSnapshot?.status ?: AgentGoalStatus.PAUSED
+                                when {
+                                    status.isFinalTerminalStatus() -> goalDiagnostics.info("worker_mission_terminal")
+                                    status == AgentGoalStatus.WAITING_FOR_NETWORK || status == AgentGoalStatus.WAITING_FOR_CREDENTIAL -> goalDiagnostics.info("worker_wait_owner_confirmed")
+                                    status == AgentGoalStatus.BLOCKED || status == AgentGoalStatus.BLOCKED_NEEDS_ACTION -> goalDiagnostics.info("worker_mission_blocked")
+                                    else -> goalDiagnostics.info("worker_unit_completed")
+                                }
                                 Result.success()
                             }
                             outcome == WorkerOutcome.RETRY -> {
@@ -643,8 +649,8 @@ class AgentGoalWorker(
             // REQUIRED CHANGE 6: CONTINUE MUST MEAN REAL FUTURE WORK
             if (lastOutcome == WorkerOutcome.CONTINUE) {
                 val previousGoal = resumedGoalForContinuation
-                if (finalGoal != null && previousGoal != null && isContinuationSchedulable(finalGoal, previousGoal)) {
-                    val currentFingerprint = calculateContinuationFingerprint(finalGoal)
+                if (finalGoal != null && previousGoal != null && ContinuationSchedulingPolicy.isSchedulable(finalGoal, previousGoal)) {
+                    val currentFingerprint = ContinuationSchedulingPolicy.fingerprint(finalGoal)
                     enqueueContinuationIfActive(cancellationGoalId, currentFingerprint)
                 } else {
                     diagnostics.info(
@@ -660,45 +666,6 @@ class AgentGoalWorker(
             }
             cancellationRegistration.close()
         }
-    }
-
-    private fun isContinuationSchedulable(current: AgentGoal, previous: AgentGoal): Boolean {
-        // REQUIRED CHANGE 7: SCHEDULER DEFENSE IN DEPTH
-        if (current.status.isInactive()) return false
-        
-        val currentFingerprint = calculateContinuationFingerprint(current)
-        val previousFingerprint = calculateContinuationFingerprint(previous)
-        
-        if (currentFingerprint == previousFingerprint && current.status == previous.status) {
-            return false
-        }
-        
-        diagnostics.info(
-            event = "continuation_schedulability_verified",
-            component = "worker",
-            fields = mapOf(
-                "goal_id" to current.id,
-                "fingerprint_changed" to (currentFingerprint != previousFingerprint)
-            )
-        )
-        return true
-    }
-
-    private fun calculateContinuationFingerprint(goal: AgentGoal): String {
-        val raw = buildString {
-            append(goal.status.name)
-            append(":")
-            append(goal.activeResearchCycleId ?: "none")
-            append(":")
-            append(goal.activeRecoveryPlanId ?: "none")
-            append(":")
-            append(goal.tasks.count { it.status == AgentTaskStatus.COMPLETED })
-            append(":")
-            append(goal.nextRunnableTask(skipCooldowns = true)?.id ?: "none")
-            append(":")
-            append(goal.isReadyForVerification)
-        }
-        return FingerprintUtils.hash(raw)
     }
 
     private enum class NoTaskDecision {

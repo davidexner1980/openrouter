@@ -541,7 +541,7 @@ object ResearchQualityGate {
             // Goal 7: Validate every preserved citation excerpt against its content
             goal.evidence.forEach { ev ->
                 ev.sources.forEach { source ->
-                    if (!source.excerpt.isNullOrBlank() && !CitationValidator.containsExcerpt(ev.content, source.excerpt)) {
+                    if (!source.excerpt.isNullOrBlank() && !CitationValidator.containsExcerpt(ev.content, source.excerpt).isReliable()) {
                         add("The research graph contains an invalid citation excerpt for '${source.url}'; the excerpt does not exist in the preserved evidence content.")
                     }
                 }

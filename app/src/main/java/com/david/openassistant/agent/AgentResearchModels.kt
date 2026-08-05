@@ -248,6 +248,29 @@ sealed interface RecoveryProposalGenerationResult {
     ) : RecoveryProposalGenerationResult
 }
 
+sealed interface RecoveryPlanTransitionResult {
+    data class Committed(
+        val goal: AgentGoal,
+        val plan: ResearchRecoveryPlan,
+    ) : RecoveryPlanTransitionResult
+
+    data class AlreadyAtTarget(
+        val goal: AgentGoal,
+        val plan: ResearchRecoveryPlan,
+    ) : RecoveryPlanTransitionResult
+
+    data class StatusMismatch(
+        val expected: RecoveryPlanStatus,
+        val actual: RecoveryPlanStatus,
+    ) : RecoveryPlanTransitionResult
+
+    object OwnershipRejected : RecoveryPlanTransitionResult
+    object GoalMissing : RecoveryPlanTransitionResult
+    object PlanMissing : RecoveryPlanTransitionResult
+    object GoalTerminal : RecoveryPlanTransitionResult
+    data class StorageFailure(val cause: Throwable) : RecoveryPlanTransitionResult
+}
+
 enum class SourceFetchStatus {
     CLAIMED,
     DISPATCH_STARTED,
