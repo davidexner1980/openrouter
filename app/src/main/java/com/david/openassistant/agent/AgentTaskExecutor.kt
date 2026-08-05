@@ -1075,13 +1075,6 @@ class AgentTaskExecutor internal constructor(
         }
     }
 
-    private fun mergeClaims(existing: List<AgentClaim>, incoming: List<AgentClaim>): List<AgentClaim> {
-        val merged = (existing + incoming).associateBy { claim ->
-            claim.text.normalizedClaimText()
-        }.values.toList()
-        return merged
-    }
-
     private fun mergePartialEvidence(previous: AgentEvidence, incoming: AgentEvidence): AgentEvidence {
         val richer = if (incoming.content.length >= previous.content.length) incoming else previous
         return richer.copy(

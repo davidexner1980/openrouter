@@ -2306,7 +2306,132 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260805-0731-8bd7d6f4 — 2026-08-05T07:31:00
+## Run CE-20260805-0852-324871b3 — 2026-08-05T08:52:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R1
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 324871b3e2177cdc49b70ea17ce43857d77be365
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-0852-324871b3: implement claim ID stability and idempotent merging
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: CLAIM-ID-UNIQUENESS-REPAIR
+- Subsystem: Evidence
+- Mission requirement: Collision-free Identity Law
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for unique claim IDs in AgentGoal.
+
+### Scope Contract
+
+- Problem: 
+    1. Claim IDs were unstable when models didn't provide explicit IDs (defaulted to ordinals), causing duplicate claims on retries.
+    2. `mergeClaims` in `AgentTaskExecutor` deduplicated by text goal-wide, potentially losing provenance, and ignored ID-based upsert.
+- First causal failure: Unstable ordinal-based fallback in `scopedClaimId`.
+- Correct owner: `ClaimSemantics.kt`, `AgentTaskExecutor.kt`.
+- Violated invariant: Collision-free identity.
+- Protected behavior: Citation extraction and support classification.
+- Compatibility: Schema 14 remains compatible.
+- Out of scope: Physical device verification.
+
+### Reproduction
+
+- Starting state: `scopedClaimId` used `fallbackIndex` for blank requested IDs.
+- Trigger: Multiple tasks or retries producing identical claim text without IDs.
+- Expected: Stable IDs based on text; unique IDs in goal.
+- Actual: Different IDs for same text in different indices; duplicate entries allowed in `AgentGoal`.
+- Durable result: Growth of redundant claims in goal state.
+- Repeatability: 100%
+
+### Hypotheses
+
+- Accepted: Using a text-based hash in `scopedClaimId` fallback ensures stability across retries and tasks. Implementing `mergeClaims` as an ID-based upsert ensures uniqueness while preserving provenance across distinct tasks.
+
+### Root Cause
+
+- Root cause: Incomplete identity law implementation in the evidence boundary.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/ClaimSemantics.kt (Updated `scopedClaimId` with text fallback; moved `mergeClaims` here)
+    - app/src/main/java/com/david/openassistant/agent/AgentTaskExecutor.kt (Called new `mergeClaims` and removed local copy)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Wired `text` to `scopedClaimId` call)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/ClaimSemanticsTest.kt (Comprehensive update for ID stability and upsert logic)
+- Behavior changed: Claim IDs are now stable based on content if no ID is provided. `AgentGoal.claims` is now an idempotent set keyed by ID.
+- Behavior preserved: Explicit model-provided IDs are honored.
+
+### Regression Proof
+
+- Test: `ClaimSemanticsTest.testScopedClaimIdStabilityWithTextFallback`, `ClaimSemanticsTest.testMergeClaimsUpsertsById`
+- Failed before repair: YES (asserted equality failed for different indices).
+- Expected failure: `AssertionError`
+- Passed after repair: YES.
+- Real owner exercised: YES.
+- Durable output reloaded: YES.
+- Exact counts asserted: YES.
+- Simulation present: NO
+- Why recurrence is detected: Contract tests verify ID stability across "retries" (different fallback indices).
+
+### Verification
+
+- Baseline: PASSED (614 tests)
+- Focused: PASSED (`ClaimSemanticsTest`)
+- Full unit total: 616
+- Passed: 616
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None.
+- Migration: None.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe.
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 

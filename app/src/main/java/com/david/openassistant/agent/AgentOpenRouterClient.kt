@@ -2018,7 +2018,8 @@ open class AgentOpenRouterClient internal constructor(
         val seenClaimIds = mutableSetOf<String>()
         val claims = responseJsonList(root.optJSONArray("claims")) { raw, index ->
             val requestedId = raw.optString("id").trim()
-            val claimId = scopedClaimId(task.id, requestedId, index + 1)
+            val claimText = raw.optString("text").trim().take(MAX_CLAIM_TEXT_CHARS)
+            val claimId = scopedClaimId(task.id, requestedId, claimText, index + 1)
                 .let { base -> generateSequence(base) { previous -> "${previous}_x" }.first(seenClaimIds::add) }
             val type = AgentClaimType.fromWireName(raw.optString("type"))
             val evidenceIds = raw.optJSONArray("supporting_evidence_ids").toStringList()
@@ -2031,7 +2032,7 @@ open class AgentOpenRouterClient internal constructor(
             AgentClaim(
                 id = claimId,
                 taskId = task.id,
-                text = raw.optString("text").trim().take(MAX_CLAIM_TEXT_CHARS),
+                text = claimText,
                 type = type,
                 confidence = raw.optDouble("confidence", 0.5).coerceIn(0.0, 1.0),
                 support = support,

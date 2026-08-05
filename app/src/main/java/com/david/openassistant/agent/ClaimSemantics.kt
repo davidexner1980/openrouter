@@ -54,6 +54,7 @@ data class AcceptedClaim(
 internal fun scopedClaimId(
     taskId: String,
     requestedId: String,
+    text: String,
     fallbackIndex: Int,
 ): String {
     fun safe(value: String, fallback: String): String = value
@@ -68,7 +69,11 @@ internal fun scopedClaimId(
     }
 
     val taskNamespace = bounded(safe(taskId, "task"), 36)
-    val fallback = "claim_${fallbackIndex.coerceAtLeast(1)}"
+    val fallback = if (text.isNotBlank()) {
+        "txt_${FingerprintUtils.hash(text).takeLast(8)}"
+    } else {
+        "claim_${fallbackIndex.coerceAtLeast(1)}"
+    }
     val rawRequested = safe(requestedId, fallback)
     val prefix = "${taskNamespace}__"
     return if (rawRequested.startsWith(prefix)) {
@@ -124,6 +129,17 @@ internal fun normalizeClaimConfidence(claim: AgentClaim): AgentClaim {
         return claim.copy(confidence = 0.5)
     }
     return claim
+}
+
+/**
+ * Idempotent upsert of claims into the goal evidence graph.
+ * Stable IDs from scopedClaimId ensure that task retries or multi-stage
+ * refinements update existing claims instead of duplicating them.
+ */
+internal fun mergeClaims(existing: List<AgentClaim>, incoming: List<AgentClaim>): List<AgentClaim> {
+    if (incoming.isEmpty()) return existing
+    val incomingIds = incoming.mapTo(mutableSetOf()) { it.id }
+    return existing.filterNot { it.id in incomingIds } + incoming
 }
 
 private val PLANNING_ITEM_PREFIX = Regex("""^(?:step|task|phase|criterion|milestone|objective|constraint|decision|question)\s*\d*""", RegexOption.IGNORE_CASE)
