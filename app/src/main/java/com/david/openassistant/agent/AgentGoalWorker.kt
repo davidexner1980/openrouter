@@ -936,9 +936,23 @@ class AgentGoalWorker(
         
         return when (plan.status) {
             RecoveryPlanStatus.PREPARED,
-            RecoveryPlanStatus.GENERATING,
-            RecoveryPlanStatus.FAILED_RETRYABLE -> {
+            RecoveryPlanStatus.GENERATING -> {
                 planner.generateRecoveryProposal(apiKey, goal, plan, ticket)
+            }
+            RecoveryPlanStatus.FAILED_RETRYABLE -> {
+                val logicalRequestId = plan.logicalProviderRequestId ?: "recovery-${plan.id}"
+                val attempt = goal.requestAttempts.filter { it.logicalRequestId == logicalRequestId }.maxByOrNull { it.wireAttemptOrdinal }
+                if (attempt != null && goal.retryAuthorizations.any { it.logicalRequestId == logicalRequestId && it.attemptOrdinal > attempt.wireAttemptOrdinal }) {
+                    planner.generateRecoveryProposal(apiKey, goal, plan, ticket)
+                } else {
+                    store.repairTerminalRecoveryLivelockAtomic(goal.id, ticket)
+                    WorkerOutcome.RETRY
+                }
+            }
+            RecoveryPlanStatus.RECONCILIATION_REQUIRED,
+            RecoveryPlanStatus.ALTERNATE_STRATEGY_REQUIRED -> {
+                store.repairTerminalRecoveryLivelockAtomic(goal.id, ticket)
+                WorkerOutcome.RETRY
             }
             RecoveryPlanStatus.READY_TO_COMMIT -> {
                 planner.commitRecoveryEffect(goal, plan, ticket)

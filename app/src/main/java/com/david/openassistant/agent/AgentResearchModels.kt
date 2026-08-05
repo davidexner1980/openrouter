@@ -98,6 +98,8 @@ enum class RecoveryPlanStatus {
     REJECTED_NOT_NOVEL,
     STRATEGY_EXHAUSTED,
     FAILED_RETRYABLE,
+    RECONCILIATION_REQUIRED,
+    ALTERNATE_STRATEGY_REQUIRED,
     FAILED_NEEDS_ACTION;
 
     fun isTerminal(): Boolean = this in setOf(
@@ -111,9 +113,11 @@ enum class RecoveryPlanStatus {
 
     fun canTransitionTo(next: RecoveryPlanStatus): Boolean = when (this) {
         PREPARED -> next == GENERATING
-        GENERATING -> next in setOf(READY_TO_COMMIT, FAILED_RETRYABLE, FAILED_NEEDS_ACTION)
+        GENERATING -> next in setOf(READY_TO_COMMIT, FAILED_RETRYABLE, RECONCILIATION_REQUIRED, ALTERNATE_STRATEGY_REQUIRED, FAILED_NEEDS_ACTION)
         READY_TO_COMMIT -> next in setOf(COMMITTED, REJECTED_NOT_NOVEL, STRATEGY_EXHAUSTED)
-        FAILED_RETRYABLE -> next == GENERATING
+        FAILED_RETRYABLE -> next in setOf(GENERATING, RECONCILIATION_REQUIRED, ALTERNATE_STRATEGY_REQUIRED)
+        RECONCILIATION_REQUIRED -> next in setOf(GENERATING, ALTERNATE_STRATEGY_REQUIRED, FAILED_NEEDS_ACTION)
+        ALTERNATE_STRATEGY_REQUIRED -> false
         else -> false
     }
 }
@@ -207,4 +211,76 @@ data class ObjectiveRevision(
     val revisionReason: String,
     val revisionFingerprint: String,
     val createdAt: Long = System.currentTimeMillis()
+)
+
+sealed interface RecoveryProposalGenerationResult {
+    data class ProposalAvailable(
+        val proposal: RecoveryProposal,
+        val summary: AgentApiSummary?,
+        val exchangeId: String,
+        val reusedDurableResult: Boolean,
+    ) : RecoveryProposalGenerationResult
+
+    data class RetryableTransportFailure(
+        val descriptor: FailureDescriptor,
+        val attempt: ProviderRequestAttempt,
+    ) : RecoveryProposalGenerationResult
+
+    data class ReconciliationRequired(
+        val attempt: ProviderRequestAttempt,
+        val kind: ProviderReconciliationFailureKind,
+        val reason: String,
+    ) : RecoveryProposalGenerationResult
+
+    data class AlternateStrategyRequired(
+        val kind: ProviderReconciliationFailureKind?,
+        val reason: String,
+        val failedAttempt: ProviderRequestAttempt?,
+    ) : RecoveryProposalGenerationResult
+
+    data class NeedsUserAction(
+        val kind: ProviderReconciliationFailureKind,
+        val reason: String,
+    ) : RecoveryProposalGenerationResult
+
+    data class StorageFailure(
+        val cause: Throwable,
+    ) : RecoveryProposalGenerationResult
+}
+
+enum class SourceFetchStatus {
+    CLAIMED,
+    DISPATCH_STARTED,
+    DELIVERY_AMBIGUOUS,
+    RESULT_RECEIVED,
+    SOURCE_READ_COMMITTED,
+    TERMINAL_FAILURE
+}
+
+enum class SourceFetchTransportStage {
+    NOT_DISPATCHED,
+    DNS_RESOLVED,
+    CONNECTION_ESTABLISHED,
+    REQUEST_SENT,
+    RESPONSE_HEADERS_RECEIVED,
+    RESPONSE_BODY_RECEIVED
+}
+
+data class SourceFetchAttempt(
+    val id: String,
+    val logicalFetchId: String,
+    val goalId: String,
+    val taskId: String,
+    val canonicalUrl: String,
+    val fetchFingerprint: String,
+    val attemptOrdinal: Int,
+    val executionGeneration: Int,
+    val status: SourceFetchStatus,
+    val transportStage: SourceFetchTransportStage,
+    val deliveryCertainty: ProviderDeliveryCertainty,
+    val retryAuthorizationFingerprint: String?,
+    val sourceReadId: String?,
+    val failureClassification: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
 )

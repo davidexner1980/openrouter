@@ -51,11 +51,102 @@ data class FailureDescriptor(
     val safeDiagnosticSummary: String,
 )
 
+enum class ProviderReconciliationFailureKind {
+    EXISTING_TERMINAL_FAILURE,
+    DELIVERY_AMBIGUOUS,
+    RETRY_AUTHORIZATION_REQUIRED,
+    EXISTING_IN_FLIGHT,
+    SUCCESS_RESULT_MISSING,
+    LOGICAL_IDENTITY_CONFLICT,
+    OWNERSHIP_REJECTED,
+}
+
+object FailureClassifier {
+
+    fun classifyReconciliation(
+        kind: ProviderReconciliationFailureKind,
+        goalId: String?,
+        taskId: String?,
+        operationId: String?,
+    ): FailureDescriptor {
+        return when (kind) {
+            ProviderReconciliationFailureKind.EXISTING_TERMINAL_FAILURE -> FailureDescriptor(
+                domain = FailureDomain.PROVIDER,
+                failureClass = "PROVIDER_EXISTING_TERMINAL_FAILURE",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.ON_DIFFERENT_COMPATIBLE_ROUTE, // or AFTER_MATERIAL_STRATEGY_CHANGE
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Provider operation previously failed terminal."
+            )
+            ProviderReconciliationFailureKind.DELIVERY_AMBIGUOUS -> FailureDescriptor(
+                domain = FailureDomain.TRANSPORT,
+                failureClass = "PROVIDER_DELIVERY_AMBIGUOUS",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.ON_DIFFERENT_COMPATIBLE_ROUTE,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Provider operation delivery is ambiguous."
+            )
+            ProviderReconciliationFailureKind.RETRY_AUTHORIZATION_REQUIRED -> FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "PROVIDER_RETRY_AUTHORIZATION_REQUIRED",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Retry requires explicit authorization."
+            )
+            ProviderReconciliationFailureKind.EXISTING_IN_FLIGHT -> FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "PROVIDER_EXISTING_IN_FLIGHT",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.IMMEDIATE_AFTER_LOCAL_REPAIR,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Existing request is currently active."
+            )
+            ProviderReconciliationFailureKind.SUCCESS_RESULT_MISSING -> FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "PROVIDER_SUCCESS_RESULT_MISSING",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Successful provider response received but not persisted."
+            )
+            ProviderReconciliationFailureKind.LOGICAL_IDENTITY_CONFLICT -> FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "PROVIDER_LOGICAL_IDENTITY_CONFLICT",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Logical request ID conflict."
+            )
+            ProviderReconciliationFailureKind.OWNERSHIP_REJECTED -> FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "PROVIDER_OWNERSHIP_REJECTED",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = "Ownership mismatch or stale execution generation."
+            )
+        }
+    }
+
 /**
  * Signal-based deterministic failure precedence classifier.
  * Evaluates overlapping failure signals in strict priority order.
  */
-object FailureClassifier {
 
     fun classify(
         error: Throwable?,

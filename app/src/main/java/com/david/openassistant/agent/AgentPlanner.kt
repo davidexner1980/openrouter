@@ -323,7 +323,7 @@ class AgentPlanner(
         )
 
         try {
-            val (proposal, summary) = if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) {
+            val proposalResult = if (plan.selectedTactic == EscalationTactic.CYCLE_ADVANCE) {
                 val activeCycle = goal.researchCycles.firstOrNull { it.id == goal.activeResearchCycleId }
                     ?: throw IllegalStateException("Active cycle missing for cycle advancement.")
                 val learningSummary = activeCycle.learningSummary
@@ -350,7 +350,7 @@ class AgentPlanner(
                     rationale = "Generated successor cycle proposal.",
                     expectedNoveltyDimensions = listOf("objective", "tasks")
                 )
-                p to result.second
+                RecoveryProposalGenerationResult.ProposalAvailable(p, result.second, "", false)
             } else {
                 client.createResearchRecoveryProposal(
                     apiKey = apiKey,
@@ -364,72 +364,139 @@ class AgentPlanner(
             }
 
             currentCoroutineContext().ensureActive()
-
-            // V43: Recovery drift detection
-            val driftReport = AgentDriftAuditor.evaluateRecoveryDrift(goal.objectiveContract, proposal)
-            val proposalFingerprint = FingerprintUtils.calculateProposalFingerprint(proposal)
             
-            // Pre-calculate authorized retry fingerprint for tactic pivot
-            val retryFp = if (plan.selectedTactic != EscalationTactic.CYCLE_ADVANCE) {
-                val simulatedTask = (goal.tasks.firstOrNull { it.id == plan.taskId } ?: throw IllegalStateException("Task missing")).copy(
-                    lastRecoveryStrategy = proposal.revisedInvestigationInterpretation,
-                    recoveryStrategyFingerprint = FingerprintUtils.calculateStrategyFingerprint(
-                        proposal.revisedInvestigationInterpretation,
-                        proposal.evidenceTargets,
-                        proposal.selectedSourceFamilyShift
-                    ),
-                    resultSetFingerprint = FingerprintUtils.calculatePortfolioFingerprint(proposal.newQueryPortfolio)
-                )
-                FingerprintUtils.calculateExecutionFingerprint(goal, simulatedTask)
-            } else null
-
-            // Novelty validation
-            if (!ResearchRecoveryEngine.validateNovelty(proposal, goal.recoveryPlans)) {
-                diagnostics.info("recovery_transition_rejected", mapOf("goal_id" to goal.id, "plan_id" to plan.id, "reason" to "NOT_NOVEL"))
-                store.transitionRecoveryPlanAtomic(
-                    ticket = ticket,
-                    planId = plan.id,
-                    expectedStatus = plan.status,
-                    nextStatus = RecoveryPlanStatus.REJECTED_NOT_NOVEL,
-                    expectedInputFingerprint = plan.inputExecutionFingerprint
-                ) { currentGoal, _ ->
-                    currentGoal.copy(
-                        events = appendEvent(currentGoal.events, "Recovery proposal rejected: not materially novel.")
-                    )
-                }
-                return WorkerOutcome.DONE
-            }
-
-            val isExtremeDrift = driftReport.isDrifted && driftReport.driftSeverity > 0.8
-            val nextStatus = if (isExtremeDrift) RecoveryPlanStatus.FAILED_NEEDS_ACTION else RecoveryPlanStatus.READY_TO_COMMIT
-            
-            store.transitionRecoveryPlanAtomic(
-                ticket = ticket,
-                planId = plan.id,
-                expectedStatus = plan.status,
-                nextStatus = nextStatus,
-                expectedInputFingerprint = plan.inputExecutionFingerprint
-            ) { currentGoal, currentPlan ->
-                currentGoal.copy(
-                    requiresUserClarification = isExtremeDrift,
-                    clarificationDetails = if (isExtremeDrift) {
-                        "Significant recovery drift detected. ${driftReport.explanation}"
-                    } else currentGoal.clarificationDetails,
-                    events = if (driftReport.isDrifted) {
-                        appendEvent(currentGoal.events, "Recovery drift detected (${(driftReport.driftSeverity * 100).toInt()}%). ${driftReport.explanation}")
-                    } else currentGoal.events,
-                    recoveryPlans = currentGoal.recoveryPlans.map { p ->
-                        if (p.id == currentPlan.id) p.copy(
-                            proposal = proposal,
-                            proposalFingerprint = proposalFingerprint,
-                            accountingSummary = summary,
-                            retryAuthorizedFingerprint = retryFp,
-                            generatedAt = System.currentTimeMillis()
-                        ) else p
+            when (proposalResult) {
+                is RecoveryProposalGenerationResult.AlternateStrategyRequired -> {
+                    val descriptor = proposalResult.kind?.let { FailureClassifier.classifyReconciliation(it, goal.id, plan.taskId, logicalRequestId) }
+                    store.transitionRecoveryPlanAtomic(
+                        ticket = ticket,
+                        planId = plan.id,
+                        expectedStatus = plan.status,
+                        nextStatus = RecoveryPlanStatus.ALTERNATE_STRATEGY_REQUIRED,
+                        expectedInputFingerprint = plan.inputExecutionFingerprint
+                    ) { currentGoal, _ ->
+                        currentGoal.copy(
+                            events = appendEvent(currentGoal.events, "Recovery failed: ${descriptor?.safeDiagnosticSummary ?: proposalResult.reason}")
+                        )
                     }
-                )
+                    return WorkerOutcome.RETRY
+                }
+                is RecoveryProposalGenerationResult.NeedsUserAction -> {
+                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, goal.id, plan.taskId, logicalRequestId)
+                    store.transitionRecoveryPlanAtomic(
+                        ticket = ticket,
+                        planId = plan.id,
+                        expectedStatus = plan.status,
+                        nextStatus = RecoveryPlanStatus.FAILED_NEEDS_ACTION,
+                        expectedInputFingerprint = plan.inputExecutionFingerprint
+                    ) { currentGoal, _ ->
+                        currentGoal.copy(
+                            events = appendEvent(currentGoal.events, "Recovery failed: ${descriptor.safeDiagnosticSummary}")
+                        )
+                    }
+                    return WorkerOutcome.DONE
+                }
+                is RecoveryProposalGenerationResult.ReconciliationRequired -> {
+                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, goal.id, plan.taskId, logicalRequestId)
+                    store.transitionRecoveryPlanAtomic(
+                        ticket = ticket,
+                        planId = plan.id,
+                        expectedStatus = plan.status,
+                        nextStatus = RecoveryPlanStatus.RECONCILIATION_REQUIRED,
+                        expectedInputFingerprint = plan.inputExecutionFingerprint
+                    ) { currentGoal, _ ->
+                        currentGoal.copy(
+                            events = appendEvent(currentGoal.events, "Recovery failed: ${descriptor.safeDiagnosticSummary}")
+                        )
+                    }
+                    return WorkerOutcome.RETRY
+                }
+                is RecoveryProposalGenerationResult.RetryableTransportFailure -> {
+                    store.transitionRecoveryPlanAtomic(
+                        ticket = ticket,
+                        planId = plan.id,
+                        expectedStatus = plan.status,
+                        nextStatus = RecoveryPlanStatus.FAILED_RETRYABLE,
+                        expectedInputFingerprint = plan.inputExecutionFingerprint
+                    ) { currentGoal, _ ->
+                        currentGoal.copy(
+                            events = appendEvent(currentGoal.events, "Recovery failed: ${proposalResult.descriptor.failureClass}")
+                        )
+                    }
+                    return WorkerOutcome.RETRY
+                }
+                is RecoveryProposalGenerationResult.StorageFailure -> throw proposalResult.cause
+                is RecoveryProposalGenerationResult.ProposalAvailable -> {
+                    val proposal = proposalResult.proposal
+                    val summary = proposalResult.summary
+
+                    // V43: Recovery drift detection
+                    val driftReport = AgentDriftAuditor.evaluateRecoveryDrift(goal.objectiveContract, proposal)
+                    val proposalFingerprint = FingerprintUtils.calculateProposalFingerprint(proposal)
+                    
+                    // Pre-calculate authorized retry fingerprint for tactic pivot
+                    val retryFp = if (plan.selectedTactic != EscalationTactic.CYCLE_ADVANCE) {
+                        val simulatedTask = (goal.tasks.firstOrNull { it.id == plan.taskId } ?: throw IllegalStateException("Task missing")).copy(
+                            lastRecoveryStrategy = proposal.revisedInvestigationInterpretation,
+                            recoveryStrategyFingerprint = FingerprintUtils.calculateStrategyFingerprint(
+                                proposal.revisedInvestigationInterpretation,
+                                proposal.evidenceTargets,
+                                proposal.selectedSourceFamilyShift
+                            ),
+                            resultSetFingerprint = FingerprintUtils.calculatePortfolioFingerprint(proposal.newQueryPortfolio)
+                        )
+                        FingerprintUtils.calculateExecutionFingerprint(goal, simulatedTask)
+                    } else null
+
+                    // Novelty validation
+                    if (!ResearchRecoveryEngine.validateNovelty(proposal, goal.recoveryPlans)) {
+                        diagnostics.info("recovery_transition_rejected", mapOf("goal_id" to goal.id, "plan_id" to plan.id, "reason" to "NOT_NOVEL"))
+                        store.transitionRecoveryPlanAtomic(
+                            ticket = ticket,
+                            planId = plan.id,
+                            expectedStatus = plan.status,
+                            nextStatus = RecoveryPlanStatus.REJECTED_NOT_NOVEL,
+                            expectedInputFingerprint = plan.inputExecutionFingerprint
+                        ) { currentGoal, _ ->
+                            currentGoal.copy(
+                                events = appendEvent(currentGoal.events, "Recovery proposal rejected: not materially novel.")
+                            )
+                        }
+                        return WorkerOutcome.DONE
+                    }
+
+                    val isExtremeDrift = driftReport.isDrifted && driftReport.driftSeverity > 0.8
+                    val nextStatus = if (isExtremeDrift) RecoveryPlanStatus.FAILED_NEEDS_ACTION else RecoveryPlanStatus.READY_TO_COMMIT
+                    
+                    store.transitionRecoveryPlanAtomic(
+                        ticket = ticket,
+                        planId = plan.id,
+                        expectedStatus = plan.status,
+                        nextStatus = nextStatus,
+                        expectedInputFingerprint = plan.inputExecutionFingerprint
+                    ) { currentGoal, currentPlan ->
+                        currentGoal.copy(
+                            requiresUserClarification = isExtremeDrift,
+                            clarificationDetails = if (isExtremeDrift) {
+                                "Significant recovery drift detected. ${driftReport.explanation}"
+                            } else currentGoal.clarificationDetails,
+                            events = if (driftReport.isDrifted) {
+                                appendEvent(currentGoal.events, "Recovery drift detected (${(driftReport.driftSeverity * 100).toInt()}%). ${driftReport.explanation}")
+                            } else currentGoal.events,
+                            recoveryPlans = currentGoal.recoveryPlans.map { p ->
+                                if (p.id == currentPlan.id) p.copy(
+                                    proposal = proposal,
+                                    proposalFingerprint = proposalFingerprint,
+                                    accountingSummary = summary,
+                                    retryAuthorizedFingerprint = retryFp,
+                                    generatedAt = System.currentTimeMillis()
+                                ) else p
+                            }
+                        )
+                    }
+                    return WorkerOutcome.CONTINUE
+                }
             }
-            return WorkerOutcome.CONTINUE
         } catch (error: CancellationException) {
             // Cancellation truth: rethrow.
             // Client terminalizes attempt if it was claimed.
@@ -665,21 +732,39 @@ class AgentPlanner(
         ticket: PlanningTicket,
     ): WorkerOutcome {
         val statusCode = (error as? OpenRouterException)?.statusCode
-        val failureClass = if (error is IOException) "network_wait" else error::class.java.simpleName
+        val failureDescriptor = FailureClassifier.classify(
+            error = error,
+            statusCode = statusCode,
+            goalId = goalId,
+            operationId = "recovery_generation",
+        )
         
+        val nextStatus = when (failureDescriptor.retryPolicy) {
+            RetryPolicy.IMMEDIATE_AFTER_LOCAL_REPAIR,
+            RetryPolicy.AFTER_RETRY_AFTER,
+            RetryPolicy.AFTER_NETWORK_RESTORED,
+            RetryPolicy.AFTER_PROVIDER_COOLDOWN -> RecoveryPlanStatus.FAILED_RETRYABLE
+            RetryPolicy.ON_DIFFERENT_COMPATIBLE_ROUTE,
+            RetryPolicy.AFTER_MATERIAL_STRATEGY_CHANGE -> RecoveryPlanStatus.ALTERNATE_STRATEGY_REQUIRED
+            RetryPolicy.PERMANENT_REJECTION,
+            RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
+            RetryPolicy.AFTER_USER_CREDENTIAL_ACTION,
+            RetryPolicy.NEVER -> RecoveryPlanStatus.FAILED_NEEDS_ACTION
+        }
+
         store.updateGoalAtomic(goalId, ticket) { current ->
             current.copy(
                 recoveryPlans = current.recoveryPlans.map { p ->
                     if (p.id == planId) p.copy(
-                        status = if (statusCode == 429 || error is IOException) RecoveryPlanStatus.FAILED_RETRYABLE else RecoveryPlanStatus.FAILED_NEEDS_ACTION,
-                        failureClassification = failureClass,
+                        status = nextStatus,
+                        failureClassification = failureDescriptor.failureClass,
                         failureMessage = error.message?.take(1000)
                     ) else p
                 },
-                events = appendEvent(current.events, "Recovery generation failed: $failureClass. ${error.message?.take(200)}")
+                events = appendEvent(current.events, "Recovery generation failed: ${failureDescriptor.failureClass}. ${error.message?.take(200)}")
             )
         }
-        return if (statusCode == 429 || error is IOException) WorkerOutcome.RETRY else WorkerOutcome.FAIL
+        return if (nextStatus == RecoveryPlanStatus.FAILED_RETRYABLE) WorkerOutcome.RETRY else WorkerOutcome.FAIL
     }
 
     private fun persistPlanningFailure(

@@ -687,7 +687,7 @@ open class AgentOpenRouterClient internal constructor(
         evidence: List<AgentEvidence>,
         freeOnly: Boolean,
         requestContext: ProviderRequestContext.Mission,
-    ): Pair<RecoveryProposal, AgentApiSummary> {
+    ): RecoveryProposalGenerationResult {
         val generation = requestContext.executionGeneration
         val systemPrompt = "You are an expert Research Recovery Analyst."
         val userPrompt = buildString {
@@ -718,45 +718,76 @@ open class AgentOpenRouterClient internal constructor(
             }
         }
 
-        val response = executeStructuredWithFallback(
-            apiKey = apiKey,
-            strictPayload = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "recovery_proposal", freeOnly = freeOnly, goalId = goal.id, taskId = plan.taskId).apply {
-                put("response_format", jsonSchemaResponseFormat("research_recovery_proposal", recoveryProposalSchema()))
-                put("temperature", 0.1)
-            },
-            jsonModePayload = basePayload(
-                modelId,
-                systemPrompt,
-                "$userPrompt\nReturn one valid JSON object matching the requested structure and no markdown.",
-                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
-                role = AgentTaskRole.PRIMARY_REASONING,
-                selectionReason = "recovery_proposal_json_mode",
-                freeOnly = freeOnly,
-                goalId = goal.id,
-                taskId = plan.taskId
-            ).apply {
-                put("response_format", JSONObject().put("type", "json_object"))
-                put("temperature", 0.1)
-            },
-            plainPayload = basePayload(
-                modelId,
-                systemPrompt,
-                "$userPrompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
-                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
-                role = AgentTaskRole.PRIMARY_REASONING,
-                selectionReason = "recovery_proposal_plain",
-                freeOnly = freeOnly,
-                goalId = goal.id,
-                taskId = plan.taskId
-            ).apply {
-                put("temperature", 0.1)
-            },
-            generation = generation,
-            requestContext = requestContext,
-        )
+        try {
+            val response = executeStructuredWithFallback(
+                apiKey = apiKey,
+                strictPayload = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "recovery_proposal", freeOnly = freeOnly, goalId = goal.id, taskId = plan.taskId).apply {
+                    put("response_format", jsonSchemaResponseFormat("research_recovery_proposal", recoveryProposalSchema()))
+                    put("temperature", 0.1)
+                },
+                jsonModePayload = basePayload(
+                    modelId,
+                    systemPrompt,
+                    "$userPrompt\nReturn one valid JSON object matching the requested structure and no markdown.",
+                    reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                    role = AgentTaskRole.PRIMARY_REASONING,
+                    selectionReason = "recovery_proposal_json_mode",
+                    freeOnly = freeOnly,
+                    goalId = goal.id,
+                    taskId = plan.taskId
+                ).apply {
+                    put("response_format", JSONObject().put("type", "json_object"))
+                    put("temperature", 0.1)
+                },
+                plainPayload = basePayload(
+                    modelId,
+                    systemPrompt,
+                    "$userPrompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
+                    reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                    role = AgentTaskRole.PRIMARY_REASONING,
+                    selectionReason = "recovery_proposal_plain",
+                    freeOnly = freeOnly,
+                    goalId = goal.id,
+                    taskId = plan.taskId
+                ).apply {
+                    put("temperature", 0.1)
+                },
+                generation = generation,
+                requestContext = requestContext,
+            )
 
-        val proposal = response.reconciledProposal ?: parseRecoveryProposal(response.content)
-        return proposal to response.summary
+            val proposal = response.reconciledProposal ?: parseRecoveryProposal(response.content)
+            return RecoveryProposalGenerationResult.ProposalAvailable(proposal, response.summary, response.summary.responseId ?: "", false)
+        } catch (e: ReconciliationException) {
+            return when (val result = e.result) {
+                is MissionDispatchResult.ReusedDurableSuccess -> {
+                    val proposal = parseRecoveryProposal(result.body)
+                    RecoveryProposalGenerationResult.ProposalAvailable(proposal, null, result.exchangeId, true)
+                }
+                is MissionDispatchResult.Reconciled -> {
+                    if (result.responseContent != null) {
+                        val proposal = parseRecoveryProposal(result.responseContent)
+                        RecoveryProposalGenerationResult.ProposalAvailable(proposal, result.summary, result.exchangeId, true)
+                    } else if (result.proposal != null) {
+                        RecoveryProposalGenerationResult.ProposalAvailable(result.proposal, result.summary, result.exchangeId, true)
+                    } else {
+                        RecoveryProposalGenerationResult.AlternateStrategyRequired(ProviderReconciliationFailureKind.SUCCESS_RESULT_MISSING, "Reconciled but missing proposal content", null)
+                    }
+                }
+                is MissionDispatchResult.ExistingAmbiguous -> RecoveryProposalGenerationResult.ReconciliationRequired(result.attempt, ProviderReconciliationFailureKind.DELIVERY_AMBIGUOUS, "Operation delivery is ambiguous; zero-replay policy prevents automatic dispatch.")
+                is MissionDispatchResult.ExistingInFlight -> RecoveryProposalGenerationResult.ReconciliationRequired(result.attempt, ProviderReconciliationFailureKind.EXISTING_IN_FLIGHT, "Existing active request owned by another worker or session.")
+                is MissionDispatchResult.ExistingNotDispatched -> RecoveryProposalGenerationResult.RetryableTransportFailure(
+                    FailureDescriptor(FailureDomain.PROVIDER, "NOT_DISPATCHED", FailureScope.REQUEST, RetryPolicy.IMMEDIATE_AFTER_LOCAL_REPAIR, null, null, null, null, null, null, null, "Not dispatched"),
+                    result.attempt
+                )
+                is MissionDispatchResult.ExistingTerminalFailure -> RecoveryProposalGenerationResult.AlternateStrategyRequired(ProviderReconciliationFailureKind.EXISTING_TERMINAL_FAILURE, "Operation has already reached a terminal failure state.", result.attempt)
+                is MissionDispatchResult.LogicalIdentityConflict -> RecoveryProposalGenerationResult.ReconciliationRequired(ProviderRequestAttempt(exchangeId = "conflict", logicalRequestId = requestContext.logicalRequestId ?: "", executionGeneration = requestContext.executionGeneration, parentOperationId = requestContext.parentOperationId, goalId = requestContext.goalId, requestedModel = modelId, payloadFingerprint = ""), ProviderReconciliationFailureKind.LOGICAL_IDENTITY_CONFLICT, "Logical request ID conflict: payload fingerprint mismatch.")
+                is MissionDispatchResult.OwnershipRejected -> RecoveryProposalGenerationResult.NeedsUserAction(ProviderReconciliationFailureKind.OWNERSHIP_REJECTED, result.reason)
+                is MissionDispatchResult.RetryAuthorizationRequired -> RecoveryProposalGenerationResult.NeedsUserAction(ProviderReconciliationFailureKind.RETRY_AUTHORIZATION_REQUIRED, "Retry requires explicit authorization.")
+                is MissionDispatchResult.StorageFailure -> RecoveryProposalGenerationResult.StorageFailure(result.cause)
+                is MissionDispatchResult.Success -> throw IllegalStateException("Success should not throw ReconciliationException")
+            }
+        }
     }
 
     private fun recoveryProposalSchema(): JSONObject = JSONObject()
@@ -2636,6 +2667,37 @@ open class AgentOpenRouterClient internal constructor(
                 )
             )
 
+            val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(source.url)
+            val fetchFingerprint = FingerprintUtils.hash(canonicalUrl)
+            
+            val ticket = requestContext.toTicket(requestContext.acquiredAt) as? TaskExecutionTicket
+            if (ticket == null) {
+                // Should not happen for a research task
+                continue
+            }
+            
+            val claimResult = store?.claimSourceFetchAtomic(ticket, task.id, canonicalUrl, fetchFingerprint)
+            
+            if (claimResult is SourceFetchClaimResult.ReusedExisting) {
+                val existingAttempt = claimResult.attempt
+                if (existingAttempt.status == SourceFetchStatus.SOURCE_READ_COMMITTED && existingAttempt.sourceReadId != null) {
+                    val existingRead = goal.sourceReads.firstOrNull { it.id == existingAttempt.sourceReadId }
+                    if (existingRead != null) {
+                        verifiedUrls.add(existingRead.url)
+                        val resolvedSource = source.copy(url = existingRead.url)
+                        sources.putIfAbsent(existingRead.url, resolvedSource)
+                        fetchedPages += resolvedSource to existingRead.content.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
+                        newSourceReads += existingRead
+                        executions += AgentToolExecution(
+                            toolName = call.name,
+                            summary = "Reused durable source read: ${existingRead.url}".take(600),
+                            succeeded = true
+                        )
+                        continue
+                    }
+                }
+            }
+
             try {
                 webFetchRequests += 1
                 val result = runtime.execute(call, apiKey, modelId, goal)
@@ -2742,7 +2804,8 @@ open class AgentOpenRouterClient internal constructor(
                 val resolvedSource = source.copy(url = resolvedUrl)
                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
-                newSourceReads += SourceRead(
+                
+                val sourceRead = SourceRead(
                     id = java.util.UUID.randomUUID().toString(),
                     url = resolvedUrl,
                     canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
@@ -2753,11 +2816,33 @@ open class AgentOpenRouterClient internal constructor(
                     authorityScore = validation.authorityScore,
                     provenance = SourceReadProvenance.VERIFIED_FETCH,
                 )
-                executions += AgentToolExecution(
+                
+                val toolExec = AgentToolExecution(
                     toolName = call.name,
                     summary = "Research full-source read [accepted, authority=${validation.authorityScore}]: $resolvedUrl — ${result.displaySummary}".take(600),
                     succeeded = true,
                 )
+                
+                if (claimResult is SourceFetchClaimResult.Claimed && store != null) {
+                    val recordResult = store.commitSourceReadAtomic(ticket, claimResult.attempt.id, sourceRead, toolExec)
+                    when (recordResult) {
+                        is RecordSourceReadResult.Persisted -> {
+                            newSourceReads += recordResult.sourceRead
+                            executions += toolExec
+                        }
+                        is RecordSourceReadResult.ReusedExisting -> {
+                            newSourceReads += recordResult.sourceRead
+                            executions += toolExec
+                        }
+                        else -> {
+                            newSourceReads += sourceRead
+                            executions += toolExec
+                        }
+                    }
+                } else {
+                    newSourceReads += sourceRead
+                    executions += toolExec
+                }
             } catch (error: Throwable) {
                 if (error is com.david.openassistant.domain.tools.PdfUnsupportedException) {
                     store?.updateGoal(goal.id) { current ->
@@ -2954,6 +3039,33 @@ open class AgentOpenRouterClient internal constructor(
                             name = "public_web_fetch",
                             argumentsJson = JSONObject().put("url", followUpSource.url).toString(),
                         )
+                        
+                        val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(followUpSource.url)
+                        val fetchFingerprint = FingerprintUtils.hash(canonicalUrl)
+                        val ticket = requestContext.toTicket(requestContext.acquiredAt) as? TaskExecutionTicket
+                        
+                        val claimResult = if (ticket != null) store?.claimSourceFetchAtomic(ticket, task.id, canonicalUrl, fetchFingerprint) else null
+                        
+                        if (claimResult is SourceFetchClaimResult.ReusedExisting) {
+                            val existingAttempt = claimResult.attempt
+                            if (existingAttempt.status == SourceFetchStatus.SOURCE_READ_COMMITTED && existingAttempt.sourceReadId != null) {
+                                val existingRead = goal.sourceReads.firstOrNull { it.id == existingAttempt.sourceReadId }
+                                if (existingRead != null) {
+                                    verifiedUrls.add(existingRead.url)
+                                    val resolvedSource = followUpSource.copy(url = existingRead.url)
+                                    sources.putIfAbsent(existingRead.url, resolvedSource)
+                                    fetchedPages += resolvedSource to existingRead.content.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
+                                    newSourceReads += existingRead
+                                    executions += AgentToolExecution(
+                                        toolName = fetchCall.name,
+                                        summary = "Reused durable rabbit-hole read: ${existingRead.url}".take(600),
+                                        succeeded = true
+                                    )
+                                    return@onSuccess
+                                }
+                            }
+                        }
+
                         webFetchRequests += 1
                         runCatching { runtime.execute(fetchCall, apiKey, modelId, goal) }
                             .onSuccess { fetchResult ->
@@ -3008,7 +3120,8 @@ open class AgentOpenRouterClient internal constructor(
                                 val resolvedSource = followUpSource.copy(url = resolvedUrl)
                                 sources.putIfAbsent(resolvedUrl, resolvedSource)
                                 fetchedPages += resolvedSource to text.take(MAX_FETCHED_PAGE_CONTEXT_CHARS)
-                                newSourceReads += SourceRead(
+                                
+                                val sourceRead = SourceRead(
                                     id = java.util.UUID.randomUUID().toString(),
                                     url = resolvedUrl,
                                     canonicalUrl = ResearchQualityGate.canonicalSourceUrl(resolvedUrl),
@@ -3019,11 +3132,33 @@ open class AgentOpenRouterClient internal constructor(
                                     authorityScore = validation.authorityScore,
                                     provenance = SourceReadProvenance.VERIFIED_FETCH,
                                 )
-                                executions += AgentToolExecution(
+                                
+                                val toolExec = AgentToolExecution(
                                     toolName = fetchCall.name,
                                     summary = "Rabbit-hole read [$rabbitHoleIterationsRun, accepted, authority=${validation.authorityScore}]: $resolvedUrl — ${fetchResult.displaySummary}".take(600),
                                     succeeded = true,
                                 )
+                                
+                                if (claimResult is SourceFetchClaimResult.Claimed && store != null && ticket != null) {
+                                    val recordResult = store.commitSourceReadAtomic(ticket, claimResult.attempt.id, sourceRead, toolExec)
+                                    when (recordResult) {
+                                        is RecordSourceReadResult.Persisted -> {
+                                            newSourceReads += recordResult.sourceRead
+                                            executions += toolExec
+                                        }
+                                        is RecordSourceReadResult.ReusedExisting -> {
+                                            newSourceReads += recordResult.sourceRead
+                                            executions += toolExec
+                                        }
+                                        else -> {
+                                            newSourceReads += sourceRead
+                                            executions += toolExec
+                                        }
+                                    }
+                                } else {
+                                    newSourceReads += sourceRead
+                                    executions += toolExec
+                                }
                             }
                             .onFailure { error ->
                                 if (error is com.david.openassistant.domain.tools.PdfUnsupportedException) {
@@ -4468,6 +4603,7 @@ open class AgentOpenRouterClient internal constructor(
         val result = executeCapturedOpenRouterBody(apiKey, payload, "agent_tool_aware_chat", generation, requestContext)
         return when (result) {
             is MissionDispatchResult.Success -> JsonEnvelopeParser.requireObject(result.body, "OpenRouter tool response")
+            is MissionDispatchResult.ReusedDurableSuccess -> JsonEnvelopeParser.requireObject(result.body, "OpenRouter tool response")
             is MissionDispatchResult.Reconciled -> {
                 if (result.responseContent != null) {
                     JsonEnvelopeParser.requireObject(result.responseContent, "Reconciled OpenRouter response")
@@ -4475,8 +4611,11 @@ open class AgentOpenRouterClient internal constructor(
                     JSONObject().put("status", "SUCCESS_RECONCILED")
                 }
             }
+            else -> throw ReconciliationException(result)
         }
     }
+
+    private class ReconciliationException(val result: MissionDispatchResult) : Exception("Reconciliation prevented dispatch.")
 
     private suspend fun executeStructuredWithFallback(
         apiKey: String,
@@ -4489,12 +4628,12 @@ open class AgentOpenRouterClient internal constructor(
     ): RawAgentResponse {
         var response = runCatching { executeJsonRequest(apiKey, strictPayload, generation, requestContext, maxAttempts) }
             .recoverCatching { strictError ->
-                if (strictError is TerminalPersistenceException || strictError is CancellationException) throw strictError
+                if (strictError is TerminalPersistenceException || strictError is CancellationException || strictError is ReconciliationException) throw strictError
                 if (!strictError.isStructuredOutputUnsupported()) throw strictError
                 executeJsonRequest(apiKey, jsonModePayload, generation, requestContext, maxAttempts)
             }
             .recoverCatching { jsonModeError ->
-                if (jsonModeError is TerminalPersistenceException || jsonModeError is CancellationException) throw jsonModeError
+                if (jsonModeError is TerminalPersistenceException || jsonModeError is CancellationException || jsonModeError is ReconciliationException) throw jsonModeError
                 if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
                 executeJsonRequest(apiKey, plainPayload, generation, requestContext, maxAttempts)
             }
@@ -4569,6 +4708,7 @@ open class AgentOpenRouterClient internal constructor(
         val result = executeCapturedOpenRouterBody(apiKey, payload, "agent_structured_chat", generation, requestContext, maxAttempts)
         return when (result) {
             is MissionDispatchResult.Success -> parseResponse(result.body, apiKey, payload, result.statusCode, System.currentTimeMillis() - startedAt, result.exchangeId)
+            is MissionDispatchResult.ReusedDurableSuccess -> parseResponse(result.body, apiKey, payload, 200, 0L, result.exchangeId)
             is MissionDispatchResult.Reconciled -> {
                 if (result.responseContent != null) {
                     parseResponse(result.responseContent, apiKey, payload, 200, 0L, result.exchangeId)
@@ -4582,6 +4722,7 @@ open class AgentOpenRouterClient internal constructor(
                     )
                 }
             }
+            else -> throw ReconciliationException(result)
         }
     }
 
@@ -4712,9 +4853,18 @@ open class AgentOpenRouterClient internal constructor(
         }
     }
 
-    internal sealed class MissionDispatchResult {
-        data class Success(val body: String, val statusCode: Int, val exchangeId: String) : MissionDispatchResult()
-        data class Reconciled(val proposal: RecoveryProposal?, val summary: AgentApiSummary?, val exchangeId: String, val responseContent: String? = null) : MissionDispatchResult()
+    internal sealed interface MissionDispatchResult {
+        data class Success(val body: String, val statusCode: Int, val exchangeId: String) : MissionDispatchResult
+        data class ReusedDurableSuccess(val body: String, val exchangeId: String) : MissionDispatchResult
+        data class Reconciled(val proposal: RecoveryProposal?, val summary: AgentApiSummary?, val exchangeId: String, val responseContent: String? = null) : MissionDispatchResult
+        data class ExistingNotDispatched(val attempt: ProviderRequestAttempt) : MissionDispatchResult
+        data class ExistingInFlight(val attempt: ProviderRequestAttempt) : MissionDispatchResult
+        data class ExistingAmbiguous(val attempt: ProviderRequestAttempt) : MissionDispatchResult
+        data class ExistingTerminalFailure(val attempt: ProviderRequestAttempt) : MissionDispatchResult
+        data class RetryAuthorizationRequired(val previousAttempt: ProviderRequestAttempt) : MissionDispatchResult
+        data class LogicalIdentityConflict(val existingFingerprint: String, val requestedFingerprint: String) : MissionDispatchResult
+        data class OwnershipRejected(val reason: String) : MissionDispatchResult
+        data class StorageFailure(val cause: Throwable) : MissionDispatchResult
     }
 
     private suspend fun executeCapturedOpenRouterBody(

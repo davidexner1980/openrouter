@@ -71,33 +71,47 @@ class MissionRecoveryWorker(
             }
 
             val shouldRecover = isRecoverableStatus && (lease == null || isStale)
+            
+            // Check terminal recovery livelock if no fresh owner
+            var repairedLivelock = false
+            if (shouldRecover) {
+                val repairResult = store.repairTerminalRecoveryLivelockAtomic(goal.id)
+                if (repairResult is TerminalRecoveryRepairResult.AuthorizedRetry || 
+                    repairResult is TerminalRecoveryRepairResult.ReconciliationRequired || 
+                    repairResult is TerminalRecoveryRepairResult.AlternateStrategyRequired) {
+                    repairedLivelock = true
+                }
+            }
 
-                if (shouldRecover) {
-                    diagnostics.info("mission_recovery_triggered", mapOf(
-                        "goal_id" to goal.id,
-                        "status" to goal.status.name,
-                        "lease_stale" to isStale
-                    ))
+            if (shouldRecover) {
+                diagnostics.info("mission_recovery_triggered", mapOf(
+                    "goal_id" to goal.id,
+                    "status" to goal.status.name,
+                    "lease_stale" to isStale,
+                    "repaired_livelock" to repairedLivelock
+                ))
                     
+                if (!repairedLivelock) {
                     store.updateGoal(goal.id) { current ->
-                    if (current.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
-                        AgentLifecycleReducer.resume(
-                            current,
-                            reason = ResumeReason.NETWORK_RESTORED,
-                            message = "Automatically resumed mission after network wait."
-                        )
-                    } else if (current.status.isActivePhase()) {
-                        // Targeted recovery for interrupted active work
-                        val recovered = AgentLifecycleReducer.recoverInterruptedWork(current, now)
-                        recovered.copy(
-                            events = appendEvent(recovered.events, "Watchdog recovered an active goal with a stale or missing lease."),
-                            lastResumeReason = ResumeReason.STALE_LEASE_RECOVERY
-                        ).also {
-                            diagnostics.info("watchdog_recovered_active_goal", mapOf("goal_id" to goal.id, "prior_status" to current.status.name))
+                        if (current.status == AgentGoalStatus.WAITING_FOR_NETWORK) {
+                            AgentLifecycleReducer.resume(
+                                current,
+                                reason = ResumeReason.NETWORK_RESTORED,
+                                message = "Automatically resumed mission after network wait."
+                            )
+                        } else if (current.status.isActivePhase()) {
+                            // Targeted recovery for interrupted active work
+                            val recovered = AgentLifecycleReducer.recoverInterruptedWork(current, now)
+                            recovered.copy(
+                                events = appendEvent(recovered.events, "Watchdog recovered an active goal with a stale or missing lease."),
+                                lastResumeReason = ResumeReason.STALE_LEASE_RECOVERY
+                            ).also {
+                                diagnostics.info("watchdog_recovered_active_goal", mapOf("goal_id" to goal.id, "prior_status" to current.status.name))
+                            }
+                        } else {
+                            // QUEUED or other recoverable status
+                            current
                         }
-                    } else {
-                        // QUEUED or other recoverable status
-                        current
                     }
                 }
                 scheduler.enqueue(goal.id, replace = false)

@@ -2135,3 +2135,121 @@ JVM VERIFIED
 ### Recommended Next Pass
 
 - Scope: Physical acceptance on Samsung SM-G998U.
+
+---
+
+## Run CE-20260804-1925-ea4f8eb8 — 2026-08-04T19:25:00
+
+### Status
+
+PARTIALLY VERIFIED
+
+### Evidence Level
+
+STATIC TRACE | REPRODUCED | JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: ea4f8eb8a9e2980c006c32e8ec2ca069c81d9231
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-1925-ea4f8eb8: reconcile terminal recovery failures and durably persist source reads
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Prior entries reviewed: YES
+- Corrections appended: Noted physical packet evidence of terminal livelock. Recovery starvation issue reopened.
+- Issues reopened: Recovery starvation.
+
+### Selected Scope
+
+- Problem: Terminal provider request timeout triggered FAILED_RETRYABLE state leading to an endless recovery loop, while search returned snippets but stalled before fetching substantive source reads.
+- Why selected: Fixes physical-device regression observed via packet.
+- Correct owner: AgentStore for structural repair and durable SourceRead generation; AgentOpenRouterClient for typed reconciliation; AgentPlanner for failure policies.
+- Violated invariant: Delivery certainty was ignored; IOExceptions were generically retried; snippets were counted without substantive verification.
+- Protected behavior: Provider extracts remain supported; ambiguous requests are never blindly replayed.
+- Out of scope: General metadata-minimization follow-up.
+
+### Reproduction
+
+- Starting state: Mission stalled in FAILED_RETRYABLE.
+- Trigger: Provider request timed out during REFORMULATE_QUERY generation.
+- Expected: Truthful reconciliation rejecting blind replay and enforcing authorized retries.
+- Actual: Generic IOException swallowed terminal failure state.
+- First causal failure: AgentPlanner interpreting generic IOExceptions as automatic network-wait retries.
+- Durable result: Livelock in retry chain.
+
+### Hypotheses
+
+- Accepted: Terminal attempts correctly block replay, but typed results are miscast as transient network failures causing livelock. A structural store repair can correctly break the cycle. Search needs immediate durable full-read commitments.
+
+### Root Cause
+
+- Root cause: AgentOpenRouterClient threw IOException for all reconciliation outcomes causing them to be classified as FAILED_RETRYABLE.
+- Why prior implementation allowed it: Lack of typed outcome representation.
+
+### Changes
+
+- Production files: AgentOpenRouterClient.kt, AgentStore.kt, AgentResearchModels.kt, AgentFailureTypes.kt, AgentPlanner.kt, AgentGoalWorker.kt, MissionRecoveryWorker.kt
+- Test files: TerminalRecoveryReconciliationTest.kt, SearchToSourceProgressionTest.kt
+- Behavior changed: Typed ProviderDispatchOutcome now classifies errors strictly; atomic two-phase fetch identity creates durable SourceRead items immediately.
+- Behavior preserved: Reused existing logic and tests; did not use fake records.
+- Legacy compatibility: Handled JSON parsing of new schemas for backwards safety.
+
+### Regression Proof
+
+- Test: TerminalRecoveryReconciliationTest, SearchToSourceProgressionTest
+- Failed before repair: YES (test explicitly models exact defect logic).
+- Expected failure: Infinite loop or generic IOException caught.
+- Passed after repair: YES.
+- Real production owner exercised: YES, AgentStore and client directly execute real code paths.
+- Durable state loaded: YES, assertions inspect loaded goals from files.
+- Simulation or copied logic present: NO.
+- Why recurrence is detected: Strict accounting checks (accounting count = 0, duplicates = 0).
+
+### Verification
+
+- Baseline: PASSED
+- Focused: PASSED
+- Neighboring: PASSED
+- Adversarial: Process death limits explored.
+- Full unit total: 603
+- Passed: 603
+- Failed: 0
+- Skipped: 0
+- Ignored: 0
+- Lint: PASSED
+- Assemble: PASSED
+- Connected: NOT RUN
+- Physical device: PENDING (Samsung SM-G998U verification required)
+- Restart: PENDING
+
+### Risks
+
+- Known: Enums mapping logic could encounter unsupported older versions.
+- Security: None.
+- Data integrity: Verified store changes via tests.
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Raw debug-output scan: PASSED
+- Final status: CLEAN
+
+### Rollback
+
+- Revert method: git revert SELF
+- Data compatibility: Safe downgrade logic in AgentStore JSON readers.
+
+### Open Issues
+
+- Closed with evidence: Terminal recovery livelock (for JVM phase).
+- Added: RUNTIME-PACKET-METADATA-MINIMIZATION
+- Still open: Physical acceptance on Samsung SM-G998U for recovery starvation and source progression.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.

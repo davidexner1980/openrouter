@@ -74,6 +74,56 @@ sealed class TransitionOutcomeResult {
     data class StorageFailure(val cause: Throwable) : TransitionOutcomeResult()
 }
 
+sealed interface TerminalRecoveryRepairResult {
+    data class AuthorizedRetry(
+        val logicalRequestId: String,
+        val failedAttemptOrdinal: Int,
+        val nextAttemptOrdinal: Int,
+        val authorizationFingerprint: String,
+    ) : TerminalRecoveryRepairResult
+
+    data class ReconciliationRequired(
+        val logicalRequestId: String,
+        val exchangeId: String,
+        val deliveryCertainty: ProviderDeliveryCertainty,
+    ) : TerminalRecoveryRepairResult
+
+    data class AlternateStrategyRequired(
+        val failedLogicalRequestId: String,
+        val failedExchangeId: String?,
+        val reasonCode: String,
+    ) : TerminalRecoveryRepairResult
+
+    object AlreadyRepaired : TerminalRecoveryRepairResult
+    object NotApplicable : TerminalRecoveryRepairResult
+    object LiveOwnerPresent : TerminalRecoveryRepairResult
+    object OwnershipRejected : TerminalRecoveryRepairResult
+    object UserPaused : TerminalRecoveryRepairResult
+    object Cancelling : TerminalRecoveryRepairResult
+    object Terminal : TerminalRecoveryRepairResult
+    data class StorageFailure(val cause: Throwable) : TerminalRecoveryRepairResult
+}
+
+sealed interface RecordSourceReadResult {
+    data class Persisted(val sourceRead: SourceRead) : RecordSourceReadResult
+    data class ReusedExisting(val sourceRead: SourceRead) : RecordSourceReadResult
+    object StaleOwnership : RecordSourceReadResult
+    object TaskMismatch : RecordSourceReadResult
+    object FetchClaimMissing : RecordSourceReadResult
+    object FetchClaimAmbiguous : RecordSourceReadResult
+    object GoalTerminal : RecordSourceReadResult
+    data class StorageFailure(val cause: Throwable) : RecordSourceReadResult
+}
+
+sealed interface SourceFetchClaimResult {
+    data class Claimed(val attempt: SourceFetchAttempt) : SourceFetchClaimResult
+    data class ReusedExisting(val attempt: SourceFetchAttempt) : SourceFetchClaimResult
+    object StaleOwnership : SourceFetchClaimResult
+    object TaskMismatch : SourceFetchClaimResult
+    object GoalTerminal : SourceFetchClaimResult
+    data class StorageFailure(val cause: Throwable) : SourceFetchClaimResult
+}
+
 sealed class RefreshLeaseResult {
     object Refreshed : RefreshLeaseResult()
     object GoalMissing : RefreshLeaseResult()
@@ -293,6 +343,215 @@ class AgentStore private constructor(
         
         writeGoalLocked(updatedGoal)
         return true
+    }
+
+    fun repairTerminalRecoveryLivelockAtomic(goalId: String, ticket: PlanningTicket? = null): TerminalRecoveryRepairResult = synchronized(STORE_LOCK) {
+        val snapshot = loadSnapshotFromFilesLocked()
+        val goal = snapshot.goals.firstOrNull { it.id == goalId } ?: return TerminalRecoveryRepairResult.NotApplicable
+        
+        if (goal.status.isFinalTerminalStatus()) return TerminalRecoveryRepairResult.Terminal
+        if (goal.status == AgentGoalStatus.CANCELLING) return TerminalRecoveryRepairResult.Cancelling
+        if (goal.status == AgentGoalStatus.PAUSED) return TerminalRecoveryRepairResult.UserPaused
+        
+        val now = System.currentTimeMillis()
+        val lease = goal.executionLease
+        val isStale = AgentLeasePolicy.isStale(lease, now)
+        val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
+        val isLegacy = lease != null && (lease.ownerProcessSessionId.isBlank() || lease.ownerProcessSessionId == "unknown")
+        val isOrphan = lease != null && !isLegacy && lease.ownerProcessSessionId != currentSessionId
+
+        // Validate ticket if provided
+        if (ticket != null) {
+            if (ticket.generation != goal.leaseGeneration) return TerminalRecoveryRepairResult.OwnershipRejected
+            if (lease == null || lease.workerId != ticket.workerId) return TerminalRecoveryRepairResult.OwnershipRejected
+        } else {
+            // Watchdog path: ensure no fresh owner exists
+            if (lease != null && !isStale && !isLegacy && !isOrphan) return TerminalRecoveryRepairResult.LiveOwnerPresent
+        }
+
+        val planId = goal.activeRecoveryPlanId ?: return TerminalRecoveryRepairResult.NotApplicable
+        val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return TerminalRecoveryRepairResult.NotApplicable
+        
+        if (plan.status != RecoveryPlanStatus.FAILED_RETRYABLE) return TerminalRecoveryRepairResult.NotApplicable
+        
+        val logicalRequestId = plan.logicalProviderRequestId ?: "recovery-${plan.id}"
+        
+        // Ensure no active attempts exist
+        val activeAttempt = goal.requestAttempts.firstOrNull { it.logicalRequestId == logicalRequestId && it.exchangeOutcome == ExchangeOutcome.ACTIVE }
+        if (activeAttempt != null) return TerminalRecoveryRepairResult.NotApplicable
+
+        val attempts = goal.requestAttempts.filter { it.logicalRequestId == logicalRequestId }
+        if (attempts.isEmpty()) return TerminalRecoveryRepairResult.NotApplicable
+        
+        val failedAttempt = attempts.maxByOrNull { it.wireAttemptOrdinal } ?: return TerminalRecoveryRepairResult.NotApplicable
+        
+        // Delivery Truth checks
+        val repairKeyAction: String
+        val result: TerminalRecoveryRepairResult
+        val nextStatus: RecoveryPlanStatus
+        
+        val isNotDispatched = failedAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED
+        val isAmbiguous = failedAttempt.transportStage >= ProviderTransportStage.REQUEST_BODY_STARTED && failedAttempt.deliveryCertainty == ProviderDeliveryCertainty.SENT_UNCONFIRMED
+        val hasHeaders = failedAttempt.transportStage >= ProviderTransportStage.RESPONSE_HEADERS_RECEIVED
+        val hasExplicitRejection = failedAttempt.exchangeOutcome == ExchangeOutcome.RESPONSE_ERROR || failedAttempt.httpStatusCode?.let { it in 400..499 } == true
+        val hasValidAuthorization = goal.retryAuthorizations.any { it.logicalRequestId == logicalRequestId && it.attemptOrdinal > failedAttempt.wireAttemptOrdinal }
+
+        if (hasValidAuthorization) {
+            // There's already a valid authorization; the issue is that it wasn't picked up and generated
+            repairKeyAction = "invoke-authorized-retry"
+            val auth = goal.retryAuthorizations.first { it.logicalRequestId == logicalRequestId && it.attemptOrdinal > failedAttempt.wireAttemptOrdinal }
+            result = TerminalRecoveryRepairResult.AuthorizedRetry(logicalRequestId, failedAttempt.wireAttemptOrdinal, auth.attemptOrdinal, "${auth.logicalRequestId}-${auth.attemptOrdinal}")
+            nextStatus = RecoveryPlanStatus.GENERATING
+        } else if (isNotDispatched) {
+            repairKeyAction = "authorize-retry"
+            val auth = ProviderRetryAuthorization(
+                logicalRequestId = logicalRequestId,
+                payloadFingerprint = failedAttempt.payloadFingerprint,
+                executionGeneration = goal.leaseGeneration,
+                previousExchangeId = failedAttempt.exchangeId,
+                failureClass = failedAttempt.failureClass ?: "NOT_DISPATCHED",
+                deliveryCertainty = failedAttempt.deliveryCertainty,
+                attemptOrdinal = failedAttempt.wireAttemptOrdinal + 1
+            )
+            result = TerminalRecoveryRepairResult.AuthorizedRetry(logicalRequestId, failedAttempt.wireAttemptOrdinal, auth.attemptOrdinal, "${auth.logicalRequestId}-${auth.attemptOrdinal}")
+            nextStatus = RecoveryPlanStatus.GENERATING
+        } else if (isAmbiguous) {
+            repairKeyAction = "reconciliation-required"
+            result = TerminalRecoveryRepairResult.ReconciliationRequired(logicalRequestId, failedAttempt.exchangeId, failedAttempt.deliveryCertainty)
+            nextStatus = RecoveryPlanStatus.RECONCILIATION_REQUIRED
+        } else if (hasHeaders || hasExplicitRejection) {
+            repairKeyAction = "alternate-strategy-required"
+            result = TerminalRecoveryRepairResult.AlternateStrategyRequired(logicalRequestId, failedAttempt.exchangeId, failedAttempt.failureClass ?: "UNKNOWN_FAILURE")
+            nextStatus = RecoveryPlanStatus.ALTERNATE_STRATEGY_REQUIRED
+        } else {
+            // Default fallback for terminal unknown conditions
+            repairKeyAction = "alternate-strategy-required"
+            result = TerminalRecoveryRepairResult.AlternateStrategyRequired(logicalRequestId, failedAttempt.exchangeId, failedAttempt.failureClass ?: "UNKNOWN_FAILURE")
+            nextStatus = RecoveryPlanStatus.ALTERNATE_STRATEGY_REQUIRED
+        }
+
+        val repairKey = "terminal-recovery-reconciliation-v1:${goal.id}:${plan.id}:$logicalRequestId:${failedAttempt.exchangeId}:${failedAttempt.wireAttemptOrdinal}:${failedAttempt.failureClass}:$repairKeyAction"
+        if (goal.idempotencyRecords.any { it.key == repairKey }) return TerminalRecoveryRepairResult.AlreadyRepaired
+
+        val updatedGoal = goal.copy(
+            recoveryPlans = goal.recoveryPlans.map { if (it.id == planId) it.copy(status = nextStatus) else it },
+            retryAuthorizations = if (result is TerminalRecoveryRepairResult.AuthorizedRetry && !hasValidAuthorization) {
+                val auth = ProviderRetryAuthorization(
+                    logicalRequestId = logicalRequestId,
+                    payloadFingerprint = failedAttempt.payloadFingerprint,
+                    executionGeneration = goal.leaseGeneration,
+                    previousExchangeId = failedAttempt.exchangeId,
+                    failureClass = failedAttempt.failureClass ?: "UNKNOWN_FAILURE",
+                    deliveryCertainty = failedAttempt.deliveryCertainty,
+                    attemptOrdinal = failedAttempt.wireAttemptOrdinal + 1
+                )
+                goal.retryAuthorizations + auth
+            } else goal.retryAuthorizations,
+            idempotencyRecords = goal.idempotencyRecords + IdempotencyRecord(
+                key = repairKey,
+                effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                state = IdempotencyState.COMMITTED,
+                claimOwner = ticket?.workerId ?: "system",
+                committedAt = now,
+                completedBy = ticket?.workerId ?: "system"
+            ),
+            events = appendEvent(goal.events, "Applied terminal recovery livelock repair: $repairKeyAction"),
+            updatedAt = now
+        )
+        
+        writeGoalLocked(updatedGoal)
+        return result
+    }
+
+    fun claimSourceFetchAtomic(
+        ticket: TaskExecutionTicket,
+        taskId: String,
+        canonicalUrl: String,
+        fetchFingerprint: String
+    ): SourceFetchClaimResult = synchronized(STORE_LOCK) {
+        val snapshot = loadSnapshotFromFilesLocked()
+        val goal = snapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return SourceFetchClaimResult.GoalTerminal
+        
+        if (goal.status.isFinalTerminalStatus()) return SourceFetchClaimResult.GoalTerminal
+        if (goal.leaseGeneration != ticket.generation || goal.executionLease?.workerId != ticket.workerId) return SourceFetchClaimResult.StaleOwnership
+        
+        if (!goal.tasks.any { it.id == taskId }) return SourceFetchClaimResult.TaskMismatch
+        
+        val logicalFetchId = "fetch-${goal.id}-$taskId-$canonicalUrl"
+        
+        // Find existing claim
+        val existing = goal.fetchAttempts.firstOrNull { it.logicalFetchId == logicalFetchId && it.fetchFingerprint == fetchFingerprint }
+        val now = System.currentTimeMillis()
+        
+        if (existing != null) {
+            return SourceFetchClaimResult.ReusedExisting(existing)
+        }
+        
+        val attemptOrdinal = (goal.fetchAttempts.filter { it.logicalFetchId == logicalFetchId }.maxOfOrNull { it.attemptOrdinal } ?: 0) + 1
+        
+        val attempt = SourceFetchAttempt(
+            id = java.util.UUID.randomUUID().toString(),
+            logicalFetchId = logicalFetchId,
+            goalId = goal.id,
+            taskId = taskId,
+            canonicalUrl = canonicalUrl,
+            fetchFingerprint = fetchFingerprint,
+            attemptOrdinal = attemptOrdinal,
+            executionGeneration = goal.leaseGeneration,
+            status = SourceFetchStatus.CLAIMED,
+            transportStage = SourceFetchTransportStage.NOT_DISPATCHED,
+            deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
+            retryAuthorizationFingerprint = null,
+            sourceReadId = null,
+            failureClassification = null,
+            createdAt = now,
+            updatedAt = now
+        )
+        
+        val updatedGoal = goal.copy(
+            fetchAttempts = goal.fetchAttempts + attempt,
+            updatedAt = now
+        )
+        writeGoalLocked(updatedGoal)
+        
+        return SourceFetchClaimResult.Claimed(attempt)
+    }
+
+    fun commitSourceReadAtomic(
+        ticket: TaskExecutionTicket,
+        fetchClaimId: String,
+        sourceRead: SourceRead,
+        toolAccounting: AgentToolExecution
+    ): RecordSourceReadResult = synchronized(STORE_LOCK) {
+        val snapshot = loadSnapshotFromFilesLocked()
+        val goal = snapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return RecordSourceReadResult.GoalTerminal
+        
+        if (goal.status.isFinalTerminalStatus()) return RecordSourceReadResult.GoalTerminal
+        if (goal.leaseGeneration != ticket.generation || goal.executionLease?.workerId != ticket.workerId) return RecordSourceReadResult.StaleOwnership
+        
+        val attempt = goal.fetchAttempts.firstOrNull { it.id == fetchClaimId } ?: return RecordSourceReadResult.FetchClaimMissing
+        if (attempt.taskId != ticket.taskId) return RecordSourceReadResult.TaskMismatch
+        if (attempt.status == SourceFetchStatus.SOURCE_READ_COMMITTED) {
+            val existingRead = goal.sourceReads.firstOrNull { it.id == attempt.sourceReadId }
+            return if (existingRead != null) RecordSourceReadResult.ReusedExisting(existingRead) else RecordSourceReadResult.FetchClaimAmbiguous
+        }
+        
+        val now = System.currentTimeMillis()
+        val updatedAttempt = attempt.copy(
+            status = SourceFetchStatus.SOURCE_READ_COMMITTED,
+            sourceReadId = sourceRead.id,
+            updatedAt = now
+        )
+        
+        val updatedGoal = goal.copy(
+            fetchAttempts = goal.fetchAttempts.map { if (it.id == attempt.id) updatedAttempt else it },
+            sourceReads = goal.sourceReads + sourceRead,
+            toolExecutions = goal.toolExecutions + toolAccounting,
+            updatedAt = now
+        )
+        writeGoalLocked(updatedGoal)
+        
+        return RecordSourceReadResult.Persisted(sourceRead)
     }
 
     fun updateProviderTransportStage(
@@ -1544,6 +1803,9 @@ class AgentStore private constructor(
         json.put("active_continuation_scheduling_claim", goal.activeContinuationSchedulingClaim?.let(::encodeContinuationSchedulingClaim) ?: JSONObject.NULL)
         json.put("is_tool_restricted", goal.isToolRestricted)
         json.put("failure_classification", goal.failureClassification.name)
+        json.put("fetch_attempts", JSONArray().apply { goal.fetchAttempts.forEach { put(encodeSourceFetchAttempt(it)) } })
+        json.put("tool_executions", JSONArray().apply { goal.toolExecutions.forEach { put(encodeToolExecution(it)) } })
+        json.put("revision", goal.revision)
         return json
     }
 
@@ -1689,6 +1951,9 @@ class AgentStore private constructor(
             activeContinuationSchedulingClaim = json.optJSONObject("active_continuation_scheduling_claim")?.let(::decodeContinuationSchedulingClaim),
             isToolRestricted = json.optBoolean("is_tool_restricted", false),
             failureClassification = json.optEnum("failure_classification", MissionFailureClassification.NONE),
+            fetchAttempts = json.optJSONArray("fetch_attempts").decodeList(::decodeSourceFetchAttempt),
+            toolExecutions = json.optJSONArray("tool_executions").decodeList(::decodeToolExecution),
+            revision = json.optInt("revision", 0),
         )
 
         val machinePauseIdx = restoredEvents.indexOfLast { 
@@ -2851,7 +3116,7 @@ class AgentStore private constructor(
         explanation = json.optNullableString("explanation"),
     )
 
-        private fun encodeSourceRead(read: SourceRead): JSONObject = JSONObject()
+    private fun encodeSourceRead(read: SourceRead): JSONObject = JSONObject()
         .put("id", read.id)
         .put("url", read.url)
         .put("canonical_url", read.canonicalUrl)
@@ -2863,16 +3128,53 @@ class AgentStore private constructor(
         .put("read_at", read.readAt)
         .put("provenance", read.provenance.name)
 
-        .put("id", read.id)
-        .put("url", read.url)
-        .put("canonical_url", read.canonicalUrl)
-        .put("http_code", read.httpCode)
-        .put("content_type", read.contentType)
-        .put("content", read.content)
-        .put("source_role", read.sourceRole)
-        .put("authority_score", read.authorityScore)
-        .put("read_at", read.readAt)
-        .put("provenance", read.provenance.name)
+    private fun encodeSourceFetchAttempt(attempt: SourceFetchAttempt): JSONObject = JSONObject()
+        .put("id", attempt.id)
+        .put("logical_fetch_id", attempt.logicalFetchId)
+        .put("goal_id", attempt.goalId)
+        .put("task_id", attempt.taskId)
+        .put("canonical_url", attempt.canonicalUrl)
+        .put("fetch_fingerprint", attempt.fetchFingerprint)
+        .put("attempt_ordinal", attempt.attemptOrdinal)
+        .put("execution_generation", attempt.executionGeneration)
+        .put("status", attempt.status.name)
+        .put("transport_stage", attempt.transportStage.name)
+        .put("delivery_certainty", attempt.deliveryCertainty.name)
+        .put("retry_authorization_fingerprint", attempt.retryAuthorizationFingerprint ?: JSONObject.NULL)
+        .put("source_read_id", attempt.sourceReadId ?: JSONObject.NULL)
+        .put("failure_classification", attempt.failureClassification ?: JSONObject.NULL)
+        .put("created_at", attempt.createdAt)
+        .put("updated_at", attempt.updatedAt)
+
+    private fun decodeSourceFetchAttempt(json: JSONObject): SourceFetchAttempt = SourceFetchAttempt(
+        id = json.getString("id"),
+        logicalFetchId = json.getString("logical_fetch_id"),
+        goalId = json.getString("goal_id"),
+        taskId = json.getString("task_id"),
+        canonicalUrl = json.getString("canonical_url"),
+        fetchFingerprint = json.getString("fetch_fingerprint"),
+        attemptOrdinal = json.getInt("attempt_ordinal"),
+        executionGeneration = json.getInt("execution_generation"),
+        status = json.optEnum("status", SourceFetchStatus.TERMINAL_FAILURE),
+        transportStage = json.optEnum("transport_stage", SourceFetchTransportStage.NOT_DISPATCHED),
+        deliveryCertainty = json.optEnum("delivery_certainty", ProviderDeliveryCertainty.SENT_UNCONFIRMED),
+        retryAuthorizationFingerprint = json.optNullableString("retry_authorization_fingerprint"),
+        sourceReadId = json.optNullableString("source_read_id"),
+        failureClassification = json.optNullableString("failure_classification"),
+        createdAt = json.getLong("created_at"),
+        updatedAt = json.getLong("updated_at")
+    )
+        
+    private fun encodeToolExecution(execution: AgentToolExecution): JSONObject = JSONObject()
+        .put("tool_name", execution.toolName)
+        .put("summary", execution.summary)
+        .put("succeeded", execution.succeeded)
+        
+    private fun decodeToolExecution(json: JSONObject): AgentToolExecution = AgentToolExecution(
+        toolName = json.getString("tool_name"),
+        summary = json.getString("summary"),
+        succeeded = json.getBoolean("succeeded")
+    )
 
     private fun decodeSourceRead(json: JSONObject): SourceRead = SourceRead(
         id = json.getString("id"),
