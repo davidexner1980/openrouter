@@ -2306,7 +2306,119 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-2313-15404823 — 2026-08-04T23:13:00
+## Run CE-20260804-2344-1017a20e — 2026-08-04T23:44:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R1
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 1017a20e87788a81f88c309b76ee9549ade5bc2f
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260804-2344-1017a20e: minimize redundant internal metadata in diagnostic details
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: RUNTIME-PACKET-METADATA-MINIMIZATION
+- Subsystem: Diagnostics
+- Mission requirement: Privacy, Performance
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for ID promotion and filtering.
+
+### Scope Contract
+
+- Problem: Redundant internal metadata (goal_id, task_id, exchange_id, etc.) duplicated in event details.
+- First causal failure: `RuntimeDiagnostics.buildEvent` did not filter out keys already promoted to top-level fields.
+- Correct owner: `RuntimeDiagnostics.kt`
+- Violated invariant: No redundant internal metadata in diagnostic details.
+- Protected behavior: Diagnostic IDs remain in top-level `DiagnosticEvent` fields.
+- Compatibility: Maintained existing top-level ID names.
+- Out of scope: Physical device upgrade verification (Samsung SM-G998U).
+
+### Reproduction
+
+- Starting state: `RuntimeDiagnostics` promotes some IDs but keeps them in `fields`.
+- Trigger: Record an event with `goal_id`, `task_id`, `worker_id`, etc. in fields.
+- Expected: IDs are in top-level `DiagnosticEvent` fields but absent from `fields` map.
+- Actual: IDs were present in both locations.
+- Durable result: Duplicated metadata in JSONL logs and exported packets.
+- Repeatability: 100%
+
+### Hypotheses
+
+- Accepted: Centralizing ID filtering in `RuntimeDiagnostics.buildEvent` using `DiagnosticEvent.ENVELOPE_FIELDS` ensures all standard IDs are promoted and minimized in the detail payload.
+
+### Root Cause
+
+- Root cause: Incomplete metadata minimization policy in the diagnostic recorder boundary.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/data/diagnostics/DiagnosticEvent.kt (Expanded ENVELOPE_FIELDS and made internal)
+    - app/src/main/java/com/david/openassistant/data/diagnostics/RuntimeDiagnostics.kt (Expanded ID promotion and implemented detail filtering)
+- Test files:
+    - app/src/test/java/com/david/openassistant/data/diagnostics/DiagnosticMinimizationTest.kt (New: verified filtering)
+- Behavior changed: Diagnostic detail payloads no longer contain redundant standard IDs.
+- Behavior preserved: Logcat and JSON output still include promoted IDs.
+
+### Regression Proof
+
+- Test: `DiagnosticMinimizationTest.testBuildEventFiltering`
+- Failed before repair: YES (internal fields contained redundant IDs)
+- Expected failure: `AssertionError` for present keys.
+- Passed after repair: YES
+- Real owner exercised: YES (`RuntimeDiagnostics` via reflection)
+- Durable output reloaded: YES (DiagnosticEvent inspected)
+- Exact counts asserted: N/A
+- Simulation present: NO
+- Why recurrence is detected: Direct test verifies absence of restricted keys in the fields map.
+
+### Verification
+
+- Baseline: PASSED (after unsetting ANDROID_PREFS_ROOT)
+- Focused: PASSED (`DiagnosticMinimizationTest`)
+- Full unit total: 608
+- Passed: 608
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- Provider count: 0 (No network calls)
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Secret scan: PASSED (No new secrets)
+- Final status: CLEAN
+
+### Open Issues
+
+- Closed with evidence: `RUNTIME-PACKET-METADATA-MINIMIZATION`
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 

@@ -135,9 +135,11 @@ data class DiagnosticEvent(
         val PROCESS_SESSION_ID: String = UUID.randomUUID().toString().take(8)
         private val PROCESS_SEQUENCE = AtomicLong(1)
         
-        private val ENVELOPE_FIELDS = setOf(
-            "outcome", "reason_code", "goal_id", "task_id", "exchange_id", "operation_id", "duration_ms",
-            "worker_id", "lease_gen", "state_before", "state_after"
+        internal val ENVELOPE_FIELDS = setOf(
+            "outcome", "reason_code", "goal_id", "task_id", "worker_id",
+            "work_request_id", "worker_run_attempt", "lease_generation", "lease_gen", "lease_attempt_id",
+            "exchange_id", "operation_id", "search_id", "source_read_id", "tool_call_id",
+            "state_before", "state_after", "duration_ms"
         )
     }
 }

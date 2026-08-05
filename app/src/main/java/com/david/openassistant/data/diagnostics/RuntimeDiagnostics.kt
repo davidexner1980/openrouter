@@ -249,8 +249,15 @@ open class RuntimeDiagnostics internal constructor(
         val goalId = fields["goal_id"]?.toString()
         val taskId = fields["task_id"]?.toString()
         val workerId = fields["worker_id"]?.toString()
+        val workRequestId = fields["work_request_id"]?.toString()
+        val workerRunAttempt = (fields["worker_run_attempt"] as? Number)?.toInt()
+        val leaseGeneration = (fields["lease_generation"] ?: fields["lease_gen"])?.let { (it as? Number)?.toInt() }
+        val leaseAttemptId = fields["lease_attempt_id"]?.toString()
         val exchangeId = fields["exchange_id"]?.toString()
         val operationId = fields["operation_id"]?.toString()
+        val searchId = fields["search_id"]?.toString()
+        val sourceReadId = fields["source_read_id"]?.toString()
+        val toolCallId = fields["tool_call_id"]?.toString()
         val durationMs = (fields["duration_ms"] as? Number)?.toLong()
         val outcome = fields["outcome"]?.toString()
         val reasonCode = fields["reason_code"]?.toString()
@@ -259,7 +266,9 @@ open class RuntimeDiagnostics internal constructor(
 
         val finalFields = mutableMapOf<String, Any?>()
         sanitizedFields.keys().forEach { key ->
-            finalFields[key] = sanitizedFields.get(key)
+            if (key !in DiagnosticEvent.ENVELOPE_FIELDS) {
+                finalFields[key] = sanitizedFields.get(key)
+            }
         }
 
         return DiagnosticEvent(
@@ -271,11 +280,18 @@ open class RuntimeDiagnostics internal constructor(
             goalId = goalId,
             taskId = taskId,
             workerId = workerId,
+            workRequestId = workRequestId,
+            workerRunAttempt = workerRunAttempt,
+            leaseGeneration = leaseGeneration,
+            leaseAttemptId = leaseAttemptId,
             exchangeId = exchangeId,
             operationId = operationId,
-            durationMs = durationMs,
+            searchId = searchId,
+            sourceReadId = sourceReadId,
+            toolCallId = toolCallId,
             stateBefore = stateBefore,
             stateAfter = stateAfter,
+            durationMs = durationMs,
             fields = finalFields
         )
     }
