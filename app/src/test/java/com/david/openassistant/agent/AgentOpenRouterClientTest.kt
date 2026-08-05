@@ -36,10 +36,11 @@ class AgentOpenRouterClientTest {
             .toString()
 
         val exception = assertThrows(OpenRouterException::class.java) {
-            val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType, String::class.java)
+            val method = AgentOpenRouterClient::class.java.getDeclaredMethods().first { it.name == "parseResponse" }
             method.isAccessible = true
             try {
-                method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L, "ex-123")
+                val attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test")
+                method.invoke(client, body, "sk-or-test", attribution, 200, 100L, "ex-123", null, null)
             } catch (e: java.lang.reflect.InvocationTargetException) {
                 throw e.targetException
             }
@@ -61,11 +62,12 @@ class AgentOpenRouterClientTest {
             ))
             .toString()
 
-        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("parseResponse", String::class.java, String::class.java, JSONObject::class.java, Int::class.javaPrimitiveType, Long::class.javaPrimitiveType, String::class.java)
+        val method = AgentOpenRouterClient::class.java.getDeclaredMethods().first { it.name == "parseResponse" }
         method.isAccessible = true
         
         // V36: Should NOT throw 429 even if content says rate limit, because HTTP status is 200.
-        val response = method.invoke(client, body, "sk-or-test", JSONObject(), 200, 100L, "ex-123")
+        val attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test")
+        val response = method.invoke(client, body, "sk-or-test", attribution, 200, 100L, "ex-123", null, null)
         assertNotNull(response)
     }
 
@@ -108,8 +110,9 @@ class AgentOpenRouterClientTest {
         val method = AgentOpenRouterClient::class.java.getDeclaredMethods().first { it.name == "basePayload" }
         method.isAccessible = true
         
-        // Signature: modelId, systemPrompt, userPrompt, reasoningEffort, role, selectionReason, freeOnly, goalId, taskId
-        val payload = method.invoke(client, "google/gemini", "system", "user", null, null, null, false, null, null) as JSONObject
+        // Signature: modelId, systemPrompt, userPrompt, reasoningEffort, role, selectionReason, freeOnly
+        val result = method.invoke(client, "google/gemini", "system", "user", null, null, null, false) as Pair<*, *>
+        val payload = result.first as JSONObject
         
         val models = payload.getJSONArray("models")
         assertEquals("openrouter/auto-beta", payload.getString("model"))

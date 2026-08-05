@@ -69,8 +69,11 @@ class ParallelToolDeduplicationTest {
         override suspend fun executeRawJsonRequest(
             apiKey: String,
             payload: JSONObject,
+            attribution: ProviderResponseAttribution,
             generation: Int,
-            requestContext: ProviderRequestContext.Mission
+            requestContext: ProviderRequestContext.Mission,
+            wireVariantKind: ProviderWireVariantKind,
+            wireVariantOrdinal: Int
         ): JSONObject {
             return responses[responseIndex++]
         }
@@ -134,6 +137,7 @@ class ParallelToolDeduplicationTest {
         client.executeToolAwareJsonRequest(
             apiKey = "key",
             originalPayload = payload,
+            attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test"),
             generation = 1,
             onProgress = { _: AgentSourceCitation -> },
             requestContext = requestContext,

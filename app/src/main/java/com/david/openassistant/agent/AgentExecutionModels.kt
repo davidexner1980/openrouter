@@ -22,6 +22,15 @@ enum class ProviderDeliveryCertainty {
     RESPONSE_CONFIRMED
 }
 
+enum class ProviderWireVariantKind {
+    PRIMARY,
+    STRICT_SCHEMA,
+    JSON_OBJECT,
+    PLAIN_JSON,
+    TOOL_COMPATIBILITY,
+    STRUCTURE_REPAIR,
+}
+
 enum class ProviderAttemptFailureClass {
     LOCAL_VALIDATION,
     DNS_FAILURE,
@@ -62,6 +71,11 @@ data class ProviderRetryAuthorization(
     val failureClass: String,
     val deliveryCertainty: ProviderDeliveryCertainty,
     val attemptOrdinal: Int,
+    // New fields for wire metadata minimization and variant binding
+    val wirePayloadFingerprint: String? = null,
+    val fingerprintSchemaVersion: Int = 1,
+    val wireVariantKind: ProviderWireVariantKind? = null,
+    val wireVariantOrdinal: Int = 0,
     val authorizationTimestamp: Long = System.currentTimeMillis()
 )
 
@@ -81,6 +95,11 @@ data class ProviderRequestAttempt(
     val resolvedModel: String? = null,
     val role: AgentTaskRole? = null,
     val payloadFingerprint: String,
+    // New fields for wire metadata minimization and variant tracking
+    val wirePayloadFingerprint: String? = null,
+    val fingerprintSchemaVersion: Int = 1,
+    val wireVariantKind: ProviderWireVariantKind? = null,
+    val wireVariantOrdinal: Int = 0,
     val exchangeOutcome: ExchangeOutcome = ExchangeOutcome.ACTIVE,
     val providerAccountingOutcome: ProviderAccountingOutcome = ProviderAccountingOutcome.PENDING,
     val domainCommitOutcome: MissionDomainCommitOutcome = MissionDomainCommitOutcome.PENDING,

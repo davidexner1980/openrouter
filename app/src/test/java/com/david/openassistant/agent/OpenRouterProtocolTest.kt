@@ -269,4 +269,164 @@ class OpenRouterProtocolTest {
             assertFalse("Wire body should NOT contain redaction marker", body.contains("EXCLUDED"))
         }
     }
+
+    @Test
+    fun testWireMetadataMinimization() = runBlocking {
+        val goalId = "goal-1"
+        val taskId = "task-1"
+        val exchangeId = "ex-1"
+        val now = System.currentTimeMillis()
+        
+        val goal = AgentGoal(
+            id = goalId,
+            conversationId = "c1",
+            userRequest = "test",
+            title = "T",
+            objective = "O",
+            finalOutputDescription = "D",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "openrouter/auto-beta",
+            executionModelId = "openrouter/auto-beta",
+            tasks = listOf(AgentTask(id = taskId, order = 0, title = "T", instructions = "I", capability = AgentCapability.REASON))
+        )
+        store.upsertGoal(goal)
+
+        val acquisition = store.acquireTaskLeaseAtomic(goalId, "w1", taskId)
+        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket
+        
+        val context = ProviderRequestContext.Mission(
+            goalId = goalId,
+            workerId = "w1",
+            taskId = taskId,
+            attemptId = ticket.attemptId,
+            executionGeneration = ticket.generation,
+            acquiredAt = ticket.acquiredAt,
+            operation = MissionOperation.EXECUTE_TASK,
+            parentOperationId = "parent-1"
+        )
+        
+        server.enqueue(MockResponse(body = "{\"id\":\"res-1\", \"choices\":[{\"message\":{\"content\":\"OK\"}}], \"usage\":{}}"))
+        
+        client.executeTask("key", "openrouter/auto-beta", goal, goal.tasks[0], context)
+        
+        val body = capturedBody.get() ?: ""
+        assertFalse("Wire body MUST NOT contain metadata", body.contains("\"metadata\""))
+        assertFalse("Wire body MUST NOT contain goal_id", body.contains(goalId))
+        assertFalse("Wire body MUST NOT contain task_id", body.contains(taskId))
+        
+        val request = server.takeRequest()
+        assertNotNull(request)
+        val headers = request.headers.names()
+        assertFalse("X-OA-Goal-ID MUST BE ABSENT", headers.contains("X-OA-Goal-ID"))
+        assertFalse("X-OA-Exchange-ID MUST BE ABSENT", headers.contains("X-OA-Exchange-ID"))
+        assertTrue("X-OpenRouter-Metadata MUST BE PRESENT", headers.contains("X-OpenRouter-Metadata"))
+    }
+
+    @Test
+    fun testVariantAwareReconciliation() = runBlocking {
+        val goalId = "goal-reconcile"
+        val logicalId = "logic-1"
+        val now = System.currentTimeMillis()
+        
+        val goal = AgentGoal(
+            id = goalId,
+            conversationId = "c1",
+            userRequest = "test",
+            title = "T",
+            objective = "O",
+            finalOutputDescription = "D",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "openrouter/auto-beta",
+            executionModelId = "openrouter/auto-beta",
+            tasks = emptyList()
+        )
+        store.upsertGoal(goal)
+        
+        val acquisition = store.acquireTaskLeaseAtomic(goalId, "w1", "task-1")
+        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket
+        
+        val context = ProviderRequestContext.Mission(
+            goalId = goalId,
+            workerId = "w1",
+            taskId = "task-1",
+            attemptId = ticket.attemptId,
+            executionGeneration = ticket.generation,
+            acquiredAt = now,
+            operation = MissionOperation.EXECUTE_TASK,
+            parentOperationId = logicalId,
+            logicalRequestId = logicalId
+        )
+        
+        // 1. Dispatch STRICT_SCHEMA
+        server.enqueue(MockResponse(body = "{\"id\":\"res-1\", \"choices\":[{\"message\":{\"content\":\"OK\"}}], \"usage\":{}}"))
+        val attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test")
+        val payload = JSONObject()
+            .put("model", "openrouter/auto-beta")
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "hello")))
+            
+        client.executeJsonRequest("key", payload, attribution, ticket.generation, context, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA)
+        
+        assertEquals(1, server.requestCount)
+        
+        // 2. Dispatch JSON_OBJECT - should NOT conflict with STRICT_SCHEMA
+        server.enqueue(MockResponse(body = "{\"id\":\"res-2\", \"choices\":[{\"message\":{\"content\":\"OK\"}}], \"usage\":{}}"))
+        client.executeJsonRequest("key", payload, attribution, ticket.generation, context, wireVariantKind = ProviderWireVariantKind.JSON_OBJECT)
+        
+        assertEquals(2, server.requestCount)
+        
+        // 3. Dispatch STRICT_SCHEMA again - should RECONCILE
+        val res3 = client.executeJsonRequest("key", payload, attribution, ticket.generation, context, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA)
+        assertNotNull(res3)
+        assertEquals(2, server.requestCount) // Still 2
+    }
+
+    @Test
+    fun testWireByteReduction() = runBlocking {
+        val goalId = "goal-bytes"
+        val taskId = "task-bytes"
+        
+        val attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test")
+        val context = ProviderRequestContext.Mission(
+            goalId = goalId,
+            workerId = "w1",
+            taskId = taskId,
+            attemptId = "a1",
+            executionGeneration = 1,
+            acquiredAt = System.currentTimeMillis(),
+            operation = MissionOperation.EXECUTE_TASK,
+            parentOperationId = "parent-1"
+        )
+        
+        val payload = JSONObject()
+            .put("model", "openrouter/auto-beta")
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "hello")))
+            
+        // Simulate old canonical shape (including metadata)
+        val legacyPayload = JSONObject(payload.toString())
+        legacyPayload.put("metadata", JSONObject()
+            .put("agent_role", attribution.role?.name)
+            .put("selection_reason", attribution.selectionReason)
+            .put("goal_id", context.goalId)
+            .put("task_id", context.taskId)
+        )
+        
+        val oldBytes = legacyPayload.toString().toByteArray(Charsets.UTF_8).size
+        
+        // Use real preparation
+        val method = AgentOpenRouterClient::class.java.getDeclaredMethod("prepareOpenRouterWireRequest", JSONObject::class.java, ProviderRequestContext::class.java, ProviderResponseAttribution::class.java, ProviderWireVariantKind::class.java, Int::class.javaPrimitiveType)
+        method.isAccessible = true
+        val prepared = method.invoke(client, payload, context, attribution, ProviderWireVariantKind.PRIMARY, 0) as PreparedOpenRouterRequest
+        
+        val newBytes = prepared.wirePayloadText.toByteArray(Charsets.UTF_8).size
+        val removed = oldBytes - newBytes
+        val percent = (removed.toDouble() / oldBytes.toDouble()) * 100.0
+        
+        println("Wire Byte Reduction Evidence:")
+        println("Old bytes (with metadata): $oldBytes")
+        println("New bytes (stripped): $newBytes")
+        println("Bytes removed: $removed")
+        println("Reduction: ${"%.2f".format(percent)}%")
+        
+        assertTrue("Bytes should be reduced", removed > 0)
+    }
 }

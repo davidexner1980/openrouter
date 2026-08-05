@@ -406,9 +406,8 @@ open class AgentOpenRouterClient internal constructor(
 
     internal class TransportEventListener(private val store: AgentStore?) : okhttp3.EventListener() {
         private fun update(call: okhttp3.Call, tracker: TransportTracker) {
-            val goalId = call.request().header("X-OA-Goal-ID") ?: return
-            val exchangeId = call.request().header("X-OA-Exchange-ID") ?: return
-            store?.updateProviderTransportStage(goalId, exchangeId, tracker.stage, tracker.certainty)
+            val context = call.request().tag(ProviderTransportContext::class.java) ?: return
+            store?.updateProviderTransportStage(context.goalId, context.exchangeId, tracker.stage, tracker.certainty)
         }
 
         override fun connectStart(call: okhttp3.Call, inetSocketAddress: java.net.InetSocketAddress, proxy: java.net.Proxy) {
@@ -604,40 +603,41 @@ open class AgentOpenRouterClient internal constructor(
         conversationHistory: String,
     ): Pair<ResearchDraft, AgentApiSummary> {
         val prompt = BriefingPrompts.briefingUserPrompt(conversationHistory)
+        
+        fun briefingPayload(system: String, user: String, selection: String): Pair<JSONObject, ProviderResponseAttribution> {
+            val (payload, attribution) = basePayload(
+                modelId = modelId,
+                systemPrompt = system,
+                userPrompt = user,
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = selection,
+                freeOnly = false
+            )
+            payload.put("temperature", 0.1)
+            return payload to attribution
+        }
+
+        val strict = briefingPayload(BriefingPrompts.BRIEFING_SYSTEM_PROMPT, prompt, "research_briefing")
+        strict.first.put("response_format", jsonSchemaResponseFormat("research_brief_v1", researchBriefSchema()))
+
+        val jsonMode = briefingPayload(
+            BriefingPrompts.BRIEFING_SYSTEM_PROMPT,
+            "$prompt\nReturn one valid JSON object matching the requested structure and no markdown.",
+            "research_briefing_json"
+        )
+        jsonMode.first.put("response_format", JSONObject().put("type", "json_object"))
+
+        val plain = briefingPayload(
+            BriefingPrompts.BRIEFING_SYSTEM_PROMPT,
+            "$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
+            "research_briefing_plain"
+        )
+
         val response = executeBriefingStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(
-                modelId = modelId,
-                systemPrompt = BriefingPrompts.BRIEFING_SYSTEM_PROMPT,
-                userPrompt = prompt,
-                role = AgentTaskRole.PRIMARY_REASONING,
-                selectionReason = "research_briefing",
-                freeOnly = false // Briefing is always auto-router by default, but let's be explicit
-            ).apply {
-                put("response_format", jsonSchemaResponseFormat("research_brief_v1", researchBriefSchema()))
-                put("temperature", 0.1)
-            },
-            jsonModePayload = basePayload(
-                modelId = modelId,
-                systemPrompt = BriefingPrompts.BRIEFING_SYSTEM_PROMPT,
-                userPrompt = "$prompt\nReturn one valid JSON object matching the requested structure and no markdown.",
-                role = AgentTaskRole.PRIMARY_REASONING,
-                selectionReason = "research_briefing_json",
-                freeOnly = false
-            ).apply {
-                put("response_format", JSONObject().put("type", "json_object"))
-                put("temperature", 0.1)
-            },
-            plainPayload = basePayload(
-                modelId = modelId,
-                systemPrompt = BriefingPrompts.BRIEFING_SYSTEM_PROMPT,
-                userPrompt = "$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
-                role = AgentTaskRole.PRIMARY_REASONING,
-                selectionReason = "research_briefing_plain",
-                freeOnly = false
-            ).apply {
-                put("temperature", 0.1)
-            },
+            strict = strict,
+            jsonMode = jsonMode,
+            plain = plain
         )
         val root = JsonEnvelopeParser.requireEmbeddedObject(response.content, "Research brief")
         val draft = ResearchDraft(
@@ -721,36 +721,35 @@ open class AgentOpenRouterClient internal constructor(
         try {
             val response = executeStructuredWithFallback(
                 apiKey = apiKey,
-                strictPayload = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "recovery_proposal", freeOnly = freeOnly, goalId = goal.id, taskId = plan.taskId).apply {
-                    put("response_format", jsonSchemaResponseFormat("research_recovery_proposal", recoveryProposalSchema()))
-                    put("temperature", 0.1)
+                strict = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "recovery_proposal", freeOnly = freeOnly).let { (p, attr) ->
+                    p.put("response_format", jsonSchemaResponseFormat("research_recovery_proposal", recoveryProposalSchema()))
+                    p.put("temperature", 0.1)
+                    p to attr
                 },
-                jsonModePayload = basePayload(
+                jsonMode = basePayload(
                     modelId,
                     systemPrompt,
                     "$userPrompt\nReturn one valid JSON object matching the requested structure and no markdown.",
                     reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
                     role = AgentTaskRole.PRIMARY_REASONING,
                     selectionReason = "recovery_proposal_json_mode",
-                    freeOnly = freeOnly,
-                    goalId = goal.id,
-                    taskId = plan.taskId
-                ).apply {
-                    put("response_format", JSONObject().put("type", "json_object"))
-                    put("temperature", 0.1)
+                    freeOnly = freeOnly
+                ).let { (p, attr) ->
+                    p.put("response_format", JSONObject().put("type", "json_object"))
+                    p.put("temperature", 0.1)
+                    p to attr
                 },
-                plainPayload = basePayload(
+                plain = basePayload(
                     modelId,
                     systemPrompt,
                     "$userPrompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
                     reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
                     role = AgentTaskRole.PRIMARY_REASONING,
                     selectionReason = "recovery_proposal_plain",
-                    freeOnly = freeOnly,
-                    goalId = goal.id,
-                    taskId = plan.taskId
-                ).apply {
-                    put("temperature", 0.1)
+                    freeOnly = freeOnly
+                ).let { (p, attr) ->
+                    p.put("temperature", 0.1)
+                    p to attr
                 },
                 generation = generation,
                 requestContext = requestContext,
@@ -850,34 +849,35 @@ open class AgentOpenRouterClient internal constructor(
 
         val response = executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "cycle_advancement", freeOnly = freeOnly, goalId = goal.id).apply {
-                put("response_format", jsonSchemaResponseFormat("cycle_advancement_plan", planSchema()))
-                put("temperature", 0.1)
+            strict = basePayload(modelId, systemPrompt, userPrompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "cycle_advancement", freeOnly = freeOnly).let { (p, attr) ->
+                p.put("response_format", jsonSchemaResponseFormat("cycle_advancement_plan", planSchema()))
+                p.put("temperature", 0.1)
+                p to attr
             },
-            jsonModePayload = basePayload(
+            jsonMode = basePayload(
                 modelId,
                 systemPrompt,
                 "$userPrompt\nReturn one valid JSON object matching the requested structure and no markdown.",
                 reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "cycle_advancement_json_mode",
-                freeOnly = freeOnly,
-                goalId = goal.id
-            ).apply {
-                put("response_format", JSONObject().put("type", "json_object"))
-                put("temperature", 0.1)
+                freeOnly = freeOnly
+            ).let { (p, attr) ->
+                p.put("response_format", JSONObject().put("type", "json_object"))
+                p.put("temperature", 0.1)
+                p to attr
             },
-            plainPayload = basePayload(
+            plain = basePayload(
                 modelId,
                 systemPrompt,
                 "$userPrompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
                 reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "cycle_advancement_plain",
-                freeOnly = freeOnly,
-                goalId = goal.id
-            ).apply {
-                put("temperature", 0.1)
+                freeOnly = freeOnly
+            ).let { (p, attr) ->
+                p.put("temperature", 0.1)
+                p to attr
             },
             generation = generation,
             requestContext = requestContext,
@@ -930,11 +930,12 @@ open class AgentOpenRouterClient internal constructor(
 
         val response = executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(modelId, PLANNER_SYSTEM_PROMPT, prompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "initial_plan", freeOnly = freeOnly).apply {
-                put("response_format", jsonSchemaResponseFormat("agent_plan_v4", planSchema()))
-                put("temperature", 0.1)
+            strict = basePayload(modelId, PLANNER_SYSTEM_PROMPT, prompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "initial_plan", freeOnly = freeOnly).let { (p, attr) ->
+                p.put("response_format", jsonSchemaResponseFormat("agent_plan_v4", planSchema()))
+                p.put("temperature", 0.1)
+                p to attr
             },
-            jsonModePayload = basePayload(
+            jsonMode = basePayload(
                 modelId,
                 PLANNER_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object matching the requested structure and no markdown.",
@@ -942,11 +943,12 @@ open class AgentOpenRouterClient internal constructor(
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "initial_plan_json_mode",
                 freeOnly = freeOnly
-            ).apply {
-                put("response_format", JSONObject().put("type", "json_object"))
-                put("temperature", 0.1)
+            ).let { (p, attr) ->
+                p.put("response_format", JSONObject().put("type", "json_object"))
+                p.put("temperature", 0.1)
+                p to attr
             },
-            plainPayload = basePayload(
+            plain = basePayload(
                 modelId,
                 PLANNER_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
@@ -954,8 +956,9 @@ open class AgentOpenRouterClient internal constructor(
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "initial_plan_plain",
                 freeOnly = freeOnly
-            ).apply {
-                put("temperature", 0.1)
+            ).let { (p, attr) ->
+                p.put("temperature", 0.1)
+                p to attr
             },
             generation = generation,
             requestContext = requestContext,
@@ -1105,27 +1108,31 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("Rejected planner response, supplied only so structural mistakes are not repeated:")
             appendLine(rejectedPlan.take(MAX_STRUCTURE_REPAIR_CHARS))
         }
-        fun payload(responseFormat: JSONObject?): JSONObject = basePayload(
-            modelId = when {
-                freeOnly -> ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID
-                ProviderRecoveryPolicy.isAutoRouter(modelId) -> modelId
-                else -> ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID
-            },
-            systemPrompt = PLANNER_REFINEMENT_SYSTEM_PROMPT,
-            userPrompt = prompt,
-            reasoningEffort = if (freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
-            role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "plan_refinement",
-            freeOnly = freeOnly
-        ).apply {
-            put("temperature", 0.08)
-            responseFormat?.let { put("response_format", it) }
+        fun payload(responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
+            val (p, attr) = basePayload(
+                modelId = when {
+                    freeOnly -> ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID
+                    ProviderRecoveryPolicy.isAutoRouter(modelId) -> modelId
+                    else -> ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID
+                },
+                systemPrompt = PLANNER_REFINEMENT_SYSTEM_PROMPT,
+                userPrompt = prompt,
+                reasoningEffort = if (freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "plan_refinement",
+                freeOnly = freeOnly
+            )
+            p.apply {
+                put("temperature", 0.08)
+                responseFormat?.let { put("response_format", it) }
+            }
+            return p to attr
         }
         return executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = payload(jsonSchemaResponseFormat("agent_plan_refinement_v1", planSchema())),
-            jsonModePayload = payload(JSONObject().put("type", "json_object")),
-            plainPayload = payload(null),
+            strict = payload(jsonSchemaResponseFormat("agent_plan_refinement_v1", planSchema())),
+            jsonMode = payload(JSONObject().put("type", "json_object")),
+            plain = payload(null),
             generation = generation,
             requestContext = requestContext,
         )
@@ -1254,7 +1261,15 @@ open class AgentOpenRouterClient internal constructor(
                     AgentTaskRole.PRIMARY_REASONING,
                     taskId = task.id,
                 )
-                val rawDesignResponse = executeJsonRequest(apiKey, generatedPayload, generation, bodyBuilderExecContext)
+                val (payload, attribution) = basePayload(
+                    modelId = AUTO_BETA_ROUTER_MODEL_ID, // Use auto-beta for execution
+                    systemPrompt = EXECUTOR_SYSTEM_PROMPT,
+                    userPrompt = "Execute the following designed request exactly.",
+                    role = AgentTaskRole.PRIMARY_REASONING,
+                    selectionReason = "body_builder_execution",
+                    freeOnly = false
+                )
+                val rawDesignResponse = executeJsonRequest(apiKey, generatedPayload, attribution, generation, bodyBuilderExecContext)
                 val designResponse = rawDesignResponse.withRecoveredInlineSources(baseAllowedUrls)
                 return runCatching { parseStepResponse(designResponse, goal, task) }
                     .getOrElse { error ->
@@ -1476,9 +1491,9 @@ open class AgentOpenRouterClient internal constructor(
             appendLine(stepExecutionShapeContract(task.acceptanceCriteria))
         }
 
-        fun configuredPayload(responseFormat: JSONObject?): JSONObject {
+        fun configuredPayload(responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
             val role = determineTaskRole(task, modelId)
-            return basePayload(
+            val (payload, attribution) = basePayload(
                 modelId = modelId,
                 systemPrompt = EXECUTOR_SYSTEM_PROMPT,
                 userPrompt = prompt,
@@ -1486,7 +1501,8 @@ open class AgentOpenRouterClient internal constructor(
                 role = role,
                 selectionReason = "execute_task_${task.capability.wireName}",
                 freeOnly = goal.freeOnly
-            ).apply {
+            )
+            payload.apply {
                 put("temperature", if (task.capability == AgentCapability.SYNTHESIZE) 0.18 else 0.08)
                 responseFormat?.let { put("response_format", it) }
                 if (allowInteractiveToolsForCall && taskToolPlan.tools.length() > 0) {
@@ -1499,15 +1515,16 @@ open class AgentOpenRouterClient internal constructor(
                     }
                 }
             }
+            return payload to attribution
         }
 
         val rawResponse = try {
             if (toolRuntime != null && allowInteractiveToolsForCall) {
                 executeStructuredWithToolsFallback(
                     apiKey = apiKey,
-                    strictPayload = configuredPayload(jsonSchemaResponseFormat("agent_step_v3", stepSchema(task))),
-                    jsonModePayload = configuredPayload(JSONObject().put("type", "json_object")),
-                    plainPayload = configuredPayload(null),
+                    strict = configuredPayload(jsonSchemaResponseFormat("agent_step_v3", stepSchema(task))),
+                    jsonMode = configuredPayload(JSONObject().put("type", "json_object")),
+                    plain = configuredPayload(null),
                     generation = generation,
                     onProgress = onProgress,
                     requestContext = requestContext,
@@ -1517,9 +1534,9 @@ open class AgentOpenRouterClient internal constructor(
             } else {
                 executeStructuredWithFallback(
                     apiKey = apiKey,
-                    strictPayload = configuredPayload(jsonSchemaResponseFormat("agent_step_v3", stepSchema(task))),
-                    jsonModePayload = configuredPayload(JSONObject().put("type", "json_object")),
-                    plainPayload = configuredPayload(null),
+                    strict = configuredPayload(jsonSchemaResponseFormat("agent_step_v3", stepSchema(task))),
+                    jsonMode = configuredPayload(JSONObject().put("type", "json_object")),
+                    plain = configuredPayload(null),
                     generation = generation,
                     requestContext = requestContext,
                     maxAttempts = maxAttempts
@@ -1718,35 +1735,26 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("END UNSTRUCTURED RESPONSE")
         }
 
+        fun repairPayload(user: String, selection: String, responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
+            val (p, attr) = basePayload(
+                modelId = modelId,
+                systemPrompt = STRUCTURE_REPAIR_SYSTEM_PROMPT,
+                userPrompt = user,
+                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = selection,
+                freeOnly = freeOnly
+            )
+            p.put("temperature", 0.0)
+            responseFormat?.let { p.put("response_format", it) }
+            return p to attr
+        }
+
         return executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(modelId, STRUCTURE_REPAIR_SYSTEM_PROMPT, prompt, reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium", role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "step_structure_repair", freeOnly = freeOnly).apply {
-                put("temperature", 0.0)
-                put("response_format", jsonSchemaResponseFormat("agent_step_repair_v1", stepSchema(task)))
-            },
-            jsonModePayload = basePayload(
-                modelId,
-                STRUCTURE_REPAIR_SYSTEM_PROMPT,
-                "$prompt\nReturn one valid JSON object matching the requested structure and no markdown.",
-                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
-                role = AgentTaskRole.PRIMARY_REASONING,
-                selectionReason = "step_structure_repair_json_mode",
-                freeOnly = freeOnly
-            ).apply {
-                put("temperature", 0.0)
-                put("response_format", JSONObject().put("type", "json_object"))
-            },
-            plainPayload = basePayload(
-                modelId,
-                STRUCTURE_REPAIR_SYSTEM_PROMPT,
-                "$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
-                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
-                role = AgentTaskRole.PRIMARY_REASONING,
-                selectionReason = "step_structure_repair_plain",
-                freeOnly = freeOnly
-            ).apply {
-                put("temperature", 0.0)
-            },
+            strict = repairPayload(prompt, "step_structure_repair", jsonSchemaResponseFormat("agent_step_repair_v1", stepSchema(task))),
+            jsonMode = repairPayload("$prompt\nReturn one valid JSON object matching the requested structure and no markdown.", "step_structure_repair_json_mode", JSONObject().put("type", "json_object")),
+            plain = repairPayload("$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.", "step_structure_repair_plain", null),
             generation = generation,
             requestContext = requestContext,
         )
@@ -1817,39 +1825,44 @@ open class AgentOpenRouterClient internal constructor(
             goalId = goal.id
         )
         
-        fun configuredPayload(payload: JSONObject): JSONObject = payload.apply {
+        fun configuredPayload(input: Pair<JSONObject, ProviderResponseAttribution>): Pair<JSONObject, ProviderResponseAttribution> {
+            val (payload, attribution) = input
             if (toolPlan.tools.length() > 0) {
-                put("tools", toolPlan.tools)
-                put("parallel_tool_calls", true)
+                payload.put("tools", toolPlan.tools)
+                payload.put("parallel_tool_calls", true)
             }
+            return payload to attribution
         }
 
         val response = executeStructuredWithToolsFallback(
             apiKey = apiKey,
-            strictPayload = configuredPayload(basePayload(modelId, VERIFIER_SYSTEM_PROMPT, prompt, role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "verify_goal", freeOnly = goal.freeOnly).apply {
-                put("temperature", 0.0)
-                put("response_format", jsonSchemaResponseFormat("agent_verification_v2", verificationSchema()))
+            strict = configuredPayload(basePayload(modelId, VERIFIER_SYSTEM_PROMPT, prompt, role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "verify_goal", freeOnly = goal.freeOnly).let { (p, attr) ->
+                p.put("temperature", 0.0)
+                p.put("response_format", jsonSchemaResponseFormat("agent_verification_v2", verificationSchema()))
+                p to attr
             }),
-            jsonModePayload = configuredPayload(basePayload(
+            jsonMode = configuredPayload(basePayload(
                 modelId,
                 VERIFIER_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object matching the requested structure and no markdown.",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "verify_goal_json_mode",
                 freeOnly = goal.freeOnly
-            ).apply {
-                put("temperature", 0.0)
-                put("response_format", JSONObject().put("type", "json_object"))
+            ).let { (p, attr) ->
+                p.put("temperature", 0.0)
+                p.put("response_format", JSONObject().put("type", "json_object"))
+                p to attr
             }),
-            plainPayload = configuredPayload(basePayload(
+            plain = configuredPayload(basePayload(
                 modelId,
                 VERIFIER_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "verify_goal_plain",
                 freeOnly = goal.freeOnly
-            ).apply {
-                put("temperature", 0.0)
+            ).let { (p, attr) ->
+                p.put("temperature", 0.0)
+                p to attr
             }),
             generation = generation,
             requestContext = requestContext,
@@ -1937,30 +1950,33 @@ open class AgentOpenRouterClient internal constructor(
         }
         return executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(modelId, STRUCTURE_REPAIR_SYSTEM_PROMPT, prompt, role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "verification_repair", freeOnly = goal.freeOnly).apply {
-                put("temperature", 0.0)
-                put("response_format", jsonSchemaResponseFormat("agent_verification_repair_v1", verificationSchema()))
+            strict = basePayload(modelId, STRUCTURE_REPAIR_SYSTEM_PROMPT, prompt, role = AgentTaskRole.PRIMARY_REASONING, selectionReason = "verification_repair", freeOnly = goal.freeOnly).let { (p, attr) ->
+                p.put("temperature", 0.0)
+                p.put("response_format", jsonSchemaResponseFormat("agent_verification_repair_v1", verificationSchema()))
+                p to attr
             },
-            jsonModePayload = basePayload(
+            jsonMode = basePayload(
                 modelId,
                 STRUCTURE_REPAIR_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object matching the requested structure and no markdown.",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "verification_repair_json_mode",
                 freeOnly = goal.freeOnly
-            ).apply {
-                put("temperature", 0.0)
-                put("response_format", JSONObject().put("type", "json_object"))
+            ).let { (p, attr) ->
+                p.put("temperature", 0.0)
+                p.put("response_format", JSONObject().put("type", "json_object"))
+                p to attr
             },
-            plainPayload = basePayload(
+            plain = basePayload(
                 modelId,
                 STRUCTURE_REPAIR_SYSTEM_PROMPT,
                 "$prompt\nReturn one valid JSON object and no markdown or surrounding explanation.",
                 role = AgentTaskRole.PRIMARY_REASONING,
                 selectionReason = "verification_repair_plain",
                 freeOnly = goal.freeOnly
-            ).apply {
-                put("temperature", 0.0)
+            ).let { (p, attr) ->
+                p.put("temperature", 0.0)
+                p to attr
             },
             generation = generation,
             requestContext = requestContext,
@@ -3359,24 +3375,28 @@ open class AgentOpenRouterClient internal constructor(
             }
         }
 
-        fun payload(responseFormat: JSONObject?): JSONObject = basePayload(
-            modelId = modelId,
-            systemPrompt = RESEARCH_STRATEGY_SYSTEM_PROMPT,
-            userPrompt = prompt,
-            reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
-            role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "research_strategy",
-            freeOnly = freeOnly
-        ).apply {
-            put("temperature", 0.12)
-            responseFormat?.let { put("response_format", it) }
+        fun payload(responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
+            val (p, attr) = basePayload(
+                modelId = modelId,
+                systemPrompt = RESEARCH_STRATEGY_SYSTEM_PROMPT,
+                userPrompt = prompt,
+                reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "research_strategy",
+                freeOnly = freeOnly
+            )
+            p.apply {
+                put("temperature", 0.12)
+                responseFormat?.let { put("response_format", it) }
+            }
+            return p to attr
         }
 
         val firstResponse = executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = payload(jsonSchemaResponseFormat("adaptive_research_strategy_v1", researchStrategySchema(queryCount))),
-            jsonModePayload = payload(JSONObject().put("type", "json_object")),
-            plainPayload = payload(null),
+            strict = payload(jsonSchemaResponseFormat("adaptive_research_strategy_v1", researchStrategySchema(queryCount))),
+            jsonMode = payload(JSONObject().put("type", "json_object")),
+            plain = payload(null),
             generation = generation,
             requestContext = requestContext,
         )
@@ -3461,24 +3481,28 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("Return only the requested structured metadata.")
         }
 
-        fun payload(responseFormat: JSONObject?): JSONObject = basePayload(
-            modelId = AgentRoutingPolicy.guardModel(goal, if (goal.freeOnly || isFreeOnlyModel(modelId)) ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID else ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID),
-            systemPrompt = "You are a persistent research assistant with advanced lateral thinking skills. When a search branch fails, you pivot to adjacent entities or different source types to find a way around the obstacle.",
-            userPrompt = prompt,
-            reasoningEffort = if (goal.freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
-            role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "search_query_refinement",
-            freeOnly = goal.freeOnly
-        ).apply {
-            put("temperature", 0.22)
-            responseFormat?.let { put("response_format", it) }
+        fun payload(responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
+            val (p, attr) = basePayload(
+                modelId = AgentRoutingPolicy.guardModel(goal, if (goal.freeOnly || isFreeOnlyModel(modelId)) ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID else ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID),
+                systemPrompt = "You are a persistent research assistant with advanced lateral thinking skills. When a search branch fails, you pivot to adjacent entities or different source types to find a way around the obstacle.",
+                userPrompt = prompt,
+                reasoningEffort = if (goal.freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "search_query_refinement",
+                freeOnly = goal.freeOnly
+            )
+            p.apply {
+                put("temperature", 0.22)
+                responseFormat?.let { put("response_format", it) }
+            }
+            return p to attr
         }
 
         val response = executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = payload(jsonSchemaResponseFormat("search_query_refinement_v1", searchRefinementSchema())),
-            jsonModePayload = payload(JSONObject().put("type", "json_object")),
-            plainPayload = payload(null),
+            strict = payload(jsonSchemaResponseFormat("search_query_refinement_v1", searchRefinementSchema())),
+            jsonMode = payload(JSONObject().put("type", "json_object")),
+            plain = payload(null),
             generation = generation,
             requestContext = requestContext,
         )
@@ -3577,24 +3601,28 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("Return only the requested structured metadata.")
         }
 
-        fun payload(responseFormat: JSONObject?): JSONObject = basePayload(
-            modelId = AgentRoutingPolicy.guardModel(goal, if (goal.freeOnly || isFreeOnlyModel(modelId)) ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID else ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID),
-            systemPrompt = "You are a forensic investigator specializing in indirect evidence reconstruction. You solve unsearchable problems by finding surrounding clues and inferred data points.",
-            userPrompt = prompt,
-            reasoningEffort = "high",
-            role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "forensic_reconstruction",
-            freeOnly = goal.freeOnly
-        ).apply {
-            put("temperature", 0.3)
-            responseFormat?.let { put("response_format", it) }
+        fun payload(responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
+            val (p, attr) = basePayload(
+                modelId = AgentRoutingPolicy.guardModel(goal, if (goal.freeOnly || isFreeOnlyModel(modelId)) ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID else ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID),
+                systemPrompt = "You are a forensic investigator specializing in indirect evidence reconstruction. You solve unsearchable problems by finding surrounding clues and inferred data points.",
+                userPrompt = prompt,
+                reasoningEffort = "high",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "forensic_reconstruction",
+                freeOnly = goal.freeOnly
+            )
+            p.apply {
+                put("temperature", 0.3)
+                responseFormat?.let { put("response_format", it) }
+            }
+            return p to attr
         }
 
         val response = executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = payload(jsonSchemaResponseFormat("forensic_reconstruction_v1", searchRefinementSchema())),
-            jsonModePayload = payload(JSONObject().put("type", "json_object")),
-            plainPayload = payload(null),
+            strict = payload(jsonSchemaResponseFormat("forensic_reconstruction_v1", searchRefinementSchema())),
+            jsonMode = payload(JSONObject().put("type", "json_object")),
+            plain = payload(null),
             generation = generation,
             requestContext = requestContext,
         )
@@ -3665,23 +3693,27 @@ open class AgentOpenRouterClient internal constructor(
             appendLine(leadContext)
         }
 
-        fun payload(responseFormat: JSONObject?): JSONObject = basePayload(
-            modelId = modelId,
-            systemPrompt = EVIDENCE_DRIVEN_FOLLOW_UP_SYSTEM_PROMPT,
-            userPrompt = prompt,
-            role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "evidence_driven_follow_up",
-            freeOnly = goal.freeOnly
-        ).apply {
-            put("temperature", 0.12)
-            responseFormat?.let { put("response_format", it) }
+        fun payload(responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
+            val (p, attr) = basePayload(
+                modelId = modelId,
+                systemPrompt = EVIDENCE_DRIVEN_FOLLOW_UP_SYSTEM_PROMPT,
+                userPrompt = prompt,
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "evidence_driven_follow_up",
+                freeOnly = goal.freeOnly
+            )
+            p.apply {
+                put("temperature", 0.12)
+                responseFormat?.let { put("response_format", it) }
+            }
+            return p to attr
         }
 
         val response = executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = payload(jsonSchemaResponseFormat("evidence_driven_follow_up_v1", evidenceDrivenFollowUpSchema())),
-            jsonModePayload = payload(JSONObject().put("type", "json_object")),
-            plainPayload = payload(null),
+            strict = payload(jsonSchemaResponseFormat("evidence_driven_follow_up_v1", evidenceDrivenFollowUpSchema())),
+            jsonMode = payload(JSONObject().put("type", "json_object")),
+            plain = payload(null),
             generation = generation,
             requestContext = requestContext,
         )
@@ -3730,27 +3762,31 @@ open class AgentOpenRouterClient internal constructor(
             appendLine("Rejected strategy:")
             appendLine(rejectedStrategy.take(MAX_STRUCTURE_REPAIR_CHARS))
         }
-        fun payload(responseFormat: JSONObject?): JSONObject = basePayload(
-            modelId = when {
-                freeOnly -> ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID
-                ProviderRecoveryPolicy.isAutoRouter(modelId) -> modelId
-                else -> ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID
-            },
-            systemPrompt = RESEARCH_STRATEGY_REFINEMENT_SYSTEM_PROMPT,
-            userPrompt = prompt,
-            reasoningEffort = if (freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
-            role = AgentTaskRole.PRIMARY_REASONING,
-            selectionReason = "research_strategy_refinement",
-            freeOnly = freeOnly
-        ).apply {
-            put("temperature", 0.05)
-            responseFormat?.let { put("response_format", it) }
+        fun payload(responseFormat: JSONObject?): Pair<JSONObject, ProviderResponseAttribution> {
+            val (p, attr) = basePayload(
+                modelId = when {
+                    freeOnly -> ProviderRecoveryPolicy.FREE_ROUTER_MODEL_ID
+                    ProviderRecoveryPolicy.isAutoRouter(modelId) -> modelId
+                    else -> ProviderRecoveryPolicy.AUTO_BETA_ROUTER_MODEL_ID
+                },
+                systemPrompt = RESEARCH_STRATEGY_REFINEMENT_SYSTEM_PROMPT,
+                userPrompt = prompt,
+                reasoningEffort = if (freeOnly || isFreeOnlyModel(modelId)) "high" else "medium",
+                role = AgentTaskRole.PRIMARY_REASONING,
+                selectionReason = "research_strategy_refinement",
+                freeOnly = freeOnly
+            )
+            p.apply {
+                put("temperature", 0.05)
+                responseFormat?.let { put("response_format", it) }
+            }
+            return p to attr
         }
         return executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = payload(jsonSchemaResponseFormat("adaptive_research_strategy_refinement_v1", researchStrategySchema(queryCount))),
-            jsonModePayload = payload(JSONObject().put("type", "json_object")),
-            plainPayload = payload(null),
+            strict = payload(jsonSchemaResponseFormat("adaptive_research_strategy_refinement_v1", researchStrategySchema(queryCount))),
+            jsonMode = payload(JSONObject().put("type", "json_object")),
+            plain = payload(null),
             generation = generation,
             requestContext = requestContext,
         )
@@ -3759,24 +3795,23 @@ open class AgentOpenRouterClient internal constructor(
 
     private suspend fun executeStructuredWithToolsFallback(
         apiKey: String,
-        strictPayload: JSONObject,
-        jsonModePayload: JSONObject,
-        plainPayload: JSONObject,
+        strict: Pair<JSONObject, ProviderResponseAttribution>,
+        jsonMode: Pair<JSONObject, ProviderResponseAttribution>,
+        plain: Pair<JSONObject, ProviderResponseAttribution>,
         generation: Int = 0,
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
         maxAttempts: Int = 3,
-    ): RawAgentResponse = runCatching { executeToolCompatibilityLadder(apiKey, strictPayload, generation, onProgress, requestContext, goal, maxAttempts) }
-        .recoverCatching { strictError ->
-            if (!strictError.isStructuredOutputUnsupported()) throw strictError
-            executeToolCompatibilityLadder(apiKey, jsonModePayload, generation, onProgress, requestContext, goal, maxAttempts)
-        }
-        .recoverCatching { jsonModeError ->
-            if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
-            executeToolCompatibilityLadder(apiKey, plainPayload, generation, onProgress, requestContext, goal, maxAttempts)
-        }
-        .getOrThrow()
+    ): RawAgentResponse = runCatching { 
+        executeToolCompatibilityLadder(apiKey, strict.first, strict.second, generation, onProgress, requestContext, goal, maxAttempts, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA) 
+    }.recoverCatching { strictError ->
+        if (!strictError.isStructuredOutputUnsupported()) throw strictError
+        executeToolCompatibilityLadder(apiKey, jsonMode.first, jsonMode.second, generation, onProgress, requestContext, goal, maxAttempts, wireVariantKind = ProviderWireVariantKind.JSON_OBJECT)
+    }.recoverCatching { jsonModeError ->
+        if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
+        executeToolCompatibilityLadder(apiKey, plain.first, plain.second, generation, onProgress, requestContext, goal, maxAttempts, wireVariantKind = ProviderWireVariantKind.PLAIN_JSON)
+    }.getOrThrow()
 
     /**
      * OpenRouter server tools are an optional capability layer because model
@@ -3788,11 +3823,13 @@ open class AgentOpenRouterClient internal constructor(
     private suspend fun executeToolCompatibilityLadder(
         apiKey: String,
         originalPayload: JSONObject,
+        attribution: ProviderResponseAttribution,
         generation: Int = 0,
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
         maxAttempts: Int = 3,
+        wireVariantKind: ProviderWireVariantKind
     ): RawAgentResponse {
         val toolExecutionCache = ConcurrentHashMap<String, String>()
         val candidates = originalPayload.researchToolCompatibilityCandidates()
@@ -3802,12 +3839,15 @@ open class AgentOpenRouterClient internal constructor(
                 val response = executeToolAwareWithChoiceFallback(
                     apiKey = apiKey,
                     payload = candidate.payload,
+                    attribution = attribution,
                     generation = generation,
                     onProgress = onProgress,
                     requestContext = requestContext,
                     goal = goal,
                     maxAttempts = maxAttempts,
                     toolExecutionCache = toolExecutionCache,
+                    wireVariantKind = wireVariantKind,
+                    wireVariantOrdinal = index
                 )
                 if (index == 0) return response
                 return response.copy(
@@ -3838,25 +3878,31 @@ open class AgentOpenRouterClient internal constructor(
     private suspend fun executeToolAwareWithChoiceFallback(
         apiKey: String,
         payload: JSONObject,
+        attribution: ProviderResponseAttribution,
         generation: Int = 0,
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
         maxAttempts: Int = 3,
         toolExecutionCache: ConcurrentHashMap<String, String>,
+        wireVariantKind: ProviderWireVariantKind = ProviderWireVariantKind.PRIMARY,
+        wireVariantOrdinal: Int = 0
     ): RawAgentResponse = runCatching {
-        executeToolAwareJsonRequest(apiKey, payload, generation, onProgress, requestContext, goal, maxAttempts, toolExecutionCache)
+        executeToolAwareJsonRequest(apiKey, payload, attribution, generation, onProgress, requestContext, goal, maxAttempts, toolExecutionCache, wireVariantKind, wireVariantOrdinal)
     }.recoverCatching { error ->
         if (!payload.has("tool_choice") || !error.isToolChoiceCompatibilityError()) throw error
         executeToolAwareJsonRequest(
             apiKey,
             JSONObject(payload.toString()).also(::relaxRequiredFunctionToolChoice),
+            attribution,
             generation,
             onProgress,
             requestContext,
             goal,
             maxAttempts,
             toolExecutionCache,
+            wireVariantKind,
+            wireVariantOrdinal + 100 // Use distinct range for tool choice fallback
         )
     }.getOrThrow()
 
@@ -3924,21 +3970,23 @@ open class AgentOpenRouterClient internal constructor(
     internal suspend fun executeToolAwareJsonRequest(
         apiKey: String,
         originalPayload: JSONObject,
+        attribution: ProviderResponseAttribution,
         generation: Int = 0,
         onProgress: (AgentSourceCitation) -> Unit = {},
         requestContext: ProviderRequestContext.Mission,
         goal: AgentGoal? = null,
         maxAttempts: Int = 3,
         priorOutputsBySignature: ConcurrentHashMap<String, String>,
+        wireVariantKind: ProviderWireVariantKind = ProviderWireVariantKind.PRIMARY,
+        wireVariantOrdinal: Int = 0
     ): RawAgentResponse {
-        val runtime = toolRuntime ?: return executeJsonRequest(apiKey, originalPayload, generation, requestContext, maxAttempts)
+        val runtime = toolRuntime ?: return executeJsonRequest(apiKey, originalPayload, attribution, generation, requestContext, maxAttempts, wireVariantKind, wireVariantOrdinal)
         val guardedModelId = goal?.let { AgentRoutingPolicy.guardModel(it, originalPayload.optString("model")) }
             ?: originalPayload.optString("model")
         
         var payload = JSONObject(originalPayload.toString()).put("model", guardedModelId)
-        val metadata = payload.optJSONObject("metadata")
-        val role = metadata?.optString("agent_role")?.let { AgentTaskRole.valueOf(it) }
-        val selectionReason = metadata?.optString("selection_reason")
+        val role = attribution.role
+        val selectionReason = attribution.selectionReason
         
         val messages = payload.getJSONArray("messages")
         val accumulatedSources = linkedMapOf<String, AgentSourceCitation>()
@@ -4045,7 +4093,7 @@ open class AgentOpenRouterClient internal constructor(
                     finalToolFreeAttempted = true
                 }
 
-                val root = executeRawJsonRequest(apiKey, payload, generation, requestContext)
+                val root = executeRawJsonRequest(apiKey, payload, attribution, generation, requestContext, wireVariantKind = wireVariantKind, wireVariantOrdinal = wireVariantOrdinal + round)
                 responseId = root.optString("id").takeIf { it.isNotBlank() && it != "null" } ?: responseId
                 resolvedModel = root.optString("model").takeIf { it.isNotBlank() && it != "null" } ?: resolvedModel
 
@@ -4550,43 +4598,53 @@ open class AgentOpenRouterClient internal constructor(
 
     private suspend fun executeBriefingStructuredWithFallback(
         apiKey: String,
-        strictPayload: JSONObject,
-        jsonModePayload: JSONObject,
-        plainPayload: JSONObject,
-    ): RawAgentResponse = runCatching { executeBriefingJsonRequest(apiKey, strictPayload) }
+        strict: Pair<JSONObject, ProviderResponseAttribution>,
+        jsonMode: Pair<JSONObject, ProviderResponseAttribution>,
+        plain: Pair<JSONObject, ProviderResponseAttribution>,
+    ): RawAgentResponse = runCatching { executeBriefingJsonRequest(apiKey, strict.first, strict.second) }
         .recoverCatching { strictError ->
             if (!strictError.isStructuredOutputUnsupported()) throw strictError
-            executeBriefingJsonRequest(apiKey, jsonModePayload)
+            executeBriefingJsonRequest(apiKey, jsonMode.first, jsonMode.second)
         }
         .recoverCatching { jsonModeError ->
             if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
-            executeBriefingJsonRequest(apiKey, plainPayload)
+            executeBriefingJsonRequest(apiKey, plain.first, plain.second)
         }
         .getOrThrow()
 
     private suspend fun executeBriefingJsonRequest(
         apiKey: String,
         payload: JSONObject,
+        attribution: ProviderResponseAttribution,
     ): RawAgentResponse {
         val startedAt = System.currentTimeMillis()
-        val body = executeNonMissionCapturedOpenRouterBody(apiKey, payload)
+        val context = ProviderRequestContext.Infrastructure(UUID.randomUUID().toString(), "research_briefing")
+        val body = executeNonMissionCapturedOpenRouterBody(apiKey, payload, attribution, context)
         // Non-mission path doesn't track status code reliably through the same loop yet, assume 200 if it returned body
-        return parseResponse(body, apiKey, payload, 200, System.currentTimeMillis() - startedAt, "non-mission")
+        return parseResponse(body, apiKey, attribution, 200, System.currentTimeMillis() - startedAt, "non-mission")
     }
 
     private suspend fun executeNonMissionCapturedOpenRouterBody(
         apiKey: String,
-        initialPayload: JSONObject,
+        canonicalPayload: JSONObject,
+        attribution: ProviderResponseAttribution,
+        requestContext: ProviderRequestContext,
     ): String {
-        val wirePayloadText = initialPayload.toString()
+        val preparedRequest = prepareOpenRouterWireRequest(
+            canonicalPayload = canonicalPayload,
+            requestContext = requestContext,
+            responseAttribution = attribution
+        )
+        val tracker = TransportTracker()
         val request = Request.Builder()
             .url(CHAT_URL)
             .header("Authorization", "Bearer $apiKey")
             .header("Accept", "application/json")
-            .header("X-OpenRouter-Title", "OpenAssistant Android")
             .header("X-OpenRouter-Metadata", "enabled")
             .header("User-Agent", "OpenAssistant-Android/${BuildConfig.VERSION_NAME}")
-            .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
+            .post(preparedRequest.wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
+            .tag(TransportTracker::class.java, tracker)
+            .tag(ProviderTransportContext::class.java, ProviderTransportContext("non-mission", "non-mission-exchange"))
             .build()
         val response = client.newCall(request).execute()
         val rawBody = response.body.string()
@@ -4597,10 +4655,13 @@ open class AgentOpenRouterClient internal constructor(
     internal open suspend fun executeRawJsonRequest(
         apiKey: String,
         payload: JSONObject,
+        attribution: ProviderResponseAttribution,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
+        wireVariantKind: ProviderWireVariantKind = ProviderWireVariantKind.PRIMARY,
+        wireVariantOrdinal: Int = 0
     ): JSONObject {
-        val result = executeCapturedOpenRouterBody(apiKey, payload, "agent_tool_aware_chat", generation, requestContext)
+        val result = executeCapturedOpenRouterBody(apiKey, payload, attribution, "agent_tool_aware_chat", generation, requestContext, wireVariantKind = wireVariantKind, wireVariantOrdinal = wireVariantOrdinal)
         return when (result) {
             is MissionDispatchResult.Success -> JsonEnvelopeParser.requireObject(result.body, "OpenRouter tool response")
             is MissionDispatchResult.ReusedDurableSuccess -> JsonEnvelopeParser.requireObject(result.body, "OpenRouter tool response")
@@ -4619,25 +4680,26 @@ open class AgentOpenRouterClient internal constructor(
 
     private suspend fun executeStructuredWithFallback(
         apiKey: String,
-        strictPayload: JSONObject,
-        jsonModePayload: JSONObject,
-        plainPayload: JSONObject,
+        strict: Pair<JSONObject, ProviderResponseAttribution>,
+        jsonMode: Pair<JSONObject, ProviderResponseAttribution>,
+        plain: Pair<JSONObject, ProviderResponseAttribution>,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
         maxAttempts: Int = 3,
     ): RawAgentResponse {
-        var response = runCatching { executeJsonRequest(apiKey, strictPayload, generation, requestContext, maxAttempts) }
-            .recoverCatching { strictError ->
-                if (strictError is TerminalPersistenceException || strictError is CancellationException || strictError is ReconciliationException) throw strictError
-                if (!strictError.isStructuredOutputUnsupported()) throw strictError
-                executeJsonRequest(apiKey, jsonModePayload, generation, requestContext, maxAttempts)
-            }
-            .recoverCatching { jsonModeError ->
-                if (jsonModeError is TerminalPersistenceException || jsonModeError is CancellationException || jsonModeError is ReconciliationException) throw jsonModeError
-                if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
-                executeJsonRequest(apiKey, plainPayload, generation, requestContext, maxAttempts)
-            }
-            .getOrThrow()
+        var response = runCatching { 
+            executeJsonRequest(apiKey, strict.first, strict.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA) 
+        }.recoverCatching { strictError ->
+            if (strictError is TerminalPersistenceException || strictError is CancellationException || strictError is ReconciliationException) throw strictError
+            if (!strictError.isStructuredOutputUnsupported()) throw strictError
+            executeJsonRequest(apiKey, jsonMode.first, jsonMode.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.JSON_OBJECT)
+        }
+        .recoverCatching { jsonModeError ->
+            if (jsonModeError is TerminalPersistenceException || jsonModeError is CancellationException || jsonModeError is ReconciliationException) throw jsonModeError
+            if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
+            executeJsonRequest(apiKey, plain.first, plain.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.PLAIN_JSON)
+        }
+        .getOrThrow()
 
         if (response.summary.finishReason == "length") {
             response = handleLengthFinishRecovery(apiKey, response, generation, requestContext)
@@ -4680,7 +4742,8 @@ open class AgentOpenRouterClient internal constructor(
         return try {
             val continuation = executeJsonRequest(
                 apiKey = apiKey,
-                payload = payload,
+                payload = payload.first,
+                attribution = payload.second,
                 generation = generation,
                 requestContext = requestContext.forChildOperation(
                     MissionOperation.LENGTH_CONTINUATION,
@@ -4697,21 +4760,24 @@ open class AgentOpenRouterClient internal constructor(
         }
     }
 
-    private suspend fun executeJsonRequest(
+    internal suspend fun executeJsonRequest(
         apiKey: String,
         payload: JSONObject,
+        attribution: ProviderResponseAttribution,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
         maxAttempts: Int = 3,
+        wireVariantKind: ProviderWireVariantKind = ProviderWireVariantKind.PRIMARY,
+        wireVariantOrdinal: Int = 0
     ): RawAgentResponse {
         val startedAt = System.currentTimeMillis()
-        val result = executeCapturedOpenRouterBody(apiKey, payload, "agent_structured_chat", generation, requestContext, maxAttempts)
+        val result = executeCapturedOpenRouterBody(apiKey, payload, attribution, "agent_structured_chat", generation, requestContext, maxAttempts, wireVariantKind, wireVariantOrdinal)
         return when (result) {
-            is MissionDispatchResult.Success -> parseResponse(result.body, apiKey, payload, result.statusCode, System.currentTimeMillis() - startedAt, result.exchangeId)
-            is MissionDispatchResult.ReusedDurableSuccess -> parseResponse(result.body, apiKey, payload, 200, 0L, result.exchangeId)
+            is MissionDispatchResult.Success -> parseResponse(result.body, apiKey, attribution, result.statusCode, System.currentTimeMillis() - startedAt, result.exchangeId, requestContext.goalId, requestContext.taskId)
+            is MissionDispatchResult.ReusedDurableSuccess -> parseResponse(result.body, apiKey, attribution, 200, 0L, result.exchangeId, requestContext.goalId, requestContext.taskId)
             is MissionDispatchResult.Reconciled -> {
                 if (result.responseContent != null) {
-                    parseResponse(result.responseContent, apiKey, payload, 200, 0L, result.exchangeId)
+                    parseResponse(result.responseContent, apiKey, attribution, 200, 0L, result.exchangeId, requestContext.goalId, requestContext.taskId)
                 } else {
                     RawAgentResponse(
                         content = "SUCCESS_RECONCILED",
@@ -4869,16 +4935,27 @@ open class AgentOpenRouterClient internal constructor(
 
     private suspend fun executeCapturedOpenRouterBody(
         apiKey: String,
-        initialPayload: JSONObject,
+        canonicalPayload: JSONObject,
+        attribution: ProviderResponseAttribution,
         operationName: String,
         generation: Int = 0,
         requestContext: ProviderRequestContext.Mission,
-        maxAttempts: Int = 3
+        maxAttempts: Int = 3,
+        wireVariantKind: ProviderWireVariantKind = ProviderWireVariantKind.PRIMARY,
+        wireVariantOrdinal: Int = 0
     ): MissionDispatchResult {
         val store = store ?: throw OpenRouterException(null, "AgentStore is mandatory for mission requests.")
         val operation = MissionOperation.fromName(operationName) ?: requestContext.operation
         val logicalRequestId = requestContext.logicalRequestId ?: requestContext.parentOperationId
-        val payloadFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(initialPayload.toString())
+
+        // 1. Centralized Wire Preparation
+        val preparedRequest = prepareOpenRouterWireRequest(
+            canonicalPayload = canonicalPayload,
+            requestContext = requestContext,
+            responseAttribution = attribution,
+            wireVariantKind = wireVariantKind,
+            wireVariantOrdinal = wireVariantOrdinal
+        )
         
         var currentAttemptOrdinal = 1
         while (currentAttemptOrdinal <= maxAttempts) {
@@ -4886,15 +4963,19 @@ open class AgentOpenRouterClient internal constructor(
                 throw CancellationException("Mission cancelled before network dispatch")
             }
 
-            // 1. Authoritative Reconciliation at the Dispatch Boundary
+            // 2. Authoritative Reconciliation at the Dispatch Boundary
             val reconciliation = store.claimOrReconcileProviderRequestAtomic(
                 goalId = requestContext.goalId,
                 logicalRequestId = logicalRequestId,
                 operation = operation,
-                payloadFingerprint = payloadFingerprint,
+                payloadFingerprint = preparedRequest.logicalPayloadFingerprint,
                 ticket = requestContext.toTicket(requestContext.acquiredAt),
                 role = requestContext.role,
-                recoveryPlanId = requestContext.recoveryPlanId
+                recoveryPlanId = requestContext.recoveryPlanId,
+                wirePayloadFingerprint = preparedRequest.wirePayloadFingerprint,
+                wireVariantKind = wireVariantKind,
+                wireVariantOrdinal = wireVariantOrdinal,
+                fingerprintSchemaVersion = 2
             )
             
             val attemptRecord = when (reconciliation) {
@@ -4920,7 +5001,7 @@ open class AgentOpenRouterClient internal constructor(
                     throw OpenRouterException(null, "Retry requires explicit authorization.")
                 }
                 is ReconciliationResult.LogicalIdentityConflict -> {
-                    throw OpenRouterException(null, "Logical request ID conflict: payload fingerprint mismatch.")
+                    throw OpenRouterException(null, "Logical request ID conflict: ${reconciliation.existingFingerprint} != ${reconciliation.requestedFingerprint}")
                 }
                 is ReconciliationResult.StaleOwnership -> {
                     throw OpenRouterException(null, "Stale ownership: generation mismatch.")
@@ -4951,27 +5032,25 @@ open class AgentOpenRouterClient internal constructor(
                 .url(CHAT_URL)
                 .header("Authorization", "Bearer $apiKey")
                 .header("Accept", "application/json")
-                .header("X-OpenRouter-Title", "OpenAssistant Android")
                 .header("X-OpenRouter-Metadata", "enabled")
-                .header("X-OA-Goal-ID", requestContext.goalId)
-                .header("X-OA-Exchange-ID", exchangeId)
                 .header("User-Agent", "OpenAssistant-Android/${BuildConfig.VERSION_NAME}")
-                .post(initialPayload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .post(preparedRequest.wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
                 .tag(TransportTracker::class.java, tracker)
+                .tag(ProviderTransportContext::class.java, ProviderTransportContext(requestContext.goalId, exchangeId))
                 .build()
             
             val call = missionClient.newCall(request)
             activeCalls += call
 
             try {
-                // 2. Outbound Validation
+                // 3. Outbound Validation (Already done in prepareOpenRouterWireRequest, but we can verify invariants)
                 postActiveHook?.afterActivePersisted(requestContext.goalId, exchangeId)
-                OpenRouterProtocolUtils.validateOutboundRequest(initialPayload)
-
+                
                 if (isCancelled) {
                     throw CancellationException("Mission cancelled before network dispatch")
                 }
 
+                val requestBytes = preparedRequest.wirePayloadText.toByteArray(Charsets.UTF_8).size
                 diagnostics?.info(
                     event = "provider_request_dispatched",
                     component = "provider",
@@ -4980,8 +5059,11 @@ open class AgentOpenRouterClient internal constructor(
                         "goal_id" to requestContext.goalId,
                         "task_id" to requestContext.taskId,
                         "operation" to operation.operationName,
-                        "requested_model" to initialPayload.optString("model"),
-                        "request_bytes" to initialPayload.toString().toByteArray().size
+                        "requested_model" to preparedRequest.wirePayload.optString("model"),
+                        "request_bytes" to requestBytes,
+                        "wire_fingerprint" to preparedRequest.wirePayloadFingerprint,
+                        "variant" to wireVariantKind.name,
+                        "variant_ordinal" to wireVariantOrdinal
                     )
                 )
 
@@ -4995,12 +5077,12 @@ open class AgentOpenRouterClient internal constructor(
                         "operation" to "${operation.operationName} (wire attempt ${attemptRecord.wireAttemptOrdinal})",
                         "method" to "POST",
                         "endpoint" to CHAT_URL,
-                        "requested_model" to initialPayload.optString("model"),
-                        "request_bytes" to initialPayload.toString().toByteArray().size,
+                        "requested_model" to preparedRequest.wirePayload.optString("model"),
+                        "request_bytes" to requestBytes,
                     ),
                 )
                 
-                emitDetailedContentPreviews(exchangeId, initialPayload, requestContext)
+                emitDetailedContentPreviews(exchangeId, preparedRequest.wirePayload, requestContext)
 
                 val responseBody = call.execute().use { response ->
                     val rawBody = response.body.string()
@@ -5079,12 +5161,16 @@ open class AgentOpenRouterClient internal constructor(
                 if (isRetryable && currentAttemptOrdinal < maxAttempts) {
                     val auth = ProviderRetryAuthorization(
                         logicalRequestId = logicalRequestId,
-                        payloadFingerprint = attemptRecord.payloadFingerprint,
+                        payloadFingerprint = preparedRequest.logicalPayloadFingerprint,
                         executionGeneration = requestContext.executionGeneration,
                         previousExchangeId = exchangeId,
                         failureClass = error::class.java.simpleName,
                         deliveryCertainty = tracker.certainty,
-                        attemptOrdinal = currentAttemptOrdinal + 1
+                        attemptOrdinal = currentAttemptOrdinal + 1,
+                        wirePayloadFingerprint = preparedRequest.wirePayloadFingerprint,
+                        fingerprintSchemaVersion = 2,
+                        wireVariantKind = wireVariantKind,
+                        wireVariantOrdinal = wireVariantOrdinal
                     )
                     store.authorizeRetry(requestContext.goalId, auth)
                     currentAttemptOrdinal++
@@ -5299,12 +5385,20 @@ open class AgentOpenRouterClient internal constructor(
         }
     }
 
-    private fun parseResponse(body: String, apiKey: String, payload: JSONObject, statusCode: Int, durationMs: Long, exchangeId: String): RawAgentResponse {
+    private fun parseResponse(
+        body: String,
+        apiKey: String,
+        attribution: ProviderResponseAttribution,
+        statusCode: Int,
+        durationMs: Long,
+        exchangeId: String,
+        goalId: String? = null,
+        taskId: String? = null
+    ): RawAgentResponse {
         val root = JsonEnvelopeParser.requireObject(body, "OpenRouter agent response")
         val usage = root.optJSONObject("usage")
-        val metadata = payload.optJSONObject("metadata")
-        val role = metadata?.optString("agent_role")?.let { runCatching { AgentTaskRole.valueOf(it) }.getOrNull() }
-        val selectionReason = metadata?.optString("selection_reason")
+        val role = attribution.role
+        val selectionReason = attribution.selectionReason
         
         val provider = root.optJSONObject("openrouter_metadata")?.optString("provider")
             ?: root.optString("provider").takeIf { it.isNotBlank() && it != "null" }
@@ -5392,8 +5486,8 @@ open class AgentOpenRouterClient internal constructor(
             diagnostics?.contentPreview(
                 kind = "provider_answer",
                 content = nonNullContent,
-                goalId = payload.optJSONObject("metadata")?.optString("goal_id"),
-                taskId = payload.optJSONObject("metadata")?.optString("task_id"),
+                goalId = goalId,
+                taskId = taskId,
                 exchangeId = responseSummary.responseId,
                 extraFields = mapOf(
                     "role" to role?.name,
@@ -5550,36 +5644,39 @@ open class AgentOpenRouterClient internal constructor(
         }
         val response = executeStructuredWithFallback(
             apiKey = apiKey,
-            strictPayload = basePayload(
+            strict = basePayload(
                 modelId = BODY_BUILDER_MODEL_ID,
                 systemPrompt = "You are a request design utility for a deep-research runtime. You output exactly one valid OpenRouter request proposal in a top-level 'requests' array.",
                 userPrompt = prompt,
                 role = AgentTaskRole.REQUEST_CONSTRUCTION,
                 selectionReason = "request_design",
                 freeOnly = false // Body builder is always paid
-            ).apply {
-                put("temperature", 0.1)
+            ).let { (p, attr) ->
+                p.put("temperature", 0.1)
+                p to attr
             },
-            jsonModePayload = basePayload(
+            jsonMode = basePayload(
                 modelId = BODY_BUILDER_MODEL_ID,
                 systemPrompt = "You are a request design utility.",
                 userPrompt = prompt,
                 role = AgentTaskRole.REQUEST_CONSTRUCTION,
                 selectionReason = "request_design_json",
                 freeOnly = false
-            ).apply {
-                put("response_format", JSONObject().put("type", "json_object"))
-                put("temperature", 0.1)
+            ).let { (p, attr) ->
+                p.put("response_format", JSONObject().put("type", "json_object"))
+                p.put("temperature", 0.1)
+                p to attr
             },
-            plainPayload = basePayload(
+            plain = basePayload(
                 modelId = BODY_BUILDER_MODEL_ID,
                 systemPrompt = "You are a request design utility.",
                 userPrompt = prompt,
                 role = AgentTaskRole.REQUEST_CONSTRUCTION,
                 selectionReason = "request_design_plain",
                 freeOnly = false
-            ).apply {
-                put("temperature", 0.1)
+            ).let { (p, attr) ->
+                p.put("temperature", 0.1)
+                p to attr
             },
             generation = generation,
             requestContext = requestContext,
@@ -5681,6 +5778,57 @@ open class AgentOpenRouterClient internal constructor(
         return AgentTaskRole.PRIMARY_REASONING
     }
 
+    private fun prepareOpenRouterWireRequest(
+        canonicalPayload: JSONObject,
+        requestContext: ProviderRequestContext,
+        responseAttribution: ProviderResponseAttribution,
+        wireVariantKind: ProviderWireVariantKind = ProviderWireVariantKind.PRIMARY,
+        wireVariantOrdinal: Int = 0
+    ): PreparedOpenRouterRequest {
+        // 1. Reproduce legacy logical fingerprint exactly for reconciliation
+        val legacyPayload = JSONObject(canonicalPayload.toString())
+        if (requestContext is ProviderRequestContext.Mission) {
+            legacyPayload.put("metadata", JSONObject()
+                .put("agent_role", responseAttribution.role?.name)
+                .put("selection_reason", responseAttribution.selectionReason)
+                .put("goal_id", requestContext.goalId)
+                .put("task_id", requestContext.taskId)
+            )
+        }
+        val logicalFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(legacyPayload.toString())
+
+        // 2. Prepare final wire payload (defensive copy)
+        val wirePayload = JSONObject(canonicalPayload.toString())
+        
+        // Ensure no internal protocol-level keys leaked into top-level
+        val keysToRemove = listOf(
+            "metadata", "local_metadata", "goal_id", "task_id",
+            "agent_role", "selection_reason", "logical_request_id",
+            "recovery_plan_id", "exchange_id"
+        )
+        keysToRemove.forEach { wirePayload.remove(it) }
+
+        // 3. Validate final wire payload
+        OpenRouterProtocolUtils.validateOutboundRequest(wirePayload)
+
+        // 4. Serialize exactly once
+        val wirePayloadText = wirePayload.toString()
+
+        // 5. Compute wire fingerprint from the final transmitted bytes
+        val wirePayloadFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(wirePayloadText)
+
+        return PreparedOpenRouterRequest(
+            wirePayload = wirePayload,
+            wirePayloadText = wirePayloadText,
+            wirePayloadFingerprint = wirePayloadFingerprint,
+            logicalPayloadFingerprint = logicalFingerprint,
+            requestContext = requestContext,
+            responseAttribution = responseAttribution,
+            wireVariantKind = wireVariantKind,
+            wireVariantOrdinal = wireVariantOrdinal
+        )
+    }
+
     private fun basePayload(
         modelId: String,
         systemPrompt: String,
@@ -5689,9 +5837,7 @@ open class AgentOpenRouterClient internal constructor(
         role: AgentTaskRole? = null,
         selectionReason: String? = null,
         freeOnly: Boolean = false,
-        goalId: String? = null,
-        taskId: String? = null,
-    ): JSONObject {
+    ): Pair<JSONObject, ProviderResponseAttribution> {
         val allowlist = setOf(AUTO_BETA_ROUTER_MODEL_ID, FREE_ROUTER_MODEL_ID, BODY_BUILDER_MODEL_ID)
         
         // Enforce strict three-system allowlist for all automatic requests.
@@ -5732,7 +5878,7 @@ open class AgentOpenRouterClient internal constructor(
             }
         }
 
-        return applyAgentCompletionLimit(JSONObject())
+        val payload = applyAgentCompletionLimit(JSONObject())
             .put("model", finalModel)
             .apply {
                 if (finalFallbacks.isNotEmpty()) {
@@ -5759,17 +5905,8 @@ open class AgentOpenRouterClient internal constructor(
                     )
                     .put(JSONObject().put("role", "user").put("content", userPrompt)),
             )
-            .apply {
-                // Add routing metadata for diagnostics/audit if needed, 
-                // though usually this is stored in AgentAttempt.
-                // OpenRouter metadata fields:
-                put("metadata", JSONObject()
-                    .put("agent_role", role?.name)
-                    .put("selection_reason", selectionReason)
-                    .put("goal_id", goalId)
-                    .put("task_id", taskId)
-                )
-            }
+        
+        return payload to ProviderResponseAttribution(role = role, selectionReason = selectionReason)
     }
 
     private fun jsonSchemaResponseFormat(name: String, schema: JSONObject): JSONObject =
@@ -6694,3 +6831,24 @@ private class OpenRouterLoggingInterceptor : okhttp3.Interceptor {
         return response
     }
 }
+
+internal data class ProviderResponseAttribution(
+    val role: AgentTaskRole?,
+    val selectionReason: String?,
+)
+
+internal data class PreparedOpenRouterRequest(
+    val wirePayload: JSONObject,
+    val wirePayloadText: String,
+    val wirePayloadFingerprint: String,
+    val logicalPayloadFingerprint: String,
+    val requestContext: ProviderRequestContext,
+    val responseAttribution: ProviderResponseAttribution,
+    val wireVariantKind: ProviderWireVariantKind,
+    val wireVariantOrdinal: Int,
+)
+
+internal data class ProviderTransportContext(
+    val goalId: String,
+    val exchangeId: String,
+)

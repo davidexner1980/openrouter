@@ -137,7 +137,8 @@ class DurableContentReconciliationTest {
             .put("model", "openrouter/auto-beta")
             .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", "Hello")))
 
-        val response1 = client.executeRawJsonRequest("key", requestPayload, ticket.generation, context)
+        val attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test")
+        val response1 = client.executeRawJsonRequest("key", requestPayload, attribution, ticket.generation, context)
         assertNotNull(response1)
 
         // Verify it was persisted
@@ -148,7 +149,7 @@ class DurableContentReconciliationTest {
 
         // 2. Simulate restart: call again with same logical ID
         // The server SHOULD NOT be called again
-        val response2 = client.executeRawJsonRequest("key", requestPayload, ticket.generation, context)
+        val response2 = client.executeRawJsonRequest("key", requestPayload, attribution, ticket.generation, context)
 
         // It should have returned the same body from the store
         assertEquals(providerResponseBody, response2.toString())

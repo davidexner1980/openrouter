@@ -92,8 +92,11 @@ class CitationExtractionIntegrityTest {
             override suspend fun executeRawJsonRequest(
                 apiKey: String,
                 payload: JSONObject,
+                attribution: ProviderResponseAttribution,
                 generation: Int,
-                requestContext: ProviderRequestContext.Mission
+                requestContext: ProviderRequestContext.Mission,
+                wireVariantKind: ProviderWireVariantKind,
+                wireVariantOrdinal: Int
             ): JSONObject = responseBody
         }
         
@@ -104,6 +107,7 @@ class CitationExtractionIntegrityTest {
             testClient.executeToolAwareJsonRequest(
                 apiKey = "sk-or-test",
                 originalPayload = JSONObject().put("model", "model-1").put("messages", JSONArray()),
+                attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test"),
                 generation = 1,
                 requestContext = requestContext,
                 goal = goal,

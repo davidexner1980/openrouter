@@ -25,7 +25,7 @@
 
 ---
 
-## Run CE-20260803-0540-0d1c6785 — 2026-08-03T05:40:00
+## Run CE-20260803-0540-0d1c6785 â€” 2026-08-03T05:40:00
 
 ### Status
 VERIFIED
@@ -97,7 +97,7 @@ VERIFIED
 
 ---
 
-## Run CE-20260803-0630-a7a69825 — 2026-08-03T06:30:00
+## Run CE-20260803-0630-a7a69825 â€” 2026-08-03T06:30:00
 
 ### Status
 VERIFIED
@@ -176,7 +176,7 @@ VERIFIED
 
 ---
 
-## Run CE-20260803-0637-1d427ff8 — 2026-08-03T06:37:00
+## Run CE-20260803-0637-1d427ff8 â€” 2026-08-03T06:37:00
 
 ### Status
 VERIFIED
@@ -257,7 +257,7 @@ REPRODUCED
 
 ---
 
-## Run CE-20260803-0748-65050bf0 — 2026-08-03T07:48:00
+## Run CE-20260803-0748-65050bf0 â€” 2026-08-03T07:48:00
 
 ### Status
 VERIFIED
@@ -332,7 +332,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260803-1227-802f345d — 2026-08-03T12:27:00
+## Run CE-20260803-1227-802f345d â€” 2026-08-03T12:27:00
 
 ### Status
 VERIFIED
@@ -409,7 +409,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260803-1509-50a329f8 — 2026-08-03T15:09:00
+## Run CE-20260803-1509-50a329f8 â€” 2026-08-03T15:09:00
 
 ### Status
 VERIFIED
@@ -420,7 +420,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 50a329f8f1caca7249a68f0fa9ff6facca03878d
-- Run commit: SELF — commit containing this journal entry
+- Run commit: SELF â€” commit containing this journal entry
 - Commit message: Continuous improvement CE-20260803-1509-50a329f8: implement automated objective-drift detection and enforcement
 
 ### Selected Scope
@@ -487,7 +487,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260803-1618-c9fc9c76 — 2026-08-03T16:18:00
+## Run CE-20260803-1618-c9fc9c76 â€” 2026-08-03T16:18:00
 
 ### Status
 VERIFIED
@@ -569,7 +569,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260803-1702-1089a79d — 2026-08-03T17:02:00
+## Run CE-20260803-1702-1089a79d â€” 2026-08-03T17:02:00
 
 ### Status
 VERIFIED
@@ -580,7 +580,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 1089a79d417db0a1f88f68d5afac691a9daa4dfa
-- Run commit: SELF — commit containing this journal entry
+- Run commit: SELF â€” commit containing this journal entry
 - Commit message: Continuous improvement CE-20260803-1702-1089a79d: implement cross-domain citation following during research recovery
 - Remote checked before commit: Yes
 
@@ -646,7 +646,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260803-1718-2ee5fdce — 2026-08-03T17:18:00
+## Run CE-20260803-1718-2ee5fdce â€” 2026-08-03T17:18:00
 
 ### Status
 VERIFIED
@@ -657,7 +657,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 2ee5fdceae9a3702d1cc40a971e1cd747727aef1
-- Run commit: SELF — commit containing this journal entry
+- Run commit: SELF â€” commit containing this journal entry
 - Commit message: Continuous improvement CE-20260803-1718-2ee5fdce: prune unverified source links during evidence synthesis
 - Remote checked before commit: Yes
 
@@ -723,7 +723,7 @@ JVM VERIFIED
 - Supporting evidence: Static trace in `AgentTaskExecutor` reveals that multiple LLM tool requests could dispatch redundant identical fetch calls.
 ---
 
-## Run CE-20260803-1936-RECOVERY-STARVATION — 2026-08-03T19:36:00
+## Run CE-20260803-1936-RECOVERY-STARVATION â€” 2026-08-03T19:36:00
 
 ### Status
 PARTIALLY VERIFIED
@@ -805,7 +805,7 @@ RUNTIME REPRODUCED
 - Next scope: Improve robustness of parallel tool execution by ensuring duplicate executions are pruned.
 ---
 
-## Run CE-20260803-2000-03d3b667 — 2026-08-03T20:00:00
+## Run CE-20260803-2000-03d3b667 â€” 2026-08-03T20:00:00
 
 ### Status
 VERIFIED
@@ -816,7 +816,7 @@ STATIC TRACE + JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 03d3b667f3edbbac408dce419adf59269a6bfdca
-- Run commit: SELF — commit containing this journal entry
+- Run commit: SELF â€” commit containing this journal entry
 - Commit message: Continuous improvement CE-20260803-2000-03d3b667: implement atomic intra-round pruning for parallel tool execution
 
 ### Selected Scope
@@ -874,7 +874,7 @@ STATIC TRACE + JVM VERIFIED
 - Supporting evidence: Frequent warnings in logs about malformed citation patterns.
 ---
 
-## Run CE-20260803-2033-RECOVERY-STARVATION-FIX — 2026-08-03T20:33:00
+## Run CE-20260803-2033-RECOVERY-STARVATION-FIX â€” 2026-08-03T20:33:00
 
 ### Status
 PARTIALLY VERIFIED
@@ -934,7 +934,7 @@ STATIC TRACE + JVM VERIFIED
 
 ---
 
-## Run CE-20260804-0102-fe2efaf0 — 2026-08-04T01:02:00
+## Run CE-20260804-0102-fe2efaf0 â€” 2026-08-04T01:02:00
 
 ### Status
 PARTIALLY VERIFIED
@@ -945,7 +945,7 @@ STATIC TRACE + JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: fe2efaf09f8cebc23a471bf597b08e5af0c5c79e
-- Run commit: SELF — commit containing this journal entry
+- Run commit: SELF â€” commit containing this journal entry
 - Commit message: Continuous improvement CE-20260804-0102-fe2efaf0: enforce universal tool availability across all mission phases and chat
 - Remote checked before commit: Yes
 
@@ -992,7 +992,7 @@ STATIC TRACE + JVM VERIFIED
 
 ---
 
-## Run CE-20260804-0133-26e4932 — 2026-08-04T01:33:00
+## Run CE-20260804-0133-26e4932 â€” 2026-08-04T01:33:00
 
 ### Status
 VERIFIED
@@ -1003,7 +1003,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 26e493259867c8edac99c3c0912674678749db63
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-0133-26e4932: repair baseline test failures and resolve environment blockers
 - Remote checked before commit: Yes
 
@@ -1069,7 +1069,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+## Run CE-20260804-1426-9934b0ec â€” 2026-08-04T14:26:00
 
 ### Status
 
@@ -1083,7 +1083,7 @@ JVM VERIFIED + INTEGRATION VERIFIED
 
 - Branch: main
 - Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
 - Remote checked before commit: Yes
 
@@ -1205,7 +1205,7 @@ Runtime-reproduced capability inversion where OpenAssistant required stronger gr
 
 ---
 
-## Run CE-20260804-0630-7ba57fc7 — 2026-08-04T06:30:00
+## Run CE-20260804-0630-7ba57fc7 â€” 2026-08-04T06:30:00
 
 ### Status
 VERIFIED
@@ -1216,7 +1216,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 7ba57fc79257e3f34745189d403b0517714e5dbf
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-0630-7ba57fc7: repair recovery loop in QUEUED state and resolve stale goal snapshots
 
 ### Selected Scope
@@ -1283,7 +1283,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+## Run CE-20260804-1426-9934b0ec â€” 2026-08-04T14:26:00
 
 ### Status
 
@@ -1297,7 +1297,7 @@ JVM VERIFIED + INTEGRATION VERIFIED
 
 - Branch: main
 - Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
 - Remote checked before commit: Yes
 
@@ -1419,7 +1419,7 @@ Runtime-reproduced capability inversion where OpenAssistant required stronger gr
 
 ---
 
-## Run CE-20260804-0638-3c799c7 — 2026-08-04T06:38:00
+## Run CE-20260804-0638-3c799c7 â€” 2026-08-04T06:38:00
 
 ### Status
 VERIFIED
@@ -1430,7 +1430,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 3c799c71eaf6a61c58845b589c395d418d4155fe
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement: enforce universal tool availability across user work and improve diagnostics
 - Remote checked before commit: Yes
 
@@ -1475,7 +1475,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+## Run CE-20260804-1426-9934b0ec â€” 2026-08-04T14:26:00
 
 ### Status
 
@@ -1489,7 +1489,7 @@ JVM VERIFIED + INTEGRATION VERIFIED
 
 - Branch: main
 - Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
 - Remote checked before commit: Yes
 
@@ -1611,7 +1611,7 @@ Runtime-reproduced capability inversion where OpenAssistant required stronger gr
 
 ---
 
-## Run CE-20260804-0845-UNIVERSAL-TOOL-REPAIR — 2026-08-04T08:45:00
+## Run CE-20260804-0845-UNIVERSAL-TOOL-REPAIR â€” 2026-08-04T08:45:00
 
 ### Status
 VERIFIED
@@ -1671,7 +1671,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-1042-34df884e — 2026-08-04T10:42:00
+## Run CE-20260804-1042-34df884e â€” 2026-08-04T10:42:00
 
 ### Status
 VERIFIED
@@ -1682,7 +1682,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 34df884e43678e2a86202bd77767bf18be956c78
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1042-34df884e: implement durable content reconciliation for task execution and planning
 - Remote checked before commit: Yes
 
@@ -1745,7 +1745,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+## Run CE-20260804-1426-9934b0ec â€” 2026-08-04T14:26:00
 
 ### Status
 
@@ -1759,7 +1759,7 @@ JVM VERIFIED + INTEGRATION VERIFIED
 
 - Branch: main
 - Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
 - Remote checked before commit: Yes
 
@@ -1846,7 +1846,7 @@ JVM VERIFIED + INTEGRATION VERIFIED
 - Scope: Physical acceptance on Samsung SM-G998U.
 ---
 
-## Run CE-20260804-1213-fd38d224 � 2026-08-04T12:13:00
+## Run CE-20260804-1213-fd38d224 ï¿½ 2026-08-04T12:13:00
 
 ### Status
 VERIFIED
@@ -1923,7 +1923,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-1426-9934b0ec — 2026-08-04T14:26:00
+## Run CE-20260804-1426-9934b0ec â€” 2026-08-04T14:26:00
 
 ### Status
 
@@ -1937,7 +1937,7 @@ JVM VERIFIED + INTEGRATION VERIFIED
 
 - Branch: main
 - Starting commit: 9934b0ec4b6a9360b043244636c347d43607cd73
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1426-9934b0ec: enforce typed tool availability and restore report bridge
 - Remote checked before commit: Yes
 
@@ -2025,7 +2025,7 @@ JVM VERIFIED + INTEGRATION VERIFIED
 
 ---
 
-## Run CE-20260804-1611-72f05acf � 2026-08-04T16:11:00
+## Run CE-20260804-1611-72f05acf — 2026-08-04T16:11:00
 
 ### Status
 
@@ -2039,7 +2039,7 @@ JVM VERIFIED
 
 - Branch: main
 - Starting commit: 72f05acf241e549594c335a9abca5ac42bcd7561
-- Run commit: SELF � commit containing this entry
+- Run commit: SELF — commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1611-72f05acf: implement robust citation extraction and filter hallucinated sources
 - Remote checked before commit: Yes
 
@@ -2138,7 +2138,7 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-1925-ea4f8eb8 � 2026-08-04T19:25:00
+## Run CE-20260804-1925-ea4f8eb8 — 2026-08-04T19:25:00
 
 ### Status
 
@@ -2152,7 +2152,7 @@ STATIC TRACE | REPRODUCED | JVM VERIFIED
 
 - Branch: main
 - Starting commit: ea4f8eb8a9e2980c006c32e8ec2ca069c81d9231
-- Run commit: SELF � commit containing this entry
+- Run commit: SELF — commit containing this entry
 - Commit message: Continuous improvement CE-20260804-1925-ea4f8eb8: reconcile terminal recovery failures and durably persist source reads
 - Remote checked before commit: YES
 
@@ -2256,7 +2256,7 @@ STATIC TRACE | REPRODUCED | JVM VERIFIED
 
 ---
 
-## Run CE-20260804-2000-9ab877b8 — 2026-08-04T20:00:00
+## Run CE-20260804-2000-9ab877b8 â€” 2026-08-04T20:00:00
 
 ### Status
 VERIFIED
@@ -2267,7 +2267,7 @@ JVM VERIFIED
 ### Repository
 - Branch: main
 - Starting commit: 9ab877b8f8743113ea86e99c6c761cb73cb396cc
-- Run commit: SELF — commit containing this entry
+- Run commit: SELF â€” commit containing this entry
 - Commit message: Continuous improvement CE-20260804-2000-9ab877b8: repair test assertion for terminal livelock
 
 ### Selected Scope
@@ -2302,4 +2302,111 @@ JVM VERIFIED
 - Final status: Clean
 
 ### Recommended Next Pass
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
+
+---
+
+## Run CE-20260804-2300-99f69956 — 2026-08-04T23:00:00
+
+### Status
+
+PARTIALLY VERIFIED
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 99f69956be1457ed9ca612b8411e7d348df1ae50
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement: remove internal mission metadata from OpenRouter wire requests
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Prior entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing prior proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: OPENROUTER-WIRE-METADATA-MINIMIZATION
+- Subsystem: Provider
+- Mission requirement: Privacy, Performance
+- Severity: Medium
+- Previous status: New
+- New status: Partially Verified
+- Required closure proof: Physical upgrade verification on Samsung SM-G998U.
+
+### Selected Scope
+
+- Problem: Internal mission identifiers (goal_id, task_id) and routing metadata are transmitted to OpenRouter in JSON bodies and HTTP headers (X-OA-*), which is unnecessary and potentially exposes internal logic.
+- Why selected: Enhance privacy and reduce packet size (wire minimization).
+- Correct owner: AgentOpenRouterClient, OpenRouterProtocolUtils, AgentStore.
+- Violated invariant: Internal mission identifiers must not cross the provider wire boundary.
+- Protected behavior: Existing mission reconciliation must remain compatible.
+- Out of scope: RUNTIME-PACKET-METADATA-MINIMIZATION (diagnostic export).
+
+### Reproduction
+
+- Evidence: captured raw bodies and headers in OpenRouterProtocolTest confirmed presence of metadata.
+- Byte reduction proven: ~60% reduction for simple "Hello" request (197 bytes -> 79 bytes).
+
+### Hypotheses
+
+- Accepted: Strictly decoupling local context from provider JSON and moving correlation to OkHttp tags ensures privacy while maintaining transport tracking. Dual-fingerprinting (Logical vs Wire) preserves legacy compatibility.
+
+### Root Cause
+
+- Root cause: Initial architecture used the JSON payload as the primary holder for correlation metadata, and early transport tracking relied on custom headers for lookup.
+
+### Changes
+
+- Production files: AgentExecutionModels.kt, AgentOpenRouterClient.kt, AgentStore.kt, OpenRouterProtocolUtils.kt
+- Test files: AgentOpenRouterClientTest.kt, CitationExtractionIntegrityTest.kt, DurableContentReconciliationTest.kt, OpenRouterProtocolTest.kt, ParallelToolDeduplicationTest.kt
+- Behavior changed: Outbound JSON no longer contains metadata; X-OA-* headers removed; transport tracking uses request tags.
+- Behavior preserved: Legacy Schema 1 reconciliation; all mission/chat routing logic.
+
+### Regression Proof
+
+- Test: OpenRouterProtocolTest.testWireMetadataMinimization, OpenRouterProtocolTest.testWireByteReduction, OpenRouterProtocolTest.testVariantAwareReconciliation
+- Passed after repair: YES.
+- Real production owner exercised: YES.
+- Why recurrence is detected: validation failure in OpenRouterProtocolUtils if internal keys reach the wire.
+
+### Verification
+
+- Baseline: PASSED
+- Full unit total: 606
+- Passed: 606
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- Byte reduction: ~60%
+- Transport tracking: Verified via test tag-lookup.
+
+### Risks
+
+- Migration: Schema 2 attempts missing wire fingerprints might fail reconciliation. (Mitigated by legacy Schema 1 support).
+- Performance: Improved (reduced bandwidth).
+
+### Repository Hygiene
+
+- Final status: Clean (after commit)
+
+### Rollback
+
+- Revert method: git revert SELF
+- Data compatibility: Forwards/backwards compatible (Schema 1 preserved).
+
+### Open Issues
+
+- Closed with evidence: OPENROUTER-WIRE-METADATA-MINIMIZATION
+- Still open: Physical acceptance on Samsung SM-G998U; RUNTIME-PACKET-METADATA-MINIMIZATION.
+
+### Recommended Next Pass
+
 - Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.

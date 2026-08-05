@@ -593,7 +593,14 @@ class AgentStore private constructor(
         val current = loadSnapshotFromFilesLocked()
         val goal = current.goals.firstOrNull { it.id == goalId } ?: return@synchronized AuthorizeRetryResult.GoalMissing
         
-        if (goal.retryAuthorizations.any { it.logicalRequestId == authorization.logicalRequestId && it.attemptOrdinal == authorization.attemptOrdinal && it.executionGeneration == authorization.executionGeneration }) {
+        if (goal.retryAuthorizations.any { 
+            it.logicalRequestId == authorization.logicalRequestId && 
+            it.attemptOrdinal == authorization.attemptOrdinal && 
+            it.executionGeneration == authorization.executionGeneration &&
+            it.wireVariantKind == authorization.wireVariantKind &&
+            it.wireVariantOrdinal == authorization.wireVariantOrdinal &&
+            it.wirePayloadFingerprint == authorization.wirePayloadFingerprint
+        }) {
             return@synchronized AuthorizeRetryResult.AlreadyAuthorized
         }
         
@@ -981,6 +988,10 @@ class AgentStore private constructor(
         ticket: AgentOwnershipTicket,
         role: AgentTaskRole? = null,
         recoveryPlanId: String? = null,
+        wirePayloadFingerprint: String? = null,
+        wireVariantKind: ProviderWireVariantKind? = null,
+        wireVariantOrdinal: Int = 0,
+        fingerprintSchemaVersion: Int = 1
     ): ReconciliationResult = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
         val currentSnapshot = loadSnapshotFromFilesLocked()
@@ -1006,18 +1017,36 @@ class AgentStore private constructor(
             if (goal.status != AgentGoalStatus.RECOVERING) return@synchronized ReconciliationResult.GoalTerminal(goal.status)
         }
 
-        // Search for existing logical request across all generations
+        // Search for existing logical request across all generations, matching exact wire candidate identity
         val existingAttempts = goal.requestAttempts.filter { 
             it.logicalRequestId == logicalRequestId && 
             it.recoveryPlanId == recoveryPlanId &&
-            it.parentOperationId == logicalRequestId // Assumption: parentOperationId used for logical grouping in some contexts, but logicalRequestId is primary
+            (it.wireVariantKind == wireVariantKind || (it.wireVariantKind == null && wireVariantKind == ProviderWireVariantKind.PRIMARY)) &&
+            it.wireVariantOrdinal == wireVariantOrdinal
         }
         
         val latestAttempt = existingAttempts.maxByOrNull { it.startedAt }
         
         if (latestAttempt != null) {
-            if (latestAttempt.payloadFingerprint != payloadFingerprint) {
-                return@synchronized ReconciliationResult.LogicalIdentityConflict(latestAttempt.payloadFingerprint, payloadFingerprint)
+            // Schema-based fingerprint validation
+            if (latestAttempt.fingerprintSchemaVersion == 1) {
+                // Schema 1: Match legacy logical fingerprint only
+                if (latestAttempt.payloadFingerprint != payloadFingerprint) {
+                    return@synchronized ReconciliationResult.LogicalIdentityConflict(latestAttempt.payloadFingerprint, payloadFingerprint)
+                }
+            } else if (latestAttempt.fingerprintSchemaVersion == 2) {
+                // Schema 2: Match logical AND wire fingerprints
+                if (latestAttempt.payloadFingerprint != payloadFingerprint || 
+                    latestAttempt.wirePayloadFingerprint != wirePayloadFingerprint) {
+                    val actualFp = "L:${latestAttempt.payloadFingerprint} W:${latestAttempt.wirePayloadFingerprint}"
+                    val requestedFp = "L:$payloadFingerprint W:$wirePayloadFingerprint"
+                    return@synchronized ReconciliationResult.LogicalIdentityConflict(actualFp, requestedFp)
+                }
+            } else {
+                // Unknown future schema: Fail safely
+                return@synchronized ReconciliationResult.StorageFailure(
+                    IllegalStateException("Unknown fingerprint schema version: ${latestAttempt.fingerprintSchemaVersion}")
+                )
             }
 
             return when (latestAttempt.exchangeOutcome) {
@@ -1037,6 +1066,9 @@ class AgentStore private constructor(
                             wireAttemptOrdinal = latestAttempt.wireAttemptOrdinal + 1,
                             previousExchangeId = latestAttempt.exchangeId,
                             executionGeneration = ticket.generation,
+                            payloadFingerprint = payloadFingerprint,
+                            wirePayloadFingerprint = wirePayloadFingerprint,
+                            fingerprintSchemaVersion = fingerprintSchemaVersion,
                             reconciliationClaimOwner = ticket.workerId,
                             reconciliationClaimedAt = System.currentTimeMillis(),
                             startedAt = System.currentTimeMillis()
@@ -1074,11 +1106,16 @@ class AgentStore private constructor(
                 ExchangeOutcome.RECOVERABLE_NETWORK_FAILURE,
                 ExchangeOutcome.PERMANENT_FAILURE,
                 ExchangeOutcome.MALFORMED_STRUCTURED_RESPONSE -> {
-                    // Check for authorization
+                    // Check for authorization: MUST match the exact wire candidate identity
                     val auth = goal.retryAuthorizations.firstOrNull { 
                         it.logicalRequestId == logicalRequestId && 
                         it.attemptOrdinal == latestAttempt.wireAttemptOrdinal + 1 &&
-                        it.executionGeneration == ticket.generation 
+                        it.executionGeneration == ticket.generation &&
+                        (it.fingerprintSchemaVersion == 1 || (
+                            it.wirePayloadFingerprint == wirePayloadFingerprint &&
+                            it.wireVariantKind == wireVariantKind &&
+                            it.wireVariantOrdinal == wireVariantOrdinal
+                        ))
                     }
                     if (auth != null) {
                         // Claim retry
@@ -1090,6 +1127,11 @@ class AgentStore private constructor(
                             transportStage = ProviderTransportStage.NOT_DISPATCHED,
                             deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
                             executionGeneration = ticket.generation,
+                            payloadFingerprint = payloadFingerprint,
+                            wirePayloadFingerprint = wirePayloadFingerprint,
+                            fingerprintSchemaVersion = fingerprintSchemaVersion,
+                            wireVariantKind = wireVariantKind,
+                            wireVariantOrdinal = wireVariantOrdinal,
                             exchangeOutcome = ExchangeOutcome.ACTIVE,
                             startedAt = System.currentTimeMillis(),
                             reconciliationClaimOwner = ticket.workerId,
@@ -1135,6 +1177,10 @@ class AgentStore private constructor(
             requestedModel = "unknown", // To be filled by client
             role = role,
             payloadFingerprint = payloadFingerprint,
+            wirePayloadFingerprint = wirePayloadFingerprint,
+            fingerprintSchemaVersion = fingerprintSchemaVersion,
+            wireVariantKind = wireVariantKind,
+            wireVariantOrdinal = wireVariantOrdinal,
             exchangeOutcome = ExchangeOutcome.ACTIVE,
             transportStage = ProviderTransportStage.NOT_DISPATCHED,
             deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
@@ -2639,6 +2685,10 @@ class AgentStore private constructor(
         .put("resolved_model", attempt.resolvedModel ?: JSONObject.NULL)
         .put("role", attempt.role?.name ?: JSONObject.NULL)
         .put("payload_fingerprint", attempt.payloadFingerprint)
+        .put("wire_payload_fingerprint", attempt.wirePayloadFingerprint ?: JSONObject.NULL)
+        .put("fingerprint_schema_version", attempt.fingerprintSchemaVersion)
+        .put("wire_variant_kind", attempt.wireVariantKind?.name ?: JSONObject.NULL)
+        .put("wire_variant_ordinal", attempt.wireVariantOrdinal)
         .put("exchange_outcome", attempt.exchangeOutcome.name)
         .put("provider_accounting_outcome", attempt.providerAccountingOutcome.name)
         .put("domain_commit_outcome", attempt.domainCommitOutcome.name)
@@ -2677,6 +2727,10 @@ class AgentStore private constructor(
             resolvedModel = json.optNullableString("resolved_model"),
             role = json.optNullableString("role")?.let { runCatching { AgentTaskRole.valueOf(it) }.getOrNull() },
             payloadFingerprint = json.optNullableString("payload_fingerprint") ?: "",
+            wirePayloadFingerprint = json.optNullableString("wire_payload_fingerprint"),
+            fingerprintSchemaVersion = json.optInt("fingerprint_schema_version", 1),
+            wireVariantKind = json.optNullableString("wire_variant_kind")?.let { runCatching { ProviderWireVariantKind.valueOf(it) }.getOrNull() },
+            wireVariantOrdinal = json.optInt("wire_variant_ordinal", 0),
             exchangeOutcome = json.optEnum("exchange_outcome", ExchangeOutcome.INTERRUPTED_OUTCOME_UNKNOWN),
             providerAccountingOutcome = json.optEnum("provider_accounting_outcome", ProviderAccountingOutcome.NOT_AVAILABLE),
             domainCommitOutcome = json.optEnum("domain_commit_outcome", MissionDomainCommitOutcome.NOT_APPLICABLE),
@@ -2707,6 +2761,10 @@ class AgentStore private constructor(
         .put("failure_class", auth.failureClass)
         .put("delivery_certainty", auth.deliveryCertainty.name)
         .put("attempt_ordinal", auth.attemptOrdinal)
+        .put("wire_payload_fingerprint", auth.wirePayloadFingerprint ?: JSONObject.NULL)
+        .put("fingerprint_schema_version", auth.fingerprintSchemaVersion)
+        .put("wire_variant_kind", auth.wireVariantKind?.name ?: JSONObject.NULL)
+        .put("wire_variant_ordinal", auth.wireVariantOrdinal)
         .put("authorization_timestamp", auth.authorizationTimestamp)
 
         .put("logical_request_id", auth.logicalRequestId)
@@ -2716,6 +2774,10 @@ class AgentStore private constructor(
         .put("failure_class", auth.failureClass)
         .put("delivery_certainty", auth.deliveryCertainty.name)
         .put("attempt_ordinal", auth.attemptOrdinal)
+        .put("wire_payload_fingerprint", auth.wirePayloadFingerprint ?: JSONObject.NULL)
+        .put("fingerprint_schema_version", auth.fingerprintSchemaVersion)
+        .put("wire_variant_kind", auth.wireVariantKind?.name ?: JSONObject.NULL)
+        .put("wire_variant_ordinal", auth.wireVariantOrdinal)
         .put("authorization_timestamp", auth.authorizationTimestamp)
 
     private fun decodeRetryAuthorization(json: JSONObject): ProviderRetryAuthorization = ProviderRetryAuthorization(
@@ -2726,6 +2788,10 @@ class AgentStore private constructor(
         failureClass = json.getString("failure_class"),
         deliveryCertainty = ProviderDeliveryCertainty.valueOf(json.getString("delivery_certainty")),
         attemptOrdinal = json.getInt("attempt_ordinal"),
+        wirePayloadFingerprint = json.optNullableString("wire_payload_fingerprint"),
+        fingerprintSchemaVersion = json.optInt("fingerprint_schema_version", 1),
+        wireVariantKind = json.optNullableString("wire_variant_kind")?.let { runCatching { ProviderWireVariantKind.valueOf(it) }.getOrNull() },
+        wireVariantOrdinal = json.optInt("wire_variant_ordinal", 0),
         authorizationTimestamp = json.optLong("authorization_timestamp", System.currentTimeMillis()),
     )
 

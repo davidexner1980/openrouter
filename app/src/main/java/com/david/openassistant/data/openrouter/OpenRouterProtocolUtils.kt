@@ -275,6 +275,25 @@ object OpenRouterProtocolUtils {
                 originalPayloadFingerprint = payloadFingerprint,
             )
         }
+
+        // 7. Reject protocol-level internal keys (metadata minimization)
+        val internalProtocolKeys = setOf(
+            "metadata", "local_metadata", "goal_id", "task_id",
+            "agent_role", "selection_reason", "logical_request_id",
+            "recovery_plan_id", "exchange_id"
+        )
+        for (key in internalProtocolKeys) {
+            if (payload.has(key)) {
+                throw OpenRouterException(
+                    statusCode = null,
+                    userMessage = "Local validation failed (LOCAL_REQUEST_SCHEMA_FAILURE): Outbound wire payload contains internal OpenAssistant metadata key: '$key'.",
+                    failureClass = OpenRouterFailureClass.LOCAL_REQUEST_SCHEMA_FAILURE,
+                    fieldPath = key,
+                    validationReason = "Internal OpenAssistant metadata reached the provider wire boundary.",
+                    originalPayloadFingerprint = payloadFingerprint,
+                )
+            }
+        }
     }
 
     private fun checkStructuralRedactionMarkers(value: Any?, currentPath: String, payloadFingerprint: String) {
