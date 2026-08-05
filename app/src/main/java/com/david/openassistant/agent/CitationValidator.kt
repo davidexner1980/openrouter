@@ -1,7 +1,5 @@
 package com.david.openassistant.agent
 
-import java.util.Locale
-
 /**
  * Validates research citations for truthful provenance and content alignment.
  * [PB-001] Mission recovery must preserve evidence and provenance.
@@ -99,7 +97,7 @@ object CitationValidator {
     }
 
     private fun normalizeForComparison(text: String): String {
-        return text.lowercase(Locale.US)
-            .replace(Regex("[^a-z0-9]"), "")
+        return text.lowercase()
+            .filter { it.isLetterOrDigit() }
     }
 }

@@ -3500,4 +3500,123 @@ JVM VERIFIED
 ### Recommended Next Pass
 
 - Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
-$entry
+
+---
+
+## Run CE-20260805-1335-e7f84c47 — 2026-08-05T13:35:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R1
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: e7f84c47d9a333c8960fe1de47436e8dca699364
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-1335-e7f84c47: implement Unicode-safe citation excerpt matching
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: UNICODE-CITATION-VALIDATION-REPAIR
+- Subsystem: Evidence
+- Mission requirement: Evidence and Citation Law
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for Unicode excerpt matching in CitationValidator.
+
+### Scope Contract
+
+- Problem: `CitationValidator` used a non-Unicode-safe normalization strategy for excerpt matching, stripping all non-ASCII characters and causing false positives.
+- First causal failure: `normalizeForComparison` implementation using `replace(Regex("[^a-z0-9]"), "")`.
+- Correct owner: `CitationValidator.kt`.
+- Violated invariant: "Citation comparison must be Unicode-safe."
+- Protected behavior: ASCII-based matching and fuzzy matching logic.
+- Compatibility: Schema compatible.
+- Out of scope: Physical device verification.
+
+### Reproduction
+
+- Starting state: `normalizeForComparison` strips non-ASCII.
+- Trigger: Non-ASCII excerpt not present in content.
+- Expected: Match should be false.
+- Actual: Match was true (due to both normalizing to empty string).
+- Repeatability: 100% (via `CitationValidatorUnicodeTest`).
+
+### Hypotheses
+
+- Accepted: Using Kotlin's Unicode-aware `Char.isLetterOrDigit()` for normalization ensures that non-ASCII content is preserved and matched correctly.
+
+### Root Cause
+
+- Root cause: Overly aggressive ASCII-only regex used for text normalization in the citation boundary.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/CitationValidator.kt (Updated `normalizeForComparison` to be Unicode-aware)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/CitationValidatorUnicodeTest.kt (New: verified Unicode matching)
+- Behavior changed: Excerpt matching now correctly handles non-ASCII characters (e.g. Cyrillic, Chinese, etc.).
+- Behavior preserved: Case-insensitivity and punctuation stripping.
+
+### Regression Proof
+
+- Test: `CitationValidatorUnicodeTest.testUnicodeExcerptMatchingErroneousPass`
+- Failed before repair: YES (returned true when it should be false).
+- Expected failure: `AssertionError`.
+- Passed after repair: YES.
+- Real owner exercised: YES.
+
+### Verification
+
+- Baseline: PASSED (619 tests)
+- Focused: PASSED (`CitationValidatorUnicodeTest`)
+- Full unit total: 621
+- Passed: 621
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None.
+- Migration: None.
+- Performance: Negligible (using `filter` instead of `Regex`).
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe.
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
