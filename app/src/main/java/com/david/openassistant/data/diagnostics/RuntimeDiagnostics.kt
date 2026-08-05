@@ -218,10 +218,9 @@ open class RuntimeDiagnostics internal constructor(
             goalId = diagEvent.goalId,
             taskId = diagEvent.taskId,
             durationMs = diagEvent.durationMs,
-            fields = diagEvent.fields + mapOf(
-                "version_name" to diagEvent.versionName,
-                "version_code" to diagEvent.versionCode
-            )
+            versionName = diagEvent.versionName,
+            versionCode = diagEvent.versionCode,
+            fields = diagEvent.fields
         )
 
         val jsonLine = diagEvent.toJsonObject().toString() + "\n"

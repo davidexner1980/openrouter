@@ -381,13 +381,18 @@ class PublicWebToolRuntime(
         activeCalls.toList().forEach(okhttp3.Call::cancel)
     }
 
-    suspend fun execute(call: OpenRouterToolCall, blockedSources: List<com.david.openassistant.agent.BlockedSourceRecord> = emptyList()): ToolExecutionResult = when (call.name) {
-        "public_web_search" -> search(call.argumentsJson)
-        "public_web_fetch" -> fetch(call.argumentsJson, blockedSources)
+    suspend fun execute(
+        call: OpenRouterToolCall,
+        goalId: String? = null,
+        taskId: String? = null,
+        blockedSources: List<com.david.openassistant.agent.BlockedSourceRecord> = emptyList()
+    ): ToolExecutionResult = when (call.name) {
+        "public_web_search" -> search(call.argumentsJson, goalId, taskId)
+        "public_web_fetch" -> fetch(call.argumentsJson, goalId, taskId, blockedSources)
         else -> throw ToolValidationException("Unsupported public web tool: ${call.name}")
     }
 
-    private suspend fun search(argumentsJson: String): ToolExecutionResult {
+    private suspend fun search(argumentsJson: String, goalId: String?, taskId: String?): ToolExecutionResult {
         val args = parseToolArguments(argumentsJson)
         val query = args.optString("query").trim()
         if (query.isBlank()) throw ToolValidationException("Missing required tool argument: query.")
@@ -427,7 +432,7 @@ class PublicWebToolRuntime(
             
             try {
                 networkAttempts.incrementAndGet()
-                val fetched = executeValidatedGet(url)
+                val fetched = executeValidatedGet(url, goalId, taskId)
                 if (isPublicSearchThrottleResponse(fetched.statusCode, fetched.body)) {
                     activateSearchCooldown(provider)
                     failures += "${provider.wireName} returned a throttle"
@@ -511,7 +516,12 @@ class PublicWebToolRuntime(
         )
     }
 
-    private suspend fun fetch(argumentsJson: String, blockedSources: List<com.david.openassistant.agent.BlockedSourceRecord> = emptyList()): ToolExecutionResult {
+    private suspend fun fetch(
+        argumentsJson: String,
+        goalId: String?,
+        taskId: String?,
+        blockedSources: List<com.david.openassistant.agent.BlockedSourceRecord> = emptyList()
+    ): ToolExecutionResult {
         val args = parseToolArguments(argumentsJson)
         val requestedUrl = args.optString("url").trim()
         if (requestedUrl.isBlank()) throw ToolValidationException("Missing required tool argument: url.")
@@ -522,7 +532,7 @@ class PublicWebToolRuntime(
         }
 
         val fetched = try {
-            executeValidatedGet(requestedUrl)
+            executeValidatedGet(requestedUrl, goalId, taskId)
         } catch (error: PublicWebHttpStatusException) {
             throw ToolValidationException(error.message ?: "The public web request failed.")
         }
@@ -591,7 +601,7 @@ class PublicWebToolRuntime(
         )
     }
 
-    private suspend fun executeValidatedGet(initialUrl: String): FetchResult {
+    private suspend fun executeValidatedGet(initialUrl: String, goalId: String? = null, taskId: String? = null): FetchResult {
         var current = validatePublicHttpsUrl(initialUrl)
         repeat(MAX_REDIRECTS + 1) { redirectCount ->
             currentCoroutineContext().ensureActive()
@@ -601,6 +611,8 @@ class PublicWebToolRuntime(
                 category = "web_network",
                 event = "request",
                 correlationId = exchangeId,
+                goalId = goalId,
+                taskId = taskId,
                 fields = mapOf(
                     "method" to "GET",
                     "url" to current,
@@ -625,6 +637,8 @@ class PublicWebToolRuntime(
                             category = "web_network",
                             event = "response",
                             correlationId = exchangeId,
+                            goalId = goalId,
+                            taskId = taskId,
                             fields = mapOf(
                                 "http_status" to response.code,
                                 "successful" to true,
@@ -651,6 +665,8 @@ class PublicWebToolRuntime(
                             event = "response",
                             level = "ERROR",
                             correlationId = exchangeId,
+                            goalId = goalId,
+                            taskId = taskId,
                             fields = mapOf(
                                 "http_status" to response.code,
                                 "successful" to false,
@@ -669,6 +685,8 @@ class PublicWebToolRuntime(
                             category = "web_network",
                             event = "response",
                             correlationId = exchangeId,
+                            goalId = goalId,
+                            taskId = taskId,
                             fields = mapOf(
                                 "http_status" to response.code,
                                 "successful" to true,
@@ -696,6 +714,8 @@ class PublicWebToolRuntime(
                         category = "web_network",
                         event = "response",
                         correlationId = exchangeId,
+                        goalId = goalId,
+                        taskId = taskId,
                         fields = mapOf(
                             "http_status" to response.code,
                             "successful" to true,
@@ -725,6 +745,8 @@ class PublicWebToolRuntime(
                         event = if (isCancelled) "cancelled" else "failure",
                         level = if (isCancelled) "INFO" else "ERROR",
                         correlationId = exchangeId,
+                        goalId = goalId,
+                        taskId = taskId,
                         fields = mapOf(
                             "url" to current,
                             "duration_ms" to (System.currentTimeMillis() - startedAt),

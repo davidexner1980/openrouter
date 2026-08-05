@@ -62,6 +62,8 @@ class HostedSandboxToolRuntime(
         call: OpenRouterToolCall,
         apiKey: String?,
         modelId: String?,
+        goalId: String? = null,
+        taskId: String? = null,
     ): ToolExecutionResult {
         if (!HostedSandboxToolCatalog.handles(call.name)) {
             throw ToolValidationException("Unknown hosted sandbox tool: ${call.name}")
@@ -104,6 +106,8 @@ class HostedSandboxToolRuntime(
             category = "provider",
             event = "request",
             correlationId = exchangeId,
+            goalId = goalId,
+            taskId = taskId,
             fields = mapOf(
                 "provider" to "OpenRouter",
                 "operation" to "hosted_sandbox_workbench",
@@ -139,6 +143,9 @@ class HostedSandboxToolRuntime(
                     event = "response",
                     level = if (response.isSuccessful) "INFO" else "ERROR",
                     correlationId = exchangeId,
+                    goalId = goalId,
+                    taskId = taskId,
+                    durationMs = (System.currentTimeMillis() - startedAt),
                     fields = mapOf(
                         "provider" to "OpenRouter",
                         "operation" to "hosted_sandbox_workbench",
@@ -173,6 +180,9 @@ class HostedSandboxToolRuntime(
                     event = "failure",
                     level = "ERROR",
                     correlationId = exchangeId,
+                    goalId = goalId,
+                    taskId = taskId,
+                    durationMs = (System.currentTimeMillis() - startedAt),
                     fields = mapOf(
                         "provider" to "OpenRouter",
                         "operation" to "hosted_sandbox_workbench",

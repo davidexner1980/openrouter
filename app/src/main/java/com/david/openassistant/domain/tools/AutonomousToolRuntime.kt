@@ -93,6 +93,7 @@ open class AutonomousToolRuntime internal constructor(
         apiKey: String?,
         modelId: String?,
         goal: com.david.openassistant.agent.AgentGoal? = null,
+        taskId: String? = null,
     ): ToolExecutionResult {
         val correlationId = call.id.ifBlank { "tool-${UUID.randomUUID()}" }
         val startedAt = System.currentTimeMillis()
@@ -101,6 +102,8 @@ open class AutonomousToolRuntime internal constructor(
             category = "tool",
             event = "call_started",
             correlationId = correlationId,
+            goalId = goal?.id,
+            taskId = taskId,
             fields = mapOf(
                 "tool_call_id" to call.id,
                 "tool_name" to call.name,
@@ -111,13 +114,16 @@ open class AutonomousToolRuntime internal constructor(
             ),
         )
         return try {
-            executeInternal(call, apiKey, modelId, goal).let { result ->
+            executeInternal(call, apiKey, modelId, goal, taskId).let { result ->
                 val durationMs = System.currentTimeMillis() - startedAt
                 if (ProviderRequestLedger.terminalize(correlationId, RequestState.COMPLETED)) {
                     researchMonitor.record(
                         category = "tool",
                         event = "call_completed",
                         correlationId = correlationId,
+                        goalId = goal?.id,
+                        taskId = taskId,
+                        durationMs = durationMs,
                         fields = mapOf(
                             "tool_call_id" to call.id,
                             "tool_name" to call.name,
@@ -146,6 +152,9 @@ open class AutonomousToolRuntime internal constructor(
                     event = "call_failed",
                     level = "ERROR",
                     correlationId = correlationId,
+                    goalId = goal?.id,
+                    taskId = taskId,
+                    durationMs = (System.currentTimeMillis() - startedAt),
                     fields = mapOf(
                         "tool_call_id" to call.id,
                         "tool_name" to call.name,
@@ -166,6 +175,7 @@ open class AutonomousToolRuntime internal constructor(
         apiKey: String?,
         modelId: String?,
         goal: com.david.openassistant.agent.AgentGoal? = null,
+        taskId: String? = null,
     ): ToolExecutionResult = when (call.name) {
         "create_tool_recipe" -> createRecipe(call.argumentsJson)
         "list_tool_recipes" -> listRecipes()
@@ -175,9 +185,20 @@ open class AutonomousToolRuntime internal constructor(
                 WorkspaceToolCatalog.handles(call.name) -> workspaceRuntime!!.execute(call)
                 DeviceToolCatalog.handles(call.name) -> deviceToolRuntime!!.execute(call)
                 RuntimeDiagnosticToolCatalog.handles(call.name) -> runtimeDiagnosticToolRuntime!!.execute(call)
-                PublicWebToolCatalog.handles(call.name) -> publicWebToolRuntime!!.execute(call, goal?.blockedSources ?: emptyList())
+                PublicWebToolCatalog.handles(call.name) -> publicWebToolRuntime!!.execute(
+                    call = call, 
+                    goalId = goal?.id, 
+                    taskId = taskId, 
+                    blockedSources = goal?.blockedSources ?: emptyList()
+                )
                 AdvancedToolCatalog.handles(call.name) -> advancedExecutor!!.execute(call)
-                HostedSandboxToolCatalog.handles(call.name) -> hostedSandboxRuntime!!.execute(call, apiKey, modelId)
+                HostedSandboxToolCatalog.handles(call.name) -> hostedSandboxRuntime!!.execute(
+                    call = call, 
+                    apiKey = apiKey, 
+                    modelId = modelId, 
+                    goalId = goal?.id, 
+                    taskId = taskId
+                )
                 else -> {
                 val recipe = recipeStore!!.load().firstOrNull {
                     it.status == ToolRecipeStatus.ACTIVE && it.openRouterToolName == call.name

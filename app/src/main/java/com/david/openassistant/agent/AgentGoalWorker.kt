@@ -132,8 +132,6 @@ class AgentGoalWorker(
                         return@coroutineScope Result.failure()
                     }
 
-                    // Canonical controlled stale-exchange reconciliation under goal lease lock
-                    ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
 
                     val now = System.currentTimeMillis()
                     var goalSnapshot = findGoal(goalId) ?: return@coroutineScope Result.failure()
@@ -396,6 +394,9 @@ class AgentGoalWorker(
                         }
                     }
                     activeTicket = ticket
+
+                    // Canonical controlled stale-exchange reconciliation under goal lease lock
+                    ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
                     
                     // RECOVERY OWNERSHIP TRUTH: Validate plan after lease acquisition
                     if (hasActiveRecovery) {

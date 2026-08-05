@@ -4295,6 +4295,7 @@ open class AgentOpenRouterClient internal constructor(
                                                         apiKey = apiKey,
                                                         modelId = resolvedModel ?: payload.optString("model"),
                                                         goal = goal,
+                                                        taskId = requestContext.taskId
                                                     )
                                                     
                                                     diagnostics?.info(

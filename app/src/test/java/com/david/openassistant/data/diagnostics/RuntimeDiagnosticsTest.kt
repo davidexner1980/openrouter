@@ -46,6 +46,8 @@ class RuntimeDiagnosticsTest {
                 goalId: String?,
                 taskId: String?,
                 durationMs: Long?,
+                versionName: String?,
+                versionCode: Int?,
                 fields: Map<String, Any?>
             ) {
                 capturedEvents.add(CapturedEvent(level, event, goalId, taskId, durationMs, fields))

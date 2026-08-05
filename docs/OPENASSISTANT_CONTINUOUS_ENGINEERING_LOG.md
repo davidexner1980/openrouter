@@ -2306,7 +2306,140 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260805-0852-324871b3 — 2026-08-05T08:52:00
+## Run CE-20260805-0923-110a8e2e — 2026-08-05T09:23:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R2
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 110a8e2e7c541d92bbb97c061c2fbd9910783f2c
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-0923-110a8e2e: enforce tool diagnostic context and minimize monitor metadata
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: TOOL-DIAGNOSTIC-CONTEXT-ENFORCEMENT
+- Subsystem: Tools
+- Mission requirement: Semantic-Preservation Law, Collision-free Identity Law
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for context propagation to monitor.
+
+- Issue ID: RUNTIME-PACKET-METADATA-MINIMIZATION
+- Subsystem: Diagnostics
+- Mission requirement: Privacy, Performance
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: Verification of ID filtering in ResearchMonitor.
+
+### Scope Contract
+
+- Problem: 
+    1. Tool execution events in `ResearchMonitor` lacked `goal_id` and `task_id` context.
+    2. `ResearchMonitor` JSONL output contained redundant internal metadata in the `details` map.
+    3. `AgentGoalWorker` performed stale exchange reconciliation before acquiring the mission lease, violating the lease boundary.
+- First causal failure: Incomplete context passing in `AutonomousToolRuntime` and `PublicWebTools`.
+- Correct owner: `AutonomousToolRuntime.kt`, `PublicWebTools.kt`, `ResearchMonitor.kt`, `AgentGoalWorker.kt`.
+- Violated invariant: Semantic-Preservation Law and Lease Authority.
+- Protected behavior: Tool execution logic and deduplication.
+- Compatibility: Schema-compatible.
+- Out of scope: Physical device verification.
+
+### Reproduction
+
+- Starting state: `record` calls in tool runtimes omitted `goalId` and `taskId`.
+- Trigger: Tool call during a research mission.
+- Expected: Monitor logs contain IDs and clean `details`.
+- Actual: Logs contained tool call ID only; `details` were cluttered.
+- Repeatability: 100%
+
+### Hypotheses
+
+- Accepted: Propagating `taskId` through the tool execution pipeline and updating `ResearchMonitor.record` signature ensures full correlatability. Moving reconciliation inside the leased block in `AgentGoalWorker` protects store integrity.
+
+### Root Cause
+
+- Root cause: Evolution of diagnostic APIs outpaced the update of their call sites in the domain layer.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/data/diagnostics/ResearchMonitor.kt (Enhanced signature, promoted version fields, implemented details filtering)
+    - app/src/main/java/com/david/openassistant/domain/tools/AutonomousToolRuntime.kt (Propagated taskId, updated record calls)
+    - app/src/main/java/com/david/openassistant/domain/tools/PublicWebTools.kt (Propagated context to web requests)
+    - app/src/main/java/com/david/openassistant/domain/tools/HostedSandboxTools.kt (Propagated context to sandbox requests)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Wired context from Reasoning loop)
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Moved reconciliation inside lease lock)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/ParallelToolDeduplicationTest.kt (Updated mock)
+    - app/src/test/java/com/david/openassistant/agent/ResearchMissionStartTelemetryTest.kt (Updated mock)
+    - app/src/test/java/com/david/openassistant/data/diagnostics/RuntimeDiagnosticsTest.kt (Updated mock)
+- Behavior changed: All tool and web network events now carry mission IDs in the monitor log. Monitor details are minimized. Store reconciliation is protected by leases.
+
+### Regression Proof
+
+- Test: `DiagnosticMinimizationTest`, `ResearchMonitorJsonlTest`
+- Failed before repair: YES (in prior runs for minimization)
+- Expected failure: `AssertionError` for present keys.
+- Passed after repair: YES.
+- Real owner exercised: YES.
+- Durable output reloaded: YES.
+
+### Verification
+
+- Baseline: PASSED (616 tests)
+- Full unit total: 616
+- Passed: 616
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None.
+- Migration: None.
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe.
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 

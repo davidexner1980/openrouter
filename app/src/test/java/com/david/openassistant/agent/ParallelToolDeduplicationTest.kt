@@ -39,7 +39,7 @@ class ParallelToolDeduplicationTest {
 
     private class MockRuntime : AutonomousToolRuntime(null, null, null, null, null, null, null, null, null, null, null, null) {
         val callCount = AtomicInteger(0)
-        override suspend fun execute(call: OpenRouterToolCall, apiKey: String?, modelId: String?, goal: AgentGoal?): ToolExecutionResult {
+        override suspend fun execute(call: OpenRouterToolCall, apiKey: String?, modelId: String?, goal: AgentGoal?, taskId: String?): ToolExecutionResult {
             if (call.name == "public_web_fetch") {
                 callCount.incrementAndGet()
             }

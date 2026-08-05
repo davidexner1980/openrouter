@@ -476,6 +476,8 @@ open class ResearchMonitor internal constructor(
         goalId: String? = null,
         taskId: String? = null,
         durationMs: Long? = null,
+        versionName: String? = null,
+        versionCode: Int? = null,
         fields: Map<String, Any?> = emptyMap(),
     ) = synchronized(FILE_LOCK) {
         val activeSessionId = preferences.getString(KEY_SESSION_ID, null)
@@ -497,15 +499,6 @@ open class ResearchMonitor internal constructor(
             )
         }
 
-        // Strict version provenance check
-        val incomingVersionName = fields["version_name"] as? String
-        val incomingVersionCode = fields["version_code"] as? Int
-        val sessionVersionName = preferences.getString(KEY_VERSION_NAME, null)
-        val sessionVersionCode = preferences.getInt(KEY_VERSION_CODE, -1)
-        
-        val versionMismatch = (incomingVersionName != null && incomingVersionName != sessionVersionName) ||
-            (incomingVersionCode != null && incomingVersionCode != sessionVersionCode)
-
         if (targetSessionId != null && targetSessionId != activeSessionId) {
             runCatching {
                 recordToSpecificSessionLocked(
@@ -517,6 +510,8 @@ open class ResearchMonitor internal constructor(
                     goalId,
                     taskId,
                     durationMs,
+                    versionName,
+                    versionCode,
                     fields + mapOf(
                         "original_event" to event,
                         "reason" to "The response belongs to an old or inactive session."
@@ -526,6 +521,15 @@ open class ResearchMonitor internal constructor(
             return@synchronized
         }
         
+        // Strict version provenance check
+        val incomingVersionName = versionName ?: fields["version_name"] as? String
+        val incomingVersionCode = versionCode ?: fields["version_code"] as? Int
+        val sessionVersionName = preferences.getString(KEY_VERSION_NAME, null)
+        val sessionVersionCode = preferences.getInt(KEY_VERSION_CODE, -1)
+        
+        val versionMismatch = (incomingVersionName != null && incomingVersionName != sessionVersionName) ||
+            (incomingVersionCode != null && incomingVersionCode != sessionVersionCode)
+
         if (versionMismatch) {
             runCatching {
                 recordLocked(
@@ -536,6 +540,8 @@ open class ResearchMonitor internal constructor(
                     goalId = goalId,
                     taskId = taskId,
                     durationMs = durationMs,
+                    versionName = versionName,
+                    versionCode = versionCode,
                     fields = fields + mapOf(
                         "original_event" to event,
                         "session_version" to sessionVersionName,
@@ -548,7 +554,7 @@ open class ResearchMonitor internal constructor(
         }
 
         if (!preferences.getBoolean(KEY_ACTIVE, false)) return@synchronized
-        runCatching { recordLocked(category, event, level, correlationId, goalId, taskId, durationMs, fields) }
+        runCatching { recordLocked(category, event, level, correlationId, goalId, taskId, durationMs, versionName, versionCode, fields) }
             .onFailure { preferences.edit { putBoolean(KEY_TRACE_CAPPED, true) } }
     }
 
@@ -561,6 +567,8 @@ open class ResearchMonitor internal constructor(
         goalId: String? = null,
         taskId: String? = null,
         durationMs: Long? = null,
+        versionName: String? = null,
+        versionCode: Int? = null,
         fields: Map<String, Any?> = emptyMap(),
     ) {
         val trace = traceFile(sessionId)
@@ -569,7 +577,7 @@ open class ResearchMonitor internal constructor(
 
         val eventId = fields["event_id"] as? String ?: UUID.randomUUID().toString()
         if (isEventDeliveredLocked(trace, eventId)) return
-        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, goalId, taskId, durationMs, fields, eventId)
+        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, goalId, taskId, durationMs, versionName, versionCode, fields, eventId)
         trace.appendText(payload + "\n", StandardCharsets.UTF_8)
     }
 
@@ -581,6 +589,8 @@ open class ResearchMonitor internal constructor(
         goalId: String? = null,
         taskId: String? = null,
         durationMs: Long? = null,
+        versionName: String? = null,
+        versionCode: Int? = null,
         fields: Map<String, Any?> = emptyMap(),
     ) {
         val sessionId = preferences.getString(KEY_SESSION_ID, null) ?: return
@@ -593,7 +603,7 @@ open class ResearchMonitor internal constructor(
         val eventId = fields["event_id"] as? String ?: UUID.randomUUID().toString()
         if (isEventDeliveredLocked(trace, eventId)) return
 
-        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, goalId, taskId, durationMs, fields, eventId)
+        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, goalId, taskId, durationMs, versionName, versionCode, fields, eventId)
         if (trace.length() + payload.toByteArray(StandardCharsets.UTF_8).size + 1 > MAX_TRACE_BYTES) {
             preferences.edit { putBoolean(KEY_TRACE_CAPPED, true) }
             return
@@ -630,6 +640,8 @@ open class ResearchMonitor internal constructor(
         goalId: String?,
         taskId: String?,
         durationMs: Long?,
+        versionName: String?,
+        versionCode: Int?,
         fields: Map<String, Any?>,
         eventId: String,
     ): String {
@@ -640,6 +652,8 @@ open class ResearchMonitor internal constructor(
             .forEach { (rawKey, rawValue) ->
                 val key = rawKey.trim().take(MAX_FIELD_KEY_CHARS)
                 if (key.isBlank() || key == "event_id") return@forEach
+                // V42.5: Minimize details by excluding promoted top-level fields
+                if (key in com.david.openassistant.data.diagnostics.DiagnosticEvent.ENVELOPE_FIELDS) return@forEach
                 details.put(key, sanitizeValue(rawValue))
             }
         return JSONObject()
@@ -657,6 +671,8 @@ open class ResearchMonitor internal constructor(
                 goalId?.let { put("goal_id", it) }
                 taskId?.let { put("task_id", it) }
                 durationMs?.let { put("duration_ms", it) }
+                versionName?.let { put("vn", it) }
+                versionCode?.let { put("vc", it) }
             }
             .toString()
     }
