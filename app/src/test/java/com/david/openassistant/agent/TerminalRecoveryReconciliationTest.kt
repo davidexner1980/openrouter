@@ -97,7 +97,7 @@ class TerminalRecoveryReconciliationTest {
         
         // 4. Invoke repair again, should be AlreadyRepaired or NotApplicable
         val result2 = store.repairTerminalRecoveryLivelockAtomic(goalId)
-        assertTrue(result2 is TerminalRecoveryRepairResult.AlreadyRepaired)
+        assertTrue("Expected AlreadyRepaired or NotApplicable, got $result2", result2 is TerminalRecoveryRepairResult.AlreadyRepaired || result2 is TerminalRecoveryRepairResult.NotApplicable)
 
         // Exact counts assertion:
         val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
