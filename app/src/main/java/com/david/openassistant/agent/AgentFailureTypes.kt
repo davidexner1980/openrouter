@@ -183,6 +183,22 @@ object FailureClassifier {
             )
         }
 
+        // 1.1 Provider reconciliation conflict
+        if (openRouterEx?.failureClass == com.david.openassistant.data.openrouter.OpenRouterFailureClass.RECONCILIATION_CONFLICT) {
+            return FailureDescriptor(
+                domain = FailureDomain.APPLICATION,
+                failureClass = "PROVIDER_RECONCILIATION_CONFLICT",
+                scope = FailureScope.REQUEST,
+                retryPolicy = RetryPolicy.REQUIRES_USER_RECOVERY_ACTION,
+                statusCode = statusCode,
+                requestFingerprint = requestFingerprint ?: openRouterEx.originalPayloadFingerprint,
+                goalId = goalId,
+                taskId = taskId,
+                operationId = operationId,
+                safeDiagnosticSummary = openRouterEx.userMessage,
+            )
+        }
+
         // 2. Provider authentication / permission failure (401 / 403)
         val isCloudflareChallenge = statusCode == 403 && (
             message.contains("cloudflare") || 

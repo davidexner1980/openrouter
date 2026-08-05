@@ -215,7 +215,10 @@ open class RuntimeDiagnostics internal constructor(
             event = diagEvent.event,
             level = level,
             correlationId = diagEvent.goalId ?: diagEvent.exchangeId,
-            fields = diagEvent.fields
+            fields = diagEvent.fields + mapOf(
+                "version_name" to diagEvent.versionName,
+                "version_code" to diagEvent.versionCode
+            )
         )
 
         val jsonLine = diagEvent.toJsonObject().toString() + "\n"
@@ -259,6 +262,8 @@ open class RuntimeDiagnostics internal constructor(
         val sourceReadId = fields["source_read_id"]?.toString()
         val toolCallId = fields["tool_call_id"]?.toString()
         val durationMs = (fields["duration_ms"] as? Number)?.toLong()
+        val versionName = (fields["vn"] ?: fields["version_name"] ?: fields["app_version"])?.toString() ?: com.david.openassistant.BuildConfig.VERSION_NAME
+        val versionCode = (fields["vc"] ?: fields["version_code"])?.let { (it as? Number)?.toInt() } ?: com.david.openassistant.BuildConfig.VERSION_CODE
         val outcome = fields["outcome"]?.toString()
         val reasonCode = fields["reason_code"]?.toString()
         val stateBefore = fields["state_before"]?.toString()
@@ -275,6 +280,8 @@ open class RuntimeDiagnostics internal constructor(
             level = level,
             component = component,
             event = safeEvent,
+            versionName = versionName,
+            versionCode = versionCode,
             outcome = outcome,
             reasonCode = reasonCode,
             goalId = goalId,

@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLong
  */
 data class DiagnosticEvent(
     val schemaVersion: Int = 2, // V36
+    val versionName: String = com.david.openassistant.BuildConfig.VERSION_NAME,
+    val versionCode: Int = com.david.openassistant.BuildConfig.VERSION_CODE,
     val timestampUtc: Long = System.currentTimeMillis(),
     val elapsedRealtimeMs: Long = android.os.SystemClock.elapsedRealtime(),
     val bootSessionId: String = BOOT_SESSION_ID,
@@ -60,6 +62,9 @@ data class DiagnosticEvent(
             appendOptional("exchange_id", exchangeId)
             appendOptional("operation_id", operationId)
             appendOptional("duration_ms", durationMs)
+            
+            appendOptional("vn", versionName)
+            appendOptional("vc", versionCode)
             
             // Append other standard IDs if present
             appendOptional("worker_id", workerId)
@@ -116,6 +121,8 @@ data class DiagnosticEvent(
             putOpt("exchange_id", exchangeId)
             putOpt("operation_id", operationId)
             putOpt("duration_ms", durationMs)
+            put("vn", versionName)
+            put("vc", versionCode)
             
             if (fields.isNotEmpty()) {
                 val f = JSONObject()
@@ -139,7 +146,7 @@ data class DiagnosticEvent(
             "outcome", "reason_code", "goal_id", "task_id", "worker_id",
             "work_request_id", "worker_run_attempt", "lease_generation", "lease_gen", "lease_attempt_id",
             "exchange_id", "operation_id", "search_id", "source_read_id", "tool_call_id",
-            "state_before", "state_after", "duration_ms"
+            "state_before", "state_after", "duration_ms", "vn", "vc", "version_name", "version_code", "app_version"
         )
     }
 }

@@ -5009,7 +5009,12 @@ open class AgentOpenRouterClient internal constructor(
                     throw OpenRouterException(null, "Retry requires explicit authorization.")
                 }
                 is ReconciliationResult.LogicalIdentityConflict -> {
-                    throw OpenRouterException(null, "Logical request ID conflict: ${reconciliation.existingFingerprint} != ${reconciliation.requestedFingerprint}")
+                    throw OpenRouterException(
+                        statusCode = null,
+                        userMessage = "Logical request ID conflict: ${reconciliation.existingFingerprint} != ${reconciliation.requestedFingerprint}",
+                        failureClass = OpenRouterFailureClass.RECONCILIATION_CONFLICT,
+                        originalPayloadFingerprint = reconciliation.requestedFingerprint
+                    )
                 }
                 is ReconciliationResult.StaleOwnership -> {
                     throw OpenRouterException(null, "Stale ownership: generation mismatch.")
@@ -5018,7 +5023,11 @@ open class AgentOpenRouterClient internal constructor(
                     throw OpenRouterException(null, "Ownership mismatch.")
                 }
                 is ReconciliationResult.RecoveryPlanMismatch -> {
-                    throw OpenRouterException(null, "Recovery plan mismatch: ${reconciliation.actualPlanId} != ${reconciliation.expectedPlanId}")
+                    throw OpenRouterException(
+                        statusCode = null,
+                        userMessage = "Recovery plan mismatch: ${reconciliation.actualPlanId} != ${reconciliation.expectedPlanId}",
+                        failureClass = OpenRouterFailureClass.RECONCILIATION_CONFLICT
+                    )
                 }
                 is ReconciliationResult.GoalTerminal -> {
                     throw OpenRouterException(null, "Goal is in a terminal state: ${reconciliation.status}")

@@ -2306,7 +2306,143 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260804-2344-1017a20e — 2026-08-04T23:44:00
+## Run CE-20260805-0645-a4d5b7e — 2026-08-05T06:45:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R2
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: a4d5b7ef211854a818269d99ba859cbc6c466c38
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-0645-a4d5b7e: improve diagnostic provenance and reconciliation semantic precision
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: DIAGNOSTIC-PROVENANCE-ENFORCEMENT
+- Subsystem: Diagnostics
+- Mission requirement: Build reproducibility, Repository hygiene
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for version fields in all events.
+
+- Issue ID: RECONCILIATION-SEMANTIC-PRECISION
+- Subsystem: Provider
+- Mission requirement: Semantic-Preservation Law
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for failure class mapping.
+
+### Scope Contract
+
+- Problem: 
+    1. Diagnostic events lacked explicit version provenance, making mixed-version traces hard to detect. 
+    2. Reconciliation conflicts (e.g. logical ID conflict) were reported as generic strings, losing precision.
+- First causal failure: Missing fields in `DiagnosticEvent` and missing enum variant in `OpenRouterFailureClass`.
+- Correct owner: `RuntimeDiagnostics.kt`, `DiagnosticEvent.kt`, `AgentOpenRouterClient.kt`.
+- Violated invariant: Semantic-Preservation Law and Build-Reproducibility Law.
+- Protected behavior: Existing diagnostic IDs and JSON structure.
+- Compatibility: Maintained existing JSON keys.
+- Out of scope: Physical device upgrade verification.
+
+### Reproduction
+
+- Starting state: `DiagnosticEvent` without version fields. Generic exceptions for reconciliation.
+- Trigger: Diagnostic recording or reconciliation conflict.
+- Expected: Every event has version. Precise failure class for conflicts.
+- Actual: Version only in session start. Generic fallback for conflicts.
+- Durable result: Redundant IDs promoted but not filtered; missing version fields in detail maps.
+- Repeatability: 100%
+
+### Hypotheses
+
+- Accepted: Adding `versionName` and `versionCode` to `DiagnosticEvent` and populating them in `RuntimeDiagnostics` ensures persistent provenance. Using `RECONCILIATION_CONFLICT` enum variant improves error classification.
+
+### Root Cause
+
+- Root cause: Incomplete metadata minimization and provenance policy in the diagnostic recorder boundary.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/data/diagnostics/DiagnosticEvent.kt (Added version fields and updated ENVELOPE_FIELDS)
+    - app/src/main/java/com/david/openassistant/data/diagnostics/RuntimeDiagnostics.kt (Populated version fields and implemented filtering)
+    - app/src/main/java/com/david/openassistant/agent/AgentOpenRouterClient.kt (Improved reconciliation error mapping)
+    - app/src/main/java/com/david/openassistant/agent/AgentFailureTypes.kt (Mapped RECONCILIATION_CONFLICT in FailureClassifier)
+    - app/src/main/java/com/david/openassistant/data/openrouter/OpenRouterClient.kt (Added RECONCILIATION_CONFLICT to failure enum)
+- Test files:
+    - app/src/test/java/com/david/openassistant/data/diagnostics/DiagnosticProvenanceTest.kt (New: verified provenance and minimization)
+    - app/src/test/java/com/david/openassistant/agent/ReconciliationSemanticTest.kt (New: verified failure classification)
+- Behavior changed: All diagnostic events now carry app version and code. Reconciliation conflicts are classified precisely.
+- Behavior preserved: Logcat and JSON structure for standard IDs.
+
+### Regression Proof
+
+- Test: `DiagnosticProvenanceTest.testDiagnosticEventIncludesVersionProvenance`, `ReconciliationSemanticTest.testRECONCILIATION_CONFLICT_Classification`
+- Failed before repair: YES
+- Expected failure: `AssertionError` for missing fields or generic failure class.
+- Passed after repair: YES
+- Real owner exercised: YES
+- Durable output reloaded: YES
+- Exact counts asserted: N/A
+- Simulation present: NO
+- Why recurrence is detected: Direct tests verify existence of version fields and specific failure class mapping.
+
+### Verification
+
+- Baseline: PASSED (after unsetting ANDROID_PREFS_ROOT)
+- Focused: PASSED (`DiagnosticProvenanceTest`, `ReconciliationSemanticTest`)
+- Full unit total: 610
+- Passed: 610
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None (pure logic).
+- Migration: None (schema compatible).
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe (extra fields ignored by older builds).
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 

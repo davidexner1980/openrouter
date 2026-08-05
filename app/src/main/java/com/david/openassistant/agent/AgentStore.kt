@@ -153,13 +153,14 @@ sealed class TypedRepairResult {
     data class StorageFailure(val cause: Throwable) : TypedRepairResult()
 }
 
-class AgentStore private constructor(
+open class AgentStore private constructor(
     context: Context?,
     baseDir: File?,
     prefs: SharedPreferences?,
 ) : AgentRefreshSource {
     constructor(context: Context) : this(context = context, baseDir = null, prefs = null)
     constructor(baseDir: File) : this(context = null, baseDir = baseDir, prefs = null)
+    internal constructor() : this(context = null, baseDir = null, prefs = null)
 
     private val preferences: SharedPreferences? = prefs ?: context?.applicationContext?.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = context?.let { com.david.openassistant.data.diagnostics.RuntimeDiagnostics(it) }
@@ -183,7 +184,7 @@ class AgentStore private constructor(
         val fileLength: Long,
     )
 
-    fun loadSnapshot(): AgentSnapshot = synchronized(STORE_LOCK) {
+    open fun loadSnapshot(): AgentSnapshot = synchronized(STORE_LOCK) {
         readCount.incrementAndGet()
         loadSnapshotLocked()
     }
@@ -863,7 +864,7 @@ class AgentStore private constructor(
         }
     }
 
-    fun validateTicket(ticket: AgentOwnershipTicket): TicketValidationResult = synchronized(STORE_LOCK) {
+    open fun validateTicket(ticket: AgentOwnershipTicket): TicketValidationResult = synchronized(STORE_LOCK) {
         validateTicketInternalLocked(ticket)
     }
 
@@ -980,7 +981,7 @@ class AgentStore private constructor(
         CreateAttemptResult.Created
     }
 
-    fun claimOrReconcileProviderRequestAtomic(
+    open fun claimOrReconcileProviderRequestAtomic(
         goalId: String,
         logicalRequestId: String,
         operation: MissionOperation,
