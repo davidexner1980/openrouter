@@ -2,6 +2,8 @@ package com.david.openassistant.data.diagnostics
 
 import android.content.SharedPreferences
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -22,6 +24,9 @@ class RuntimeDiagnosticsTest {
     private data class CapturedEvent(
         val level: String,
         val event: String,
+        val goalId: String?,
+        val taskId: String?,
+        val durationMs: Long?,
         val fields: Map<String, Any?>
     )
 
@@ -38,9 +43,12 @@ class RuntimeDiagnosticsTest {
                 level: String,
                 correlationId: String?,
                 targetSessionId: String?,
+                goalId: String?,
+                taskId: String?,
+                durationMs: Long?,
                 fields: Map<String, Any?>
             ) {
-                capturedEvents.add(CapturedEvent(level, event, fields))
+                capturedEvents.add(CapturedEvent(level, event, goalId, taskId, durationMs, fields))
             }
         }
         
@@ -70,9 +78,11 @@ class RuntimeDiagnosticsTest {
         assertEquals("timed_event", event.event)
         assertEquals("start_value", event.fields["start_key"])
         assertEquals("stop_value", event.fields["stop_key"])
-        assertTrue(event.fields.containsKey("duration_ms"))
-        val duration = event.fields["duration_ms"] as Long
-        assertTrue(duration >= 10)
+        // Now duration_ms is PROMOTED out of fields
+        assertFalse(event.fields.containsKey("duration_ms"))
+        assertNotNull(event.durationMs)
+        val duration = event.durationMs!!
+        assertTrue("Duration should be non-negative: $duration", duration >= 0)
     }
 
     @Test

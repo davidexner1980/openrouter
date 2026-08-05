@@ -44,6 +44,9 @@ class ResearchMissionStartTelemetryTest {
                 level: String,
                 correlationId: String?,
                 targetSessionId: String?,
+                goalId: String?,
+                taskId: String?,
+                durationMs: Long?,
                 fields: Map<String, Any?>
             ) {
                 recordedEvents.add(RecordedEvent(category, event, fields))

@@ -140,6 +140,9 @@ open class ResearchMonitor internal constructor(
             event = "detailed_content_capture_enabled",
             level = "INFO",
             correlationId = preferences.getString(KEY_SESSION_ID, null),
+            goalId = null,
+            taskId = null,
+            durationMs = null,
             fields = mapOf(
                 "expiry_ms" to expiry,
                 "duration_minutes" to minutes,
@@ -160,6 +163,9 @@ open class ResearchMonitor internal constructor(
             event = "detailed_content_capture_disabled",
             level = "INFO",
             correlationId = preferences.getString(KEY_SESSION_ID, null),
+            goalId = null,
+            taskId = null,
+            durationMs = null,
             fields = emptyMap()
         )
         status()
@@ -205,6 +211,9 @@ open class ResearchMonitor internal constructor(
             event = "session_started",
             level = "INFO",
             correlationId = sessionId,
+            goalId = null,
+            taskId = null,
+            durationMs = null,
             fields = mapOf(
                 "app_id" to packageName,
                 "app_version" to appVersion(),
@@ -241,6 +250,9 @@ open class ResearchMonitor internal constructor(
                             event = if (stopAfterReport) "final_report_requested" else "snapshot_requested",
                             level = "INFO",
                             correlationId = sessionId,
+                            goalId = null,
+                            taskId = null,
+                            durationMs = null,
                             fields = mapOf(
                                 "event_count_before_report" to currentEventCount(sessionId),
                                 "session_will_stop_after_successful_report" to stopAfterReport,
@@ -461,6 +473,9 @@ open class ResearchMonitor internal constructor(
         level: String = "INFO",
         correlationId: String? = null,
         targetSessionId: String? = null,
+        goalId: String? = null,
+        taskId: String? = null,
+        durationMs: Long? = null,
         fields: Map<String, Any?> = emptyMap(),
     ) = synchronized(FILE_LOCK) {
         val activeSessionId = preferences.getString(KEY_SESSION_ID, null)
@@ -499,6 +514,9 @@ open class ResearchMonitor internal constructor(
                     "late_result_rejected",
                     "WARN",
                     correlationId,
+                    goalId,
+                    taskId,
+                    durationMs,
                     fields + mapOf(
                         "original_event" to event,
                         "reason" to "The response belongs to an old or inactive session."
@@ -515,6 +533,9 @@ open class ResearchMonitor internal constructor(
                     event = "mixed_version_event_rejected",
                     level = "ERROR",
                     correlationId = correlationId,
+                    goalId = goalId,
+                    taskId = taskId,
+                    durationMs = durationMs,
                     fields = fields + mapOf(
                         "original_event" to event,
                         "session_version" to sessionVersionName,
@@ -527,7 +548,7 @@ open class ResearchMonitor internal constructor(
         }
 
         if (!preferences.getBoolean(KEY_ACTIVE, false)) return@synchronized
-        runCatching { recordLocked(category, event, level, correlationId, fields) }
+        runCatching { recordLocked(category, event, level, correlationId, goalId, taskId, durationMs, fields) }
             .onFailure { preferences.edit { putBoolean(KEY_TRACE_CAPPED, true) } }
     }
 
@@ -536,8 +557,11 @@ open class ResearchMonitor internal constructor(
         category: String,
         event: String,
         level: String,
-        correlationId: String?,
-        fields: Map<String, Any?>,
+        correlationId: String? = null,
+        goalId: String? = null,
+        taskId: String? = null,
+        durationMs: Long? = null,
+        fields: Map<String, Any?> = emptyMap(),
     ) {
         val trace = traceFile(sessionId)
         if (!trace.exists()) return
@@ -545,7 +569,7 @@ open class ResearchMonitor internal constructor(
 
         val eventId = fields["event_id"] as? String ?: UUID.randomUUID().toString()
         if (isEventDeliveredLocked(trace, eventId)) return
-        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, fields, eventId)
+        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, goalId, taskId, durationMs, fields, eventId)
         trace.appendText(payload + "\n", StandardCharsets.UTF_8)
     }
 
@@ -553,8 +577,11 @@ open class ResearchMonitor internal constructor(
         category: String,
         event: String,
         level: String,
-        correlationId: String?,
-        fields: Map<String, Any?>,
+        correlationId: String? = null,
+        goalId: String? = null,
+        taskId: String? = null,
+        durationMs: Long? = null,
+        fields: Map<String, Any?> = emptyMap(),
     ) {
         val sessionId = preferences.getString(KEY_SESSION_ID, null) ?: return
         val trace = traceFile(sessionId)
@@ -566,7 +593,7 @@ open class ResearchMonitor internal constructor(
         val eventId = fields["event_id"] as? String ?: UUID.randomUUID().toString()
         if (isEventDeliveredLocked(trace, eventId)) return
 
-        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, fields, eventId)
+        val payload = buildPayloadWithEventId(sessionId, category, event, level, correlationId, goalId, taskId, durationMs, fields, eventId)
         if (trace.length() + payload.toByteArray(StandardCharsets.UTF_8).size + 1 > MAX_TRACE_BYTES) {
             preferences.edit { putBoolean(KEY_TRACE_CAPPED, true) }
             return
@@ -600,6 +627,9 @@ open class ResearchMonitor internal constructor(
         event: String,
         level: String,
         correlationId: String?,
+        goalId: String?,
+        taskId: String?,
+        durationMs: Long?,
         fields: Map<String, Any?>,
         eventId: String,
     ): String {
@@ -624,6 +654,9 @@ open class ResearchMonitor internal constructor(
                 correlationId?.trim()?.takeIf(String::isNotBlank)?.let {
                     put("correlation_id", redactResearchMonitorText(it).take(256))
                 }
+                goalId?.let { put("goal_id", it) }
+                taskId?.let { put("task_id", it) }
+                durationMs?.let { put("duration_ms", it) }
             }
             .toString()
     }

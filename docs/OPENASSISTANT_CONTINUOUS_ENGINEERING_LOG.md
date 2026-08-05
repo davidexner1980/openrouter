@@ -2306,7 +2306,135 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260805-0645-a4d5b7e — 2026-08-05T06:45:00
+## Run CE-20260805-0731-8bd7d6f4 — 2026-08-05T07:31:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R2
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: 8bd7d6f4ed06ad82c98754810c00f6f92f3209ac
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-0731-8bd7d6f4: repair provider accounting durability and enhance monitor metadata
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: PROVIDER-ACCOUNTING-DURABILITY-REPAIR
+- Subsystem: Provider Accounting
+- Mission requirement: Semantic-Preservation Law, Exact-Count Law
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for accounting persistence in the request ledger.
+
+### Scope Contract
+
+- Problem: 
+    1. Provider token usage and cost were lost from the durable `ProviderRequestAttempt` ledger because `AgentStore` ignored the summary in terminal transitions.
+    2. `ResearchMonitor` records lacked promoted `goal_id`, `task_id`, and `duration_ms` fields.
+    3. `RuntimeDiagnosticsTest` was flaky due to strict timing assertions.
+- First causal failure: Incomplete field mapping in `AgentStore.transitionExchangeOutcomeWithResultAtomic`.
+- Correct owner: `AgentStore.kt`, `ResearchMonitor.kt`, `RuntimeDiagnostics.kt`.
+- Violated invariant: Semantic-Preservation Law and Exact-Count Law.
+- Protected behavior: Goal and task level totals.
+- Compatibility: Schema-compatible (using existing optional fields).
+- Out of scope: Physical device verification.
+
+### Reproduction
+
+- Starting state: `ProviderRequestAttempt` fields for tokens and cost remained `null` after successful provider exchanges.
+- Trigger: Provider terminal transition via `AgentOpenRouterClient`.
+- Expected: Request ledger contains tokens and cost.
+- Actual: Request ledger fields were `null`.
+- Durable result: Incomplete request audit trail.
+- Repeatability: 100%
+
+### Hypotheses
+
+- Accepted: Explicitly mapping summary fields into the `updatedAttempt` in `AgentStore` ensures durable request-level accounting. Enhancing `ResearchMonitor` signature ensures better metadata promotion.
+
+### Root Cause
+
+- Root cause: Missing copy logic for accounting fields in the store's atomic transition method.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Updated transitionExchangeOutcomeWithResultAtomic)
+    - app/src/main/java/com/david/openassistant/data/diagnostics/ResearchMonitor.kt (Enhanced record signature and Promotion)
+    - app/src/main/java/com/david/openassistant/data/diagnostics/RuntimeDiagnostics.kt (Wired promoted fields to monitor)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/ProviderAccountingDurabilityTest.kt (New: verified accounting persistence)
+    - app/src/test/java/com/david/openassistant/agent/ResearchMissionStartTelemetryTest.kt (Updated monitor override)
+    - app/src/test/java/com/david/openassistant/data/diagnostics/RuntimeDiagnosticsTest.kt (Fixed flaky assertion and updated monitor override)
+- Behavior changed: Individual request records now durably store tokens and cost. Monitor logs include promoted goal/task IDs.
+- Behavior preserved: Existing JSON keys and file structure.
+
+### Regression Proof
+
+- Test: `ProviderAccountingDurabilityTest.testTransitionExchangeOutcomePersistsAccountingSummary`
+- Failed before repair: YES (asserted 100 but reloaded null)
+- Expected failure: `AssertionError`
+- Passed after repair: YES
+- Real owner exercised: YES
+- Durable output reloaded: YES
+- Exact counts asserted: YES
+- Simulation present: NO
+- Why recurrence is detected: Contract test verifies reload of all accounting fields.
+
+### Verification
+
+- Baseline: PASSED (after flaky test fix)
+- Focused: PASSED (`ProviderAccountingDurabilityTest`)
+- Full unit total: 614
+- Passed: 614
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None.
+- Migration: None (forward compatible).
+- Performance: Negligible.
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe.
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 

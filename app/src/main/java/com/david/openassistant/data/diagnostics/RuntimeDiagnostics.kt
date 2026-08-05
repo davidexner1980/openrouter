@@ -215,6 +215,9 @@ open class RuntimeDiagnostics internal constructor(
             event = diagEvent.event,
             level = level,
             correlationId = diagEvent.goalId ?: diagEvent.exchangeId,
+            goalId = diagEvent.goalId,
+            taskId = diagEvent.taskId,
+            durationMs = diagEvent.durationMs,
             fields = diagEvent.fields + mapOf(
                 "version_name" to diagEvent.versionName,
                 "version_code" to diagEvent.versionCode

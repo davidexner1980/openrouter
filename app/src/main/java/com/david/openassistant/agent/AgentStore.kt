@@ -1361,6 +1361,10 @@ open class AgentStore private constructor(
             safeDiagnosticSummary = safeDiagnosticSummary ?: existingAttempt.safeDiagnosticSummary,
             providerResponseId = providerResponseId ?: existingAttempt.providerResponseId,
             reconciledResponseContent = responseContent ?: existingAttempt.reconciledResponseContent,
+            promptTokens = summary?.promptTokens ?: existingAttempt.promptTokens,
+            completionTokens = summary?.completionTokens ?: existingAttempt.completionTokens,
+            totalTokens = summary?.totalTokens ?: existingAttempt.totalTokens,
+            costUsd = summary?.costUsd ?: existingAttempt.costUsd,
             finishedAt = now,
         )
 
