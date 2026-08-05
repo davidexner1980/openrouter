@@ -73,9 +73,9 @@ class ProviderAccountingDurabilityTest {
         val initialGoal = goal.copy(requestAttempts = listOf(attempt))
         
         // Use reflection to write goal directly if updateGoalAtomic is too complex to set up here
-        val writeMethod = AgentStore::class.java.getDeclaredMethod("writeGoalLocked", AgentGoal::class.java)
+        val writeMethod = AgentStore::class.java.getDeclaredMethod("writeGoalLocked", AgentGoal::class.java, Boolean::class.javaPrimitiveType)
         writeMethod.isAccessible = true
-        writeMethod.invoke(store, initialGoal)
+        writeMethod.invoke(store, initialGoal, true)
         
         // 2. Transition outcome with summary
         val summary = AgentApiSummary(

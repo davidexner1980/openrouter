@@ -208,7 +208,7 @@ open class AgentStore private constructor(
     fun upsertGoal(goal: AgentGoal, select: Boolean = false): AgentSnapshot = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
         val current = loadSnapshotFromFilesLocked()
-        writeGoalLocked(goal)
+        writeGoalLocked(goal, signal = false)
         val selectedId = when {
             select -> goal.id
             current.selectedGoalId != null && (current.goals.any { it.id == current.selectedGoalId } || current.selectedGoalId == goal.id) ->
@@ -1445,7 +1445,7 @@ open class AgentStore private constructor(
         }
         
         val updatedGoal = transformed.copy(updatedAt = System.currentTimeMillis())
-        writeGoalLocked(updatedGoal)
+        writeGoalLocked(updatedGoal, signal = false)
         
         writeSelectionAndSignalLocked(current.selectedGoalId ?: goalId)
         return loadSnapshotFromFilesLocked()
@@ -1554,7 +1554,7 @@ open class AgentStore private constructor(
 
     private fun saveSnapshotLocked(snapshot: AgentSnapshot) {
         goalsDirectory.mkdirs()
-        snapshot.goals.forEach(::writeGoalLocked)
+        snapshot.goals.forEach { writeGoalLocked(it, signal = false) }
         val persisted = loadSnapshotFromFilesLocked()
         val selected = snapshot.selectedGoalId
             ?.takeIf { id -> persisted.goals.any { it.id == id } }
@@ -1575,10 +1575,11 @@ open class AgentStore private constructor(
                     preserveLegacySnapshotLocked(legacyRaw, error)
                     AgentSnapshot()
                 }
-            legacySnapshot.goals.forEach(::writeGoalLocked)
+            legacySnapshot.goals.forEach { writeGoalLocked(it, signal = false) }
             prefs.edit(commit = true) {
                 putBoolean(KEY_MIGRATED_V2, true)
                 putString(KEY_SELECTED_GOAL, legacySnapshot.selectedGoalId)
+                putLong(KEY_REVISION, prefs.getLong(KEY_REVISION, 0L) + 1)
                 putString(KEY_SNAPSHOT, newRevisionSignal())
             }
         } else {
@@ -1630,16 +1631,22 @@ open class AgentStore private constructor(
     }
 
     private fun writeSelectionAndSignalLocked(selectedGoalId: String?) {
+        signalMutationLocked(selectedGoalId)
+    }
+
+    private fun signalMutationLocked(selectedGoalId: String? = null) {
         val prefs = preferences ?: return
         val currentRevision = prefs.getLong(KEY_REVISION, 0L)
         prefs.edit(commit = true) {
-            putString(KEY_SELECTED_GOAL, selectedGoalId)
+            if (selectedGoalId != null) {
+                putString(KEY_SELECTED_GOAL, selectedGoalId)
+            }
             putLong(KEY_REVISION, currentRevision + 1)
             putString(KEY_SNAPSHOT, newRevisionSignal())
         }
     }
 
-    private fun writeGoalLocked(goal: AgentGoal): AgentGoal {
+    private fun writeGoalLocked(goal: AgentGoal, signal: Boolean = true): AgentGoal {
         writeCount.incrementAndGet()
         testWriterInjection?.write(goal)
         validateGoalIdentityForWrite(goal)
@@ -1664,6 +1671,8 @@ open class AgentStore private constructor(
         // from file system with millisecond resolution issues.
         val readBack = decodeGoal(requireOpenRouterObject(text, "Written autonomous goal"))
         goalCache[target.name] = CachedGoal(readBack, target.lastModified(), target.length())
+        
+        if (signal) signalMutationLocked()
         return readBack
     }
 

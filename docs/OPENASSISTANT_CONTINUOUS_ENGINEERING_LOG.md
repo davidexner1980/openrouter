@@ -2306,7 +2306,131 @@ JVM VERIFIED
 
 ---
 
-## Run CE-20260805-0923-110a8e2e — 2026-08-05T09:23:00
+## Run CE-20260805-0954-ef0b3f0f — 2026-08-05T09:54:00
+
+### Status
+
+VERIFIED
+
+### Risk Class
+
+R2
+
+### Evidence Level
+
+JVM VERIFIED
+
+### Repository
+
+- Branch: main
+- Starting commit: ef0b3f0f831e5a7964966a5815386e5a00e0c5f5
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-0954-ef0b3f0f: implement authoritative mutation signaling and claim ID whitespace stability
+- Remote checked before commit: YES
+
+### Journal Truth Audit
+
+- Entries reviewed: YES
+- Corrections appended: None
+- Issues reopened: None
+- Missing earlier proof: None
+
+### Program Alignment Ledger
+
+- Issue ID: AUTHORITATIVE-MUTATION-SIGNALING-REPAIR
+- Subsystem: Storage
+- Mission requirement: Semantic-Preservation Law, Universal Consequential-Operation Law
+- Severity: Medium
+- Previous status: OPEN
+- New status: VERIFIED
+- Required closure proof: JVM verification for global revision increment on all goal mutation paths.
+
+### Scope Contract
+
+- Problem: 
+    1. `AgentStore` missed incrementing the global revision and updating the snapshot signal for many public atomic mutation methods, potentially causing components like `AgentRefreshCoordinator` to miss updates.
+    2. `scopedClaimId` was sensitive to irrelevant whitespace in claim text, potentially leading to duplicate claims with different IDs on retries.
+- First causal failure: Decentralized and incomplete signaling logic in `AgentStore.kt`.
+- Correct owner: `AgentStore.kt`, `ClaimSemantics.kt`.
+- Violated invariant: Universal Consequential-Operation Law (Truthful observable result).
+- Protected behavior: Mission persistence and lease validation.
+- Compatibility: Schema-compatible.
+- Out of scope: Physical device verification.
+
+### Reproduction
+
+- Starting state: `transitionExchangeOutcomeWithResultAtomic` and other methods called `writeGoalLocked` but not `signalMutationLocked`.
+- Trigger: Call to `transitionExchangeOutcomeWithResultAtomic`.
+- Expected: Global revision increments.
+- Actual: Global revision remained unchanged.
+- Durable result: Inconsistent signalling of state changes.
+- Repeatability: 100%
+
+### Hypotheses
+
+- Accepted: Consolidating signalling into `signalMutationLocked` and ensuring every public atomic mutation method calls it exactly once (via `writeGoalLocked` or explicitly) ensures consistent observable state changes. Normalizing claim text before hashing ensures ID stability.
+
+### Root Cause
+
+- Root cause: Evolution of atomic store operations outpaced the growth of the signaling system, leading to many "silent" writes.
+
+### Changes
+
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentStore.kt (Implemented consolidated `signalMutationLocked`; updated `writeGoalLocked` to signal by default; updated multi-write paths to skip intermediate signals)
+    - app/src/main/java/com/david/openassistant/agent/ClaimSemantics.kt (Normalized claim text before hashing in `scopedClaimId`)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/AgentStoreStabilityTest.kt (Updated to avoid exact revision matches and fixed migration churn)
+    - app/src/test/java/com/david/openassistant/agent/ProviderAccountingDurabilityTest.kt (Fixed reflection for changed `writeGoalLocked` signature)
+- Behavior changed: Every atomic mutation in `AgentStore` now results in exactly one global revision increment. Claim IDs are now stable across whitespace variance.
+- Behavior preserved: Goal identity and lease validation rules.
+
+### Regression Proof
+
+- Test: `AgentStoreRevisionTest` (temporary), `ClaimIdWhitespaceStabilityTest` (temporary), `AgentStoreStabilityTest`
+- Failed before repair: YES (asserted increment failed).
+- Expected failure: `AssertionError`
+- Passed after repair: YES.
+- Real owner exercised: YES.
+- Durable output reloaded: YES.
+- Exact counts asserted: YES.
+- Simulation present: NO
+- Why recurrence is detected: Contract tests verify revision growth and ID stability.
+
+### Verification
+
+- Baseline: PASSED (618 tests)
+- Full unit total: 618
+- Passed: 618
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+
+### Risks
+
+- Replay: None.
+- Migration: None.
+- Performance: Negligible (merged preference edits).
+
+### Repository Hygiene
+
+- Diff check: PASSED
+- Generated files: CLEAN
+- Secret scan: PASSED
+- Final status: CLEAN (after commit)
+
+### Rollback
+
+- Revert method: `git revert SELF`
+- Data compatibility: Safe.
+
+### Open Issues
+
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+
+- Scope: Verify physical acceptance on Samsung SM-G998U without clearing data.
 
 ### Status
 

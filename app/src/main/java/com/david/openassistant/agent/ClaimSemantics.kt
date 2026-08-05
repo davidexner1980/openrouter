@@ -70,7 +70,7 @@ internal fun scopedClaimId(
 
     val taskNamespace = bounded(safe(taskId, "task"), 36)
     val fallback = if (text.isNotBlank()) {
-        "txt_${FingerprintUtils.hash(text).takeLast(8)}"
+        "txt_${FingerprintUtils.hash(text.normalizedClaimText()).takeLast(8)}"
     } else {
         "claim_${fallbackIndex.coerceAtLeast(1)}"
     }
