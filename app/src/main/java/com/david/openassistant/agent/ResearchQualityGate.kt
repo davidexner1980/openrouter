@@ -174,12 +174,31 @@ internal fun recoverPreservedResearchAssessment(
     }
     val preservedToolExecutions = recoverResearchToolAudit(listOf(evidence), task.id)
     val preservedSearchRequests = successfulResearchSearchCount(preservedToolExecutions)
+    
+    // Law 2 & 5: Synthesize legacy-assumed snapshots to allow re-verification of the preserved audit.
+    val syntheticSourceReads = evidence.sources.map { citation ->
+        SourceRead(
+            id = scopedSourceReadId(citation.url, "h1"),
+            url = citation.url,
+            canonicalUrl = ResearchQualityGate.canonicalSourceUrl(citation.url),
+            documentId = scopedSourceDocumentId(citation.url),
+            contentHash = "h1",
+            httpCode = 200,
+            contentType = "text/plain",
+            content = citation.excerpt ?: "Recovered content placeholder.",
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = SourceReadProvenance.LEGACY_ASSUMED
+        )
+    }
+
     val preservedResult = AgentStepResult(
         content = evidence.content,
         summary = AgentApiSummary(
             webSearchRequests = preservedSearchRequests.takeIf { it > 0 },
         ),
         sources = evidence.sources,
+        sourceReads = syntheticSourceReads,
         completionScore = task.progressScore,
         acceptanceChecks = task.acceptanceChecks,
         claims = normalizeDurableClaims(task, claims),
@@ -272,8 +291,8 @@ object ResearchQualityGate {
             result.claims.forEach { appendLine(it.text) }
             result.unresolvedQuestions.forEach(::appendLine)
         }.lowercase(Locale.US)
-        val isDummyContext = goal == null || goal.id == "DUMMY_EVAL_GOAL" || goal.id == "DUMMY_GOAL"
-        val citationReport = CitationValidator.validateStepResult(result, goal?.evidence ?: emptyList(), isDummyContext)
+        val availableSourceReads = (goal?.sourceReads ?: emptyList()) + result.sourceReads
+        val citationReport = CitationValidator.validateStepResult(result, goal?.evidence ?: emptyList(), availableSourceReads)
         val label = if (deep) "Deep-research pass" else "Research step"
         val reasons = buildList {
             addAll(citationReport.reasons)
@@ -364,33 +383,12 @@ object ResearchQualityGate {
         val evidenceById = goal.evidence.associateBy { it.id }
         val sourceReadsByCanonicalUrl = goal.sourceReads.associateBy { it.canonicalUrl }
 
-        val isDummyGoal = goal.id == "DUMMY_EVAL_GOAL" || goal.id == "DUMMY_GOAL"
+        val availableSourceReads = goal.sourceReads + result.sourceReads
         val groundedClaims = result.claims.filter { claim ->
-            if (claim.support in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED)) {
-                false
-            } else {
-                if (isDummyGoal) {
-                    claim.supportingEvidenceIds.any(String::isNotBlank) || claim.sourceUrls.any { it.trim().startsWith("https://") }
-                } else {
-                    claim.supportingEvidenceIds.any { evidenceId ->
-                        val ev = evidenceById[evidenceId]
-                        if (ev != null) {
-                            claim.sourceUrls.any { claimUrl ->
-                                val claimCanonical = canonicalSourceUrl(claimUrl)
-                                ev.sources.any { evSource ->
-                                    if (canonicalSourceUrl(evSource.url) == claimCanonical) {
-                                        val read = sourceReadsByCanonicalUrl[claimCanonical]
-                                        read?.provenance in setOf(SourceReadProvenance.VERIFIED_FETCH, SourceReadProvenance.PROVIDER_EXTRACT)
-                                    } else false
-                                }
-                            }
-                        } else false
-                    }
-                }
-            }
+            FactualClaimSupportPolicy.evaluate(claim, availableSourceReads) is FactualClaimSupportDecision.Supported
         }
         val groundedFacts = groundedClaims.count { it.type == AgentClaimType.FACT }
-        val citationReport = CitationValidator.validateStepResult(result, goal.evidence, isDummyGoal)
+        val citationReport = CitationValidator.validateStepResult(result, goal.evidence, availableSourceReads)
         val reasons = buildList {
             addAll(citationReport.reasons)
             if (result.content.length < minimumContentChars) {
@@ -538,11 +536,12 @@ object ResearchQualityGate {
                 add("Only $totalSearchRequests web-search request(s) were recorded across $requiredPasses required passes; at least $requiredSearchRequests are required for this research depth.")
             }
             
-            // Goal 7: Validate every preserved citation excerpt against its content
-            goal.evidence.forEach { ev ->
-                ev.sources.forEach { source ->
-                    if (!source.excerpt.isNullOrBlank() && !CitationValidator.containsExcerpt(ev.content, source.excerpt).isReliable()) {
-                        add("The research graph contains an invalid citation excerpt for '${source.url}'; the excerpt does not exist in the preserved evidence content.")
+            // Law 5: Validate every factual claim against its bindings and source reads
+            goal.claims.forEach { claim ->
+                if (claim.type == AgentClaimType.FACT) {
+                    val decision = FactualClaimSupportPolicy.evaluate(claim, goal.sourceReads)
+                    if (decision !is FactualClaimSupportDecision.Supported) {
+                        add("The research graph contains a factual claim with invalid or insufficient source grounding: '${claim.text.take(50)}...'")
                     }
                 }
             }

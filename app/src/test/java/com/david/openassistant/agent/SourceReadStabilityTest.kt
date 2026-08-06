@@ -28,6 +28,17 @@ class SourceReadStabilityTest {
         val taskId = "task-1"
         val canonicalUrl = "https://example.com/redundant"
         
+        val claimId = "clm-1"
+        val claim = AgentClaim(
+            id = claimId,
+            taskId = taskId,
+            text = "Claim text",
+            type = AgentClaimType.FACT,
+            confidence = 1.0,
+            support = AgentClaimSupport.SUPPORTED,
+            sourceUrls = listOf(canonicalUrl),
+            claimFingerprint = "fp1"
+        )
         val goal = AgentGoal(
             id = goalId,
             conversationId = "conv-1",
@@ -50,7 +61,8 @@ class SourceReadStabilityTest {
                 generation = 1,
                 acquiredAt = System.currentTimeMillis(),
                 heartbeatAt = System.currentTimeMillis()
-            )
+            ),
+            claims = listOf(claim)
         )
         
         store.upsertGoal(goal)

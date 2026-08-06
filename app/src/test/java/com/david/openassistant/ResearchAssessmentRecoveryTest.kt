@@ -279,6 +279,46 @@ class ResearchAssessmentRecoveryTest {
         ),
     )
 
+    private fun sourceRead(url: String) = com.david.openassistant.agent.SourceRead(
+        id = com.david.openassistant.agent.scopedSourceReadId(url, "h1"),
+        url = url,
+        canonicalUrl = url,
+        documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),
+        contentHash = "h1",
+        httpCode = 200,
+        contentType = "text/plain",
+        content = "Factual finding from $url.",
+        sourceRole = "research",
+        authorityScore = 10,
+        provenance = com.david.openassistant.agent.SourceReadProvenance.VERIFIED_FETCH
+    )
+
+    private fun factClaim(taskId: String, url: String, index: Int): AgentClaim {
+        val claimId = "$taskId-claim-$index"
+        return AgentClaim(
+            id = claimId,
+            taskId = taskId,
+            text = "Factual finding from $url.",
+            type = AgentClaimType.FACT,
+            confidence = 0.85,
+            support = AgentClaimSupport.SUPPORTED,
+            sourceUrls = listOf(url),
+            citationBindings = listOf(
+                com.david.openassistant.agent.CitationBinding(
+                    claimId = claimId,
+                    sourceReadId = com.david.openassistant.agent.scopedSourceReadId(url, "h1"),
+                    documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),
+                    contentHash = "h1",
+                    citationExcerpt = "finding",
+                    passageStart = 8,
+                    passageEnd = 15,
+                    passageHash = com.david.openassistant.agent.FingerprintUtils.hash("finding"),
+                    bindingMethod = com.david.openassistant.agent.CitationBindingMethod.EXACT
+                )
+            )
+        )
+    }
+
     private fun validResult(task: AgentTask) = AgentStepResult(
         content = (
             "The evidence landscape identifies boundary metadata, official measurement records, historical estimates, and unresolved methodological uncertainty. " +
@@ -286,42 +326,23 @@ class ResearchAssessmentRecoveryTest {
             ).repeat(10),
         summary = AgentApiSummary(webSearchRequests = 3),
         sources = listOf(
-            AgentSourceCitation("Official", "https://data.gov.example/measurement"),
-            AgentSourceCitation("Local", "https://city.example/boundary-metadata"),
-            AgentSourceCitation("Independent", "https://methods.example/measurement-audit"),
+            AgentSourceCitation("Official", "https://data.gov.example/measurement", "finding"),
+            AgentSourceCitation("Local", "https://city.example/boundary-metadata", "finding"),
+            AgentSourceCitation("Independent", "https://methods.example/measurement-audit", "finding"),
+        ),
+        sourceReads = listOf(
+            sourceRead("https://data.gov.example/measurement"),
+            sourceRead("https://city.example/boundary-metadata"),
+            sourceRead("https://methods.example/measurement-audit"),
         ),
         completionScore = 0.0,
         acceptanceChecks = task.acceptanceCriteria.map {
             AgentAcceptanceCheck(it.id, AgentAcceptanceCheckStatus.NOT_EVALUATED, 0.0, "Provider omitted grade")
         },
         claims = listOf(
-            AgentClaim(
-                id = "fact-one",
-                taskId = task.id,
-                text = "Official and local sources document the measurement boundary.",
-                type = AgentClaimType.FACT,
-                confidence = 0.85,
-                support = AgentClaimSupport.SUPPORTED,
-                sourceUrls = listOf("https://data.gov.example/measurement"),
-            ),
-            AgentClaim(
-                id = "fact-two",
-                taskId = task.id,
-                text = "Local metadata provides a separate boundary record.",
-                type = AgentClaimType.FACT,
-                confidence = 0.8,
-                support = AgentClaimSupport.SUPPORTED,
-                sourceUrls = listOf("https://city.example/boundary-metadata"),
-            ),
-            AgentClaim(
-                id = "fact-three",
-                taskId = task.id,
-                text = "Independent audit identifies methodological uncertainty.",
-                type = AgentClaimType.FACT,
-                confidence = 0.75,
-                support = AgentClaimSupport.SUPPORTED,
-                sourceUrls = listOf("https://methods.example/measurement-audit"),
-            ),
+            factClaim(task.id, "https://data.gov.example/measurement", 1),
+            factClaim(task.id, "https://city.example/boundary-metadata", 2),
+            factClaim(task.id, "https://methods.example/measurement-audit", 3),
         ),
         toolExecutions = listOf(
             com.david.openassistant.agent.AgentToolExecution("public_web_fetch", "Full source one", true),

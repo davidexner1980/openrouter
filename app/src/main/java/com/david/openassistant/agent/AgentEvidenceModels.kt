@@ -20,15 +20,24 @@ data class AgentEvidence(
     val createdAt: Long = System.currentTimeMillis(),
 )
 
+enum class CitationBindingMethod {
+    EXACT,
+    CASE_INSENSITIVE,
+    NORMALIZED_TOKEN_BOUNDARY,
+    LEGACY_UNKNOWN,
+}
+
 data class CitationBinding(
     val id: String = UUID.randomUUID().toString(),
     val claimId: String,
     val sourceReadId: String,
     val documentId: String,
     val contentHash: String,
+    val citationExcerpt: String,
     val passageStart: Int? = null,
     val passageEnd: Int? = null,
     val passageHash: String? = null,
+    val bindingMethod: CitationBindingMethod = CitationBindingMethod.LEGACY_UNKNOWN,
     val confidence: Double = 1.0,
     val createdAt: Long = System.currentTimeMillis(),
 )
@@ -44,6 +53,7 @@ data class AgentClaim(
     val sourceUrls: List<String> = emptyList(),
     val citationBindings: List<CitationBinding> = emptyList(),
     val reviewExplanation: String? = null,
+    val claimFingerprint: String = FingerprintUtils.calculateClaimFingerprint(taskId, type, text),
 ) {
     val isSpeculative: Boolean
         get() = type == AgentClaimType.ORIGINAL_HYPOTHESIS

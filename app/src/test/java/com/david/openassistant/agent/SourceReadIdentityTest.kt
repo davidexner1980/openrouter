@@ -23,6 +23,15 @@ class SourceReadIdentityTest {
     }
 
     private fun createGoal(goalId: String, taskId: String): AgentGoal {
+        val claim = AgentClaim(
+            id = "c1",
+            taskId = taskId,
+            text = "Claim",
+            type = AgentClaimType.FACT,
+            confidence = 1.0,
+            support = AgentClaimSupport.SUPPORTED,
+            claimFingerprint = "fp1"
+        )
         return AgentGoal(
             id = goalId,
             conversationId = "conv-1",
@@ -45,7 +54,8 @@ class SourceReadIdentityTest {
                 generation = 1,
                 acquiredAt = System.currentTimeMillis(),
                 heartbeatAt = System.currentTimeMillis()
-            )
+            ),
+            claims = listOf(claim)
         )
     }
 

@@ -2023,9 +2023,11 @@ open class AgentOpenRouterClient internal constructor(
         val claims = responseJsonList(root.optJSONArray("claims")) { raw, index ->
             val requestedId = raw.optString("id").trim()
             val claimText = raw.optString("text").trim().take(MAX_CLAIM_TEXT_CHARS)
-            val claimId = scopedClaimId(task.id, requestedId, claimText, index + 1)
-                .let { base -> generateSequence(base) { previous -> "${previous}_x" }.first(seenClaimIds::add) }
             val type = AgentClaimType.fromWireName(raw.optString("type"))
+            
+            val claimFingerprint = calculateClaimFingerprint(task.id, type, claimText)
+            val claimId = scopedClaimId(claimFingerprint)
+            
             val evidenceIds = raw.optJSONArray("supporting_evidence_ids").toStringList()
                 .filter(validEvidenceIds::contains)
                 .distinct()
@@ -2033,31 +2035,54 @@ open class AgentOpenRouterClient internal constructor(
                 .filter { (it.startsWith("https://")) && (it in allowedUrls) }
                 .distinct()
 
+            val originalExcerptsByUrl = response.sources.associate { it.url to it.excerpt }
+
             val citationBindings = sourceUrls.mapNotNull { url ->
                 val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(url)
-                canonicalToSourceRead[canonicalUrl]?.let { matchingRead ->
-                    CitationBinding(
-                        claimId = claimId,
-                        sourceReadId = matchingRead.id,
-                        documentId = matchingRead.documentId,
-                        contentHash = matchingRead.contentHash,
-                        confidence = 1.0
-                    )
-                }
+                val matchingRead = canonicalToSourceRead[canonicalUrl]
+                val originalExcerpt = originalExcerptsByUrl[url]
+                
+                if (matchingRead != null && !originalExcerpt.isNullOrBlank()) {
+                    val match = CitationValidator.containsExcerpt(matchingRead.content, originalExcerpt)
+                    if (match.confidence.isReliable()) {
+                        CitationBinding(
+                            claimId = claimId,
+                            sourceReadId = matchingRead.id,
+                            documentId = matchingRead.documentId,
+                            contentHash = matchingRead.contentHash,
+                            citationExcerpt = originalExcerpt.take(1000),
+                            passageStart = match.passageStart,
+                            passageEnd = match.passageEnd,
+                            passageHash = if (match.passageStart != null && match.passageEnd != null) {
+                                FingerprintUtils.hash(matchingRead.content.substring(match.passageStart, match.passageEnd))
+                            } else null,
+                            bindingMethod = match.bindingMethod ?: CitationBindingMethod.LEGACY_UNKNOWN,
+                            confidence = match.confidence.score
+                        )
+                    } else null
+                } else null
             }
 
-            val support = determineClaimSupport(type, evidenceIds, sourceUrls, sourceBackedEvidenceIds, citationBindings, allAvailableSourceReads)
-            AgentClaim(
+            val baseClaim = AgentClaim(
                 id = claimId,
                 taskId = task.id,
                 text = claimText,
                 type = type,
                 confidence = raw.optDouble("confidence", 0.5).coerceIn(0.0, 1.0),
-                support = support,
+                support = AgentClaimSupport.fromWireName(raw.optString("support")),
                 supportingEvidenceIds = evidenceIds,
                 sourceUrls = sourceUrls,
                 citationBindings = citationBindings,
+                claimFingerprint = claimFingerprint
             )
+            
+            val decision = FactualClaimSupportPolicy.evaluate(baseClaim, allAvailableSourceReads)
+            when (decision) {
+                is FactualClaimSupportDecision.Supported -> baseClaim.copy(support = AgentClaimSupport.SUPPORTED, citationBindings = decision.validBindings)
+                is FactualClaimSupportDecision.PartiallyBound -> baseClaim.copy(support = AgentClaimSupport.PARTIAL, citationBindings = decision.validBindings)
+                is FactualClaimSupportDecision.Contradicted -> baseClaim.copy(support = AgentClaimSupport.CONTRADICTED, citationBindings = emptyList())
+                is FactualClaimSupportDecision.Unsupported -> baseClaim.copy(support = AgentClaimSupport.UNSUPPORTED, citationBindings = emptyList())
+            }
         }.filter { it.text.isNotBlank() }
             .let { normalizeDurableClaims(task, it) }
 
@@ -6441,27 +6466,15 @@ open class AgentOpenRouterClient internal constructor(
     }
 
     private fun determineClaimSupport(
-        type: AgentClaimType,
-        evidenceIds: List<String>,
-        sourceUrls: List<String>,
-        sourceBackedEvidenceIds: Set<String>,
-        citationBindings: List<CitationBinding> = emptyList(),
-        sourceReads: List<SourceRead> = emptyList(),
+        claim: AgentClaim,
+        sourceReads: List<SourceRead>,
     ): AgentClaimSupport {
-        val hasVerifiedFetchBinding = citationBindings.any { binding ->
-            sourceReads.any { it.id == binding.sourceReadId && it.provenance == SourceReadProvenance.VERIFIED_FETCH }
-        }
-
-        return when {
-            hasVerifiedFetchBinding -> AgentClaimSupport.SUPPORTED
-            type == AgentClaimType.ORIGINAL_HYPOTHESIS -> AgentClaimSupport.PARTIAL
-            type == AgentClaimType.UNCERTAINTY -> AgentClaimSupport.SUPPORTED
-            sourceUrls.isNotEmpty() -> AgentClaimSupport.SUPPORTED
-            type == AgentClaimType.FACT && evidenceIds.any(sourceBackedEvidenceIds::contains) -> AgentClaimSupport.SUPPORTED
-            evidenceIds.isNotEmpty() && type != AgentClaimType.FACT -> AgentClaimSupport.SUPPORTED
-            evidenceIds.isNotEmpty() -> AgentClaimSupport.PARTIAL
-            type == AgentClaimType.RECOMMENDATION -> AgentClaimSupport.PARTIAL
-            else -> AgentClaimSupport.UNSUPPORTED
+        val decision = FactualClaimSupportPolicy.evaluate(claim, sourceReads)
+        return when (decision) {
+            is FactualClaimSupportDecision.Supported -> AgentClaimSupport.SUPPORTED
+            is FactualClaimSupportDecision.PartiallyBound -> AgentClaimSupport.PARTIAL
+            is FactualClaimSupportDecision.Contradicted -> AgentClaimSupport.CONTRADICTED
+            is FactualClaimSupportDecision.Unsupported -> AgentClaimSupport.UNSUPPORTED
         }
     }
 

@@ -41,13 +41,59 @@ class ResearchStallReproductionTest {
             )
         }
         
+        val sourceReads = shortExtracts.map { source ->
+            SourceRead(
+                id = scopedSourceReadId(source.url, "h1"),
+                url = source.url,
+                canonicalUrl = ResearchQualityGate.canonicalSourceUrl(source.url),
+                documentId = scopedSourceDocumentId(source.url),
+                contentHash = "h1",
+                httpCode = 200,
+                contentType = "text/plain",
+                content = source.excerpt!!,
+                sourceRole = "research",
+                authorityScore = 10,
+                provenance = SourceReadProvenance.PROVIDER_EXTRACT
+            )
+        }
+
+        val claims = List(5) { index ->
+            val url = shortExtracts[index].url
+            val claimId = "clm-$index"
+            val text = "A grounded finding matching the Word excerpt."
+            AgentClaim(
+                id = claimId,
+                taskId = task.id,
+                text = text,
+                type = AgentClaimType.FACT,
+                confidence = 1.0,
+                support = AgentClaimSupport.SUPPORTED,
+                sourceUrls = listOf(url),
+                claimFingerprint = "fp-$index",
+                citationBindings = listOf(
+                    CitationBinding(
+                        claimId = claimId,
+                        sourceReadId = scopedSourceReadId(url, "h1"),
+                        documentId = scopedSourceDocumentId(url),
+                        contentHash = "h1",
+                        citationExcerpt = "Word",
+                        passageStart = 0,
+                        passageEnd = 4,
+                        passageHash = FingerprintUtils.hash("Word"),
+                        bindingMethod = CitationBindingMethod.EXACT
+                    )
+                )
+            )
+        }
+
         val result = AgentStepResult(
             content = "Analysis using official primary source data. ".repeat(50), // > 1200 chars + keywords
             summary = AgentApiSummary(webSearchRequests = 3),
             sources = shortExtracts,
+            sourceReads = sourceReads,
             completionScore = 1.0,
             acceptanceChecks = emptyList(),
-            claims = List(5) { AgentClaim(taskId = task.id, text = "Fact $it", type = AgentClaimType.FACT, confidence = 1.0, support = AgentClaimSupport.SUPPORTED) },
+            claims = claims,
             toolExecutions = executions
         )
         

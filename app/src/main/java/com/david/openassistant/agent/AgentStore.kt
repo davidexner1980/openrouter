@@ -3180,38 +3180,68 @@ open class AgentStore private constructor(
         createdAt = json.optLong("created_at"),
     )
 
-        private fun encodeClaim(claim: AgentClaim): JSONObject = JSONObject()
-        .put("id", claim.id)
-        .put("task_id", claim.taskId)
-        .put("text", claim.text)
-        .put("type", claim.type.name)
-        .put("confidence", claim.confidence)
-        .put("support", claim.support.name)
-        .put("supporting_evidence_ids", JSONArray(claim.supportingEvidenceIds))
-        .put("source_urls", JSONArray(claim.sourceUrls))
-        .put("review_explanation", claim.reviewExplanation ?: JSONObject.NULL)
+    private fun encodeCitationBinding(binding: CitationBinding): JSONObject = JSONObject()
+        .put("id", binding.id)
+        .put("claim_id", binding.claimId)
+        .put("source_read_id", binding.sourceReadId)
+        .put("document_id", binding.documentId)
+        .put("content_hash", binding.contentHash)
+        .put("citation_excerpt", binding.citationExcerpt)
+        .put("passage_start", binding.passageStart ?: JSONObject.NULL)
+        .put("passage_end", binding.passageEnd ?: JSONObject.NULL)
+        .put("passage_hash", binding.passageHash ?: JSONObject.NULL)
+        .put("binding_method", binding.bindingMethod.name)
+        .put("confidence", binding.confidence)
+        .put("created_at", binding.createdAt)
 
-        .put("id", claim.id)
-        .put("task_id", claim.taskId)
-        .put("text", claim.text)
-        .put("type", claim.type.name)
-        .put("confidence", claim.confidence)
-        .put("support", claim.support.name)
-        .put("supporting_evidence_ids", JSONArray(claim.supportingEvidenceIds))
-        .put("source_urls", JSONArray(claim.sourceUrls))
-        .put("review_explanation", claim.reviewExplanation ?: JSONObject.NULL)
-
-    private fun decodeClaim(json: JSONObject): AgentClaim = AgentClaim(
+    private fun decodeCitationBinding(json: JSONObject): CitationBinding = CitationBinding(
         id = json.getString("id"),
-        taskId = json.optString("task_id"),
-        text = json.optString("text"),
-        type = json.optEnum("type", AgentClaimType.INFERENCE),
-        confidence = json.optDouble("confidence", 0.5).coerceIn(0.0, 1.0),
-        support = json.optEnum("support", AgentClaimSupport.UNSUPPORTED),
-        supportingEvidenceIds = json.optJSONArray("supporting_evidence_ids").toStringList(),
-        sourceUrls = json.optJSONArray("source_urls").toStringList().filter { it.startsWith("https://") },
-        reviewExplanation = json.optNullableString("review_explanation"),
+        claimId = json.getString("claim_id"),
+        sourceReadId = json.getString("source_read_id"),
+        documentId = json.getString("document_id"),
+        contentHash = json.getString("content_hash"),
+        citationExcerpt = json.optString("citation_excerpt"),
+        passageStart = json.optIntOrNull("passage_start"),
+        passageEnd = json.optIntOrNull("passage_end"),
+        passageHash = json.optNullableString("passage_hash"),
+        bindingMethod = json.optEnum("binding_method", CitationBindingMethod.LEGACY_UNKNOWN),
+        confidence = json.optDouble("confidence", 0.0),
+        createdAt = json.optLong("created_at", System.currentTimeMillis())
     )
+
+    private fun encodeClaim(claim: AgentClaim): JSONObject = JSONObject()
+        .put("id", claim.id)
+        .put("claim_fingerprint", claim.claimFingerprint)
+        .put("task_id", claim.taskId)
+        .put("text", claim.text)
+        .put("type", claim.type.name)
+        .put("confidence", claim.confidence)
+        .put("support", claim.support.name)
+        .put("supporting_evidence_ids", JSONArray(claim.supportingEvidenceIds))
+        .put("source_urls", JSONArray(claim.sourceUrls))
+        .put("citation_bindings", JSONArray().apply { claim.citationBindings.forEach { put(encodeCitationBinding(it)) } })
+        .put("review_explanation", claim.reviewExplanation ?: JSONObject.NULL)
+
+    private fun decodeClaim(json: JSONObject): AgentClaim {
+        val taskId = json.optString("task_id")
+        val type = json.optEnum("type", AgentClaimType.INFERENCE)
+        val text = json.optString("text")
+        val fingerprint = json.optString("claim_fingerprint").ifBlank { calculateClaimFingerprint(taskId, type, text) }
+        
+        return AgentClaim(
+            id = json.getString("id"),
+            taskId = taskId,
+            text = text,
+            type = type,
+            confidence = json.optDouble("confidence", 0.5).coerceIn(0.0, 1.0),
+            support = json.optEnum("support", AgentClaimSupport.UNSUPPORTED),
+            supportingEvidenceIds = json.optJSONArray("supporting_evidence_ids").toStringList(),
+            sourceUrls = json.optJSONArray("source_urls").toStringList().filter { it.startsWith("https://") },
+            citationBindings = json.optJSONArray("citation_bindings").decodeList(::decodeCitationBinding),
+            reviewExplanation = json.optNullableString("review_explanation"),
+            claimFingerprint = fingerprint,
+        )
+    }
 
         private fun encodeEvidenceLink(link: AgentEvidenceLink): JSONObject = JSONObject()
         .put("id", link.id)

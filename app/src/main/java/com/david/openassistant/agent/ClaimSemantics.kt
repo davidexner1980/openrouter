@@ -70,9 +70,29 @@ internal fun scopedSourceDocumentId(canonicalUrl: String): String {
 }
 
 /**
- * Provider claim IDs are usually generic (for example, `claim-1`) and repeat
- * in every milestone. Scope them to the durable task identity before they
- * enter the goal-wide evidence graph so reviews and links cannot collide.
+ * Deterministic fingerprint for a task-local claim based on its type and text.
+ */
+internal fun calculateClaimFingerprint(
+    taskId: String,
+    type: AgentClaimType,
+    text: String,
+): String = FingerprintUtils.hash(
+    taskId.trim() +
+        "\u0000" +
+        type.name +
+        "\u0000" +
+        text.normalizedClaimText()
+)
+
+/**
+ * Durable ID for a claim derived from its task-local fingerprint.
+ */
+internal fun scopedClaimId(fingerprint: String): String {
+    return "clm_${fingerprint.takeLast(16)}"
+}
+
+/**
+ * Legacy support for scopedClaimId.
  */
 internal fun scopedClaimId(
     taskId: String,
@@ -155,14 +175,66 @@ internal fun normalizeClaimConfidence(claim: AgentClaim): AgentClaim {
 }
 
 /**
- * Idempotent upsert of claims into the goal evidence graph.
- * Stable IDs from scopedClaimId ensure that task retries or multi-stage
- * refinements update existing claims instead of duplicating them.
+ * Merges equivalent claim records based on their ID (fingerprint-derived).
+ * Uses FactualClaimSupportPolicy to reconcile support state following Law 5.
  */
-internal fun mergeClaims(existing: List<AgentClaim>, incoming: List<AgentClaim>): List<AgentClaim> {
+internal fun mergeClaims(
+    existing: List<AgentClaim>,
+    incoming: List<AgentClaim>,
+    sourceReads: List<SourceRead>
+): List<AgentClaim> {
     if (incoming.isEmpty()) return existing
-    val incomingIds = incoming.mapTo(mutableSetOf()) { it.id }
-    return existing.filterNot { it.id in incomingIds } + incoming
+    
+    val result = existing.associateBy { it.id }.toMutableMap()
+    
+    incoming.forEach { incomingClaim ->
+        val existingClaim = result[incomingClaim.id]
+        if (existingClaim == null) {
+            // New claim: re-evaluate with current source reads to ensure grounding
+            val decision = FactualClaimSupportPolicy.evaluate(incomingClaim, sourceReads)
+            val support = when (decision) {
+                is FactualClaimSupportDecision.Supported -> AgentClaimSupport.SUPPORTED
+                is FactualClaimSupportDecision.PartiallyBound -> AgentClaimSupport.PARTIAL
+                is FactualClaimSupportDecision.Contradicted -> AgentClaimSupport.CONTRADICTED
+                else -> AgentClaimSupport.UNSUPPORTED
+            }
+            val validBindings = when (decision) {
+                is FactualClaimSupportDecision.Supported -> decision.validBindings
+                is FactualClaimSupportDecision.PartiallyBound -> decision.validBindings
+                else -> emptyList()
+            }
+            result[incomingClaim.id] = incomingClaim.copy(support = support, citationBindings = validBindings)
+        } else {
+            // Existing claim: Merge evidence and reconcile support
+            val mergedEvidenceIds = (existingClaim.supportingEvidenceIds + incomingClaim.supportingEvidenceIds).distinct()
+            val mergedSourceUrls = (existingClaim.sourceUrls + incomingClaim.sourceUrls).distinct()
+            val mergedBindings = (existingClaim.citationBindings + incomingClaim.citationBindings).distinctBy { it.id }
+            
+            val mergedBase = existingClaim.copy(
+                supportingEvidenceIds = mergedEvidenceIds,
+                sourceUrls = mergedSourceUrls,
+                citationBindings = mergedBindings
+            )
+            
+            val decision = FactualClaimSupportPolicy.evaluate(mergedBase, sourceReads)
+            val support = when {
+                existingClaim.support == AgentClaimSupport.CONTRADICTED -> AgentClaimSupport.CONTRADICTED
+                incomingClaim.support == AgentClaimSupport.CONTRADICTED -> AgentClaimSupport.CONTRADICTED
+                decision is FactualClaimSupportDecision.Supported -> AgentClaimSupport.SUPPORTED
+                decision is FactualClaimSupportDecision.PartiallyBound -> AgentClaimSupport.PARTIAL
+                else -> AgentClaimSupport.UNSUPPORTED
+            }
+            val validBindings = when (decision) {
+                is FactualClaimSupportDecision.Supported -> decision.validBindings
+                is FactualClaimSupportDecision.PartiallyBound -> decision.validBindings
+                else -> emptyList()
+            }
+            
+            result[existingClaim.id] = mergedBase.copy(support = support, citationBindings = validBindings)
+        }
+    }
+    
+    return result.values.toList()
 }
 
 /**

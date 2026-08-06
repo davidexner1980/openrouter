@@ -1,5 +1,7 @@
 package com.david.openassistant
 
+import com.david.openassistant.agent.SourceRead
+import com.david.openassistant.agent.SourceReadProvenance
 import com.david.openassistant.agent.AgentAcceptanceCheck
 import com.david.openassistant.agent.AgentAcceptanceCheckStatus
 import com.david.openassistant.agent.AgentAcceptanceCriterion
@@ -462,7 +464,36 @@ class AutonomyRuntimeTest {
             claims = listOf(factClaim(task.id, "https://example.com/a")),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result, null)
+        val fixtureUrl = "https://secondary.example/detail"
+        val fixtureContent = "Another supporting detail found in the evidence."
+        val sourceRead = SourceRead(
+            id = "src-1",
+            url = fixtureUrl,
+            canonicalUrl = fixtureUrl,
+            documentId = "doc-1",
+            contentHash = "h1",
+            httpCode = 200,
+            contentType = "text/plain",
+            content = fixtureContent,
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = SourceReadProvenance.VERIFIED_FETCH
+        )
+        val goal = AgentGoal(
+            id = "goal-1",
+            conversationId = "conv-1",
+            userRequest = "colors",
+            title = "Colors",
+            objective = "Colors",
+            finalOutputDescription = "Report",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "model",
+            executionModelId = "model",
+            tasks = listOf(task),
+            sourceReads = listOf(sourceRead)
+        )
+        
+        val decision = ResearchQualityGate.evaluateStep(task, result, goal)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("at least 3") })
@@ -481,7 +512,36 @@ class AutonomyRuntimeTest {
             summary = AgentApiSummary(),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result, null)
+        val fixtureUrl = "https://secondary.example/detail"
+        val fixtureContent = "Another supporting detail found in the evidence."
+        val sourceRead = SourceRead(
+            id = "src-1",
+            url = fixtureUrl,
+            canonicalUrl = fixtureUrl,
+            documentId = "doc-1",
+            contentHash = "h1",
+            httpCode = 200,
+            contentType = "text/plain",
+            content = fixtureContent,
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = SourceReadProvenance.VERIFIED_FETCH
+        )
+        val goal = AgentGoal(
+            id = "goal-1",
+            conversationId = "conv-1",
+            userRequest = "colors",
+            title = "Colors",
+            objective = "Colors",
+            finalOutputDescription = "Report",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "model",
+            executionModelId = "model",
+            tasks = listOf(task),
+            sourceReads = listOf(sourceRead)
+        )
+        
+        val decision = ResearchQualityGate.evaluateStep(task, result, goal)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("too little publication-ready analysis") })
@@ -506,40 +566,23 @@ class AutonomyRuntimeTest {
                 ).repeat(4),
             summary = AgentApiSummary(),
             sources = listOf(
-                AgentSourceCitation("Primary finding", "https://primary.example/finding"),
-                AgentSourceCitation("Secondary detail", "https://secondary.example/detail"),
+                AgentSourceCitation("Primary finding", "https://primary.example/finding", "finding"),
+                AgentSourceCitation("Secondary detail", "https://secondary.example/detail", "finding"),
             ),
-            claims = listOf(
-                AgentClaim(
-                    id = "supported-fact",
-                    taskId = task.id,
-                    text = "The preserved primary evidence supports the central factual finding.",
-                    type = AgentClaimType.FACT,
-                    confidence = 0.9,
-                    support = AgentClaimSupport.SUPPORTED,
-                    supportingEvidenceIds = listOf(evidenceId),
-                    sourceUrls = listOf("https://primary.example/finding"),
-                ),
-                AgentClaim(
-                    id = "supported-inference",
-                    taskId = task.id,
-                    text = "The reconciled evidence supports a bounded conclusion rather than an absolute one.",
-                    type = AgentClaimType.INFERENCE,
-                    confidence = 0.8,
-                    support = AgentClaimSupport.SUPPORTED,
-                    supportingEvidenceIds = listOf(evidenceId),
-                ),
-                AgentClaim(
-                    id = "supported-fact-2",
-                    taskId = task.id,
-                    text = "Another supporting detail found in the evidence.",
-                    type = AgentClaimType.FACT,
-                    confidence = 0.85,
-                    support = AgentClaimSupport.SUPPORTED,
-                    supportingEvidenceIds = listOf(evidenceId),
-                    sourceUrls = listOf("https://secondary.example/detail"),
-                ),
+            claims = factClaims(task.id, "https://primary.example/finding", "https://secondary.example/detail") + AgentClaim(
+                id = "supported-inference",
+                taskId = task.id,
+                text = "The reconciled evidence supports a bounded conclusion.",
+                type = AgentClaimType.INFERENCE,
+                confidence = 0.8,
+                support = AgentClaimSupport.SUPPORTED,
+                supportingEvidenceIds = listOf(evidenceId),
+                claimFingerprint = "fp-inf"
             ),
+            sourceReads = listOf(
+                sourceRead("https://primary.example/finding"),
+                sourceRead("https://secondary.example/detail")
+            )
         )
 
         val decision = ResearchQualityGate.evaluateStep(task, result, null)
@@ -581,7 +624,36 @@ class AutonomyRuntimeTest {
             ),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result, null)
+        val fixtureUrl = "https://secondary.example/detail"
+        val fixtureContent = "Another supporting detail found in the evidence."
+        val sourceRead = SourceRead(
+            id = "src-1",
+            url = fixtureUrl,
+            canonicalUrl = fixtureUrl,
+            documentId = "doc-1",
+            contentHash = "h1",
+            httpCode = 200,
+            contentType = "text/plain",
+            content = fixtureContent,
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = SourceReadProvenance.VERIFIED_FETCH
+        )
+        val goal = AgentGoal(
+            id = "goal-1",
+            conversationId = "conv-1",
+            userRequest = "colors",
+            title = "Colors",
+            objective = "Colors",
+            finalOutputDescription = "Report",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "model",
+            executionModelId = "model",
+            tasks = listOf(task),
+            sourceReads = listOf(sourceRead)
+        )
+        
+        val decision = ResearchQualityGate.evaluateStep(task, result, goal)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("must pass every acceptance criterion") })
@@ -609,7 +681,36 @@ class AutonomyRuntimeTest {
             ),
         )
 
-        val decision = ResearchQualityGate.evaluateStep(task, result, null)
+        val fixtureUrl = "https://secondary.example/detail"
+        val fixtureContent = "Another supporting detail found in the evidence."
+        val sourceRead = SourceRead(
+            id = "src-1",
+            url = fixtureUrl,
+            canonicalUrl = fixtureUrl,
+            documentId = "doc-1",
+            contentHash = "h1",
+            httpCode = 200,
+            contentType = "text/plain",
+            content = fixtureContent,
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = SourceReadProvenance.VERIFIED_FETCH
+        )
+        val goal = AgentGoal(
+            id = "goal-1",
+            conversationId = "conv-1",
+            userRequest = "colors",
+            title = "Colors",
+            objective = "Colors",
+            finalOutputDescription = "Report",
+            status = AgentGoalStatus.RUNNING,
+            plannerModelId = "model",
+            executionModelId = "model",
+            tasks = listOf(task),
+            sourceReads = listOf(sourceRead)
+        )
+        
+        val decision = ResearchQualityGate.evaluateStep(task, result, goal)
 
         assertFalse(decision.passed)
         assertTrue(decision.reasons.any { it.contains("too little publication-ready analysis") })
@@ -628,9 +729,14 @@ class AutonomyRuntimeTest {
             content = content,
             summary = AgentApiSummary(webSearchRequests = 3),
             sources = listOf(
-                AgentSourceCitation("Source one", "https://one.example/evidence"),
-                AgentSourceCitation("Source two", "https://two.example/evidence"),
-                AgentSourceCitation("Source three", "https://three.example/evidence"),
+                AgentSourceCitation("Source one", "https://one.example/evidence", "finding"),
+                AgentSourceCitation("Source two", "https://two.example/evidence", "finding"),
+                AgentSourceCitation("Source three", "https://three.example/evidence", "finding"),
+            ),
+            sourceReads = listOf(
+                sourceRead("https://one.example/evidence"),
+                sourceRead("https://two.example/evidence"),
+                sourceRead("https://three.example/evidence")
             ),
             claims = factClaims(task.id, "https://one.example/evidence", "https://two.example/evidence", "https://three.example/evidence"),
             toolExecutions = fullSourceReadExecutions(),
@@ -658,9 +764,14 @@ class AutonomyRuntimeTest {
                 ).repeat(7),
             summary = AgentApiSummary(webSearchRequests = 3),
             sources = listOf(
-                AgentSourceCitation("Challenge one", "https://one.example/challenge"),
-                AgentSourceCitation("Challenge two", "https://two.example/challenge"),
-                AgentSourceCitation("Challenge three", "https://three.example/challenge"),
+                AgentSourceCitation("Challenge one", "https://one.example/challenge", "finding"),
+                AgentSourceCitation("Challenge two", "https://two.example/challenge", "finding"),
+                AgentSourceCitation("Challenge three", "https://three.example/challenge", "finding"),
+            ),
+            sourceReads = listOf(
+                sourceRead("https://one.example/challenge"),
+                sourceRead("https://two.example/challenge"),
+                sourceRead("https://three.example/challenge")
             ),
             claims = factClaims(task.id, "https://one.example/challenge", "https://two.example/challenge", "https://three.example/challenge"),
             toolExecutions = fullSourceReadExecutions(),
@@ -1192,6 +1303,7 @@ class AutonomyRuntimeTest {
         executionModelId = "executor",
         tasks = tasks,
         evidence = evidence,
+        sourceReads = evidence.flatMap { ev -> ev.sources.map { sourceRead(it.url) } }.distinctBy { it.id },
         attempts = tasks
             .filter { it.capability in setOf(AgentCapability.WEB_RESEARCH, AgentCapability.DEEP_RESEARCH) }
             .map { currentTask ->
@@ -1221,20 +1333,49 @@ class AutonomyRuntimeTest {
         createdAt = createdAt,
     )
 
-    private fun factClaim(taskId: String, url: String) = AgentClaim(
-        id = "$taskId-claim",
-        taskId = taskId,
-        text = "A factual claim.",
-        type = AgentClaimType.FACT,
-        confidence = 0.9,
-        support = AgentClaimSupport.SUPPORTED,
-        sourceUrls = listOf(url),
+    private fun sourceRead(url: String) = SourceRead(
+        id = com.david.openassistant.agent.scopedSourceReadId(url, "h1"),
+        url = url,
+        canonicalUrl = url,
+        documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),
+        contentHash = "h1",
+        httpCode = 200,
+        contentType = "text/plain",
+        content = "Factual finding from $url.",
+        sourceRole = "research",
+        authorityScore = 10,
+        provenance = SourceReadProvenance.VERIFIED_FETCH
     )
 
-    private fun factClaims(taskId: String, vararg urls: String): List<AgentClaim> = urls.mapIndexed { index, url ->
-        factClaim(taskId, url).copy(
-            id = "$taskId-claim-$index",
-            text = "Factual finding ${index + 1}.",
+    private fun factClaims(taskId: String, vararg urls: String): List<AgentClaim> = urls.map { url ->
+        factClaim(taskId, url)
+    }
+
+    private fun factClaim(taskId: String, url: String): AgentClaim {
+        val claimId = "clm-${com.david.openassistant.agent.FingerprintUtils.hash(taskId + url).takeLast(8)}"
+        val text = "Factual finding from $url."
+        return AgentClaim(
+            id = claimId,
+            taskId = taskId,
+            text = text,
+            type = AgentClaimType.FACT,
+            confidence = 0.9,
+            support = AgentClaimSupport.SUPPORTED,
+            sourceUrls = listOf(url),
+            claimFingerprint = "fp-$claimId",
+            citationBindings = listOf(
+                com.david.openassistant.agent.CitationBinding(
+                    claimId = claimId,
+                    sourceReadId = com.david.openassistant.agent.scopedSourceReadId(url, "h1"),
+                    documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),
+                    contentHash = "h1",
+                    citationExcerpt = text,
+                    passageStart = 0,
+                    passageEnd = text.length,
+                    passageHash = com.david.openassistant.agent.FingerprintUtils.hash(text),
+                    bindingMethod = com.david.openassistant.agent.CitationBindingMethod.EXACT
+                )
+            )
         )
     }
 

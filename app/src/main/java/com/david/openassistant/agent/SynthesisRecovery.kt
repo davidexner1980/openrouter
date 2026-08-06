@@ -69,11 +69,7 @@ internal fun synthesisGapDecision(
         reason.contains("must pass every acceptance criterion", ignoreCase = true)
     }
     val groundedClaims = result.claims.filter { claim ->
-        claim.support !in setOf(AgentClaimSupport.UNSUPPORTED, AgentClaimSupport.CONTRADICTED) &&
-            (
-                claim.supportingEvidenceIds.any(String::isNotBlank) ||
-                    claim.sourceUrls.any { it.trim().startsWith("https://") }
-                )
+        FactualClaimSupportPolicy.evaluate(claim, result.sourceReads) is FactualClaimSupportDecision.Supported
     }
     val otherwisePublicationReady =
         result.completionScore >= MIN_BOUNDED_SYNTHESIS_SCORE &&

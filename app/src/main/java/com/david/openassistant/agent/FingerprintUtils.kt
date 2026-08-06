@@ -109,6 +109,18 @@ object FingerprintUtils {
         return hash(encoder.build())
     }
 
+    fun calculateClaimFingerprint(
+        taskId: String,
+        type: AgentClaimType,
+        text: String,
+    ): String = hash(
+        taskId.trim() +
+            "\u0000" +
+            type.name +
+            "\u0000" +
+            text.lowercase(java.util.Locale.ROOT).trim().replace(Regex("\\s+"), " ")
+    )
+
     internal fun hash(canonicalString: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
         val hash = digest.digest(canonicalString.toByteArray(StandardCharsets.UTF_8))

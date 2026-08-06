@@ -994,6 +994,7 @@ class AgentTaskExecutor internal constructor(
         claims: List<AgentClaim>,
         evidenceItem: AgentEvidence,
         priorEvidence: List<AgentEvidence>,
+        sourceReads: List<SourceRead>,
     ): List<AgentClaim> {
         val allEvidence = priorEvidence + evidenceItem
         val validEvidenceIds = allEvidence.mapTo(mutableSetOf()) { it.id }
@@ -1004,9 +1005,6 @@ class AgentTaskExecutor internal constructor(
                 }
             }
         }
-        val sourceBackedEvidenceIds = allEvidence.asSequence()
-            .filter { it.sources.isNotEmpty() }
-            .mapTo(mutableSetOf()) { it.id }
         return claims.map { claim ->
             val explicitlyReferencedEvidenceIds = claim.supportingEvidenceIds.filter(validEvidenceIds::contains)
             val evidenceIds = buildList {
@@ -1027,25 +1025,28 @@ class AgentTaskExecutor internal constructor(
                 referencedEvidenceIds = explicitlyReferencedEvidenceIds,
                 evidence = allEvidence,
             )
-            val hasMatchedSourceEvidence = evidenceIds.any { evidenceId ->
-                evidenceId in sourceBackedEvidenceIds &&
-                    allEvidence.firstOrNull { it.id == evidenceId }
-                        ?.sources
-                        ?.any { it.url in resolvedSourceUrls }
-                        ?: false
+            
+            val baseClaim = claim.copy(
+                supportingEvidenceIds = evidenceIds,
+                sourceUrls = resolvedSourceUrls
+            )
+            
+            val decision = FactualClaimSupportPolicy.evaluate(baseClaim, sourceReads)
+            val support = when (decision) {
+                is FactualClaimSupportDecision.Supported -> AgentClaimSupport.SUPPORTED
+                is FactualClaimSupportDecision.PartiallyBound -> AgentClaimSupport.PARTIAL
+                is FactualClaimSupportDecision.Contradicted -> AgentClaimSupport.CONTRADICTED
+                is FactualClaimSupportDecision.Unsupported -> AgentClaimSupport.UNSUPPORTED
             }
-            val support = when {
-                claim.support == AgentClaimSupport.CONTRADICTED -> claim.support
-                (claim.type == AgentClaimType.FACT) && hasMatchedSourceEvidence -> AgentClaimSupport.SUPPORTED
-                (claim.type == AgentClaimType.FACT) && evidenceIds.isNotEmpty() -> AgentClaimSupport.PARTIAL
-                claim.support == AgentClaimSupport.UNSUPPORTED && evidenceIds.isNotEmpty() -> AgentClaimSupport.SUPPORTED
-                else -> claim.support
-            }
+
             repairOverAttributedClaim(
-                claim = claim.copy(
-                    supportingEvidenceIds = evidenceIds,
-                    sourceUrls = resolvedSourceUrls,
+                claim = baseClaim.copy(
                     support = support,
+                    citationBindings = when (decision) {
+                        is FactualClaimSupportDecision.Supported -> decision.validBindings
+                        is FactualClaimSupportDecision.PartiallyBound -> decision.validBindings
+                        else -> emptyList()
+                    }
                 ),
                 evidence = allEvidence,
             )
@@ -1197,11 +1198,11 @@ class AgentTaskExecutor internal constructor(
 
         val candidateClaimsForTask = if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
             refineImpreciseClaimSourceSelections(
-                claims = attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence),
+                claims = attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads),
                 evidence = routedCurrent.evidence + candidateEvidenceItem,
             )
         } else {
-            attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence)
+            attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads)
         }
 
         val addedSubstantiveSources = result.sources.any { s -> 
@@ -1263,7 +1264,7 @@ class AgentTaskExecutor internal constructor(
             replaceTaskClaims -> current.claims.filterNot { it.taskId == task.id }
             else -> current.claims
         }
-        val mergedClaims = mergeClaims(claimBase, claimsForTask)
+        val mergedClaims = mergeClaims(claimBase, claimsForTask, routedCurrent.sourceReads)
         val retainedClaimIds = mergedClaims.mapTo(mutableSetOf()) { it.id }
         val retainedLinks = current.evidenceLinks.asSequence()
             .filterNot { it.claimId in oldClaimIds }
