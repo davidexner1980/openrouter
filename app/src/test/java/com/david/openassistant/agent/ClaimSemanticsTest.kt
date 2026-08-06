@@ -22,10 +22,15 @@ class ClaimSemanticsTest {
         val taskId = "task-1"
         val claimId = "id-1"
         val url = "https://example.com"
-        val existing = listOf(AgentClaim(id = claimId, taskId = taskId, text = "text", type = AgentClaimType.FACT, confidence = 0.5, support = AgentClaimSupport.UNSUPPORTED, claimFingerprint = "fp1"))
-        val binding = CitationBinding(claimId = claimId, sourceReadId = "src-1", documentId = "doc-1", contentHash = "h1", citationExcerpt = "text", passageStart = 0, passageEnd = 4, passageHash = FingerprintUtils.hash("text"), bindingMethod = CitationBindingMethod.EXACT)
-        val incoming = listOf(AgentClaim(id = claimId, taskId = taskId, text = "text", type = AgentClaimType.FACT, confidence = 0.9, support = AgentClaimSupport.SUPPORTED, claimFingerprint = "fp1", sourceUrls = listOf(url), citationBindings = listOf(binding)))
-        val read = SourceRead(id = "src-1", url = url, canonicalUrl = url, documentId = "doc-1", contentHash = "h1", httpCode = 200, contentType = "text/plain", content = "text", sourceRole = "research", authorityScore = 10, provenance = SourceReadProvenance.VERIFIED_FETCH)
+        val content = "text"
+        val hash = FingerprintUtils.hash(content)
+        val docId = scopedSourceDocumentId(url)
+        val readId = scopedSourceReadId(url, hash)
+        
+        val existing = listOf(AgentClaim(id = claimId, taskId = taskId, text = content, type = AgentClaimType.FACT, confidence = 0.5, support = AgentClaimSupport.UNSUPPORTED, claimFingerprint = "fp1", sourceUrls = listOf(url)))
+        val binding = CitationBinding.createLegacy(claimId = claimId, sourceReadId = readId, documentId = docId, contentHash = hash, citationExcerpt = content, passageStart = 0, passageEnd = 4, passageHash = FingerprintUtils.hash(content), bindingMethod = CitationBindingMethod.EXACT)
+        val incoming = listOf(AgentClaim(id = claimId, taskId = taskId, text = content, type = AgentClaimType.FACT, confidence = 0.9, support = AgentClaimSupport.SUPPORTED, claimFingerprint = "fp1", sourceUrls = listOf(url), citationBindings = listOf(binding)))
+        val read = SourceRead(id = readId, url = url, canonicalUrl = url, documentId = docId, contentHash = hash, httpCode = 200, contentType = "text/plain", content = content, sourceRole = "research", authorityScore = 10, provenance = SourceReadProvenance.VERIFIED_FETCH)
         
         val result = mergeClaims(existing, incoming, listOf(read))
         

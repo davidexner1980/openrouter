@@ -169,9 +169,107 @@ class SourceReadIdentityTest {
         val sourceRead = createSourceRead(url, content, SourceReadProvenance.VERIFIED_FETCH)
         store.commitSourceReadAtomic(ticket, claim.attempt.id, sourceRead, AgentToolExecution("fetch", "call", true))
 
+        // Create a binding
+        val bindingIdentity = CitationBindingIdentity(
+            schemaVersion = 1,
+            claimFingerprint = "fp1",
+            sourceReadId = sourceRead.id,
+            documentId = sourceRead.documentId,
+            contentHash = sourceRead.contentHash,
+            passageHash = FingerprintUtils.hash(content),
+            bindingMethod = CitationBindingMethod.EXACT
+        )
+        val fp = calculateCitationBindingFingerprint(bindingIdentity)
+        val binding = CitationBinding(
+            id = scopedCitationBindingId(fp),
+            claimId = "c1",
+            sourceReadId = sourceRead.id,
+            documentId = sourceRead.documentId,
+            contentHash = sourceRead.contentHash,
+            citationExcerpt = content,
+            passageStart = 0,
+            passageEnd = content.length,
+            passageHash = bindingIdentity.passageHash,
+            bindingMethod = CitationBindingMethod.EXACT,
+            identitySchemaVersion = 1,
+            logicalFingerprint = fp
+        )
+
+        // Add claim with binding
+        val updatedGoal = store.loadSnapshot().goals.first { it.id == goalId }.copy(
+            claims = listOf(
+                AgentClaim(
+                    id = "c1",
+                    taskId = taskId,
+                    text = content, // Use content to ensure alignment passes
+                    type = AgentClaimType.FACT,
+                    confidence = 1.0,
+                    support = AgentClaimSupport.SUPPORTED,
+                    sourceUrls = listOf(url),
+                    citationBindings = listOf(binding),
+                    claimFingerprint = "fp1"
+                )
+            )
+        )
+        store.upsertGoal(updatedGoal)
+
         val store2 = AgentStore(tempDir)
-        val commit2 = store2.commitSourceReadAtomic(ticket, claim.attempt.id, sourceRead, AgentToolExecution("fetch", "call", true))
-        assertTrue("Re-adding after restart should be idempotent", commit2 is RecordSourceReadResult.ReusedExisting)
+        val goal2 = store2.loadSnapshot().goals.first { it.id == goalId }
+        
+        assertEquals("Should have exactly one snapshot", 1, goal2.sourceReads.size)
+        assertEquals("Should have exactly one claim", 1, goal2.claims.size)
+        assertEquals("Should have exactly one binding", 1, goal2.claims[0].citationBindings.size)
+        assertEquals("Binding ID must be stable", binding.id, goal2.claims[0].citationBindings[0].id)
+        assertEquals(AgentClaimSupport.SUPPORTED, goal2.claims[0].support)
+    }
+
+    @Test
+    fun `test source tampering recomputation`() {
+        val url = "https://tamper.com"
+        val originalContent = "Original Content"
+        val originalHash = FingerprintUtils.hash(originalContent)
+        
+        val tamperedRead = SourceRead(
+            id = scopedSourceReadId(url, originalHash),
+            url = url,
+            canonicalUrl = url,
+            documentId = scopedSourceDocumentId(url),
+            contentHash = originalHash,
+            httpCode = 200,
+            contentType = "text/plain",
+            content = "Tampered Content", // Actual content changed
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = SourceReadProvenance.VERIFIED_FETCH
+        )
+
+        val binding = CitationBinding.createLegacy(
+            claimId = "c1",
+            sourceReadId = tamperedRead.id,
+            documentId = tamperedRead.documentId,
+            contentHash = originalHash,
+            citationExcerpt = "Content",
+            passageStart = 9,
+            passageEnd = 16,
+            passageHash = FingerprintUtils.hash("Content"),
+            bindingMethod = CitationBindingMethod.EXACT
+        )
+        
+        val claim = AgentClaim(
+            id = "c1",
+            taskId = "task-1",
+            text = "Claim",
+            type = AgentClaimType.FACT,
+            confidence = 1.0,
+            support = AgentClaimSupport.SUPPORTED,
+            citationBindings = listOf(binding),
+            claimFingerprint = "fp1"
+        )
+
+        val decision = FactualClaimSupportPolicy.evaluate(claim, listOf(tamperedRead))
+        assertTrue("Must detect tampering via hash recomputation", decision is FactualClaimSupportDecision.Unsupported)
+        val unsupported = decision as FactualClaimSupportDecision.Unsupported
+        assertTrue("Reason should indicate hash mismatch", unsupported.reasons.contains("source_content_hash_mismatch"))
     }
 
     @Test

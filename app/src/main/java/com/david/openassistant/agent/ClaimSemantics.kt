@@ -54,9 +54,10 @@ data class AcceptedClaim(
  * Follows the Immutable Source-Read Law.
  */
 internal fun scopedSourceReadId(canonicalUrl: String, contentHash: String): String {
-    if (canonicalUrl.isBlank()) return "src_unknown_${java.util.UUID.randomUUID()}"
+    if (canonicalUrl.isBlank()) return "src_invalid_blank_url"
+    if (contentHash.isBlank()) return "src_invalid_missing_hash"
     // Incorporate content hash to ensure immutability if content changes for the same URL
-    val identityInput = if (contentHash.isNotBlank()) canonicalUrl + contentHash else canonicalUrl
+    val identityInput = canonicalUrl + contentHash
     return "src_${FingerprintUtils.hash(identityInput).takeLast(16)}"
 }
 
@@ -65,8 +66,32 @@ internal fun scopedSourceReadId(canonicalUrl: String, contentHash: String): Stri
  * Follows the Immutable Source-Read Law.
  */
 internal fun scopedSourceDocumentId(canonicalUrl: String): String {
-    if (canonicalUrl.isBlank()) return "doc_unknown_${java.util.UUID.randomUUID()}"
+    if (canonicalUrl.isBlank()) return "doc_invalid_blank_url"
     return "doc_${FingerprintUtils.hash(canonicalUrl).takeLast(16)}"
+}
+
+/**
+ * Deterministic fingerprint for a citation binding.
+ */
+internal fun calculateCitationBindingFingerprint(
+    identity: CitationBindingIdentity
+): String {
+    val encoder = FingerprintUtils.CanonicalEncoder()
+    encoder.append("v", identity.schemaVersion.toString())
+    encoder.append("clm_fp", identity.claimFingerprint)
+    encoder.append("src_id", identity.sourceReadId)
+    encoder.append("doc_id", identity.documentId)
+    encoder.append("content_hash", identity.contentHash)
+    encoder.append("passage_hash", identity.passageHash)
+    encoder.append("method", identity.bindingMethod.name)
+    return FingerprintUtils.hash(encoder.build())
+}
+
+/**
+ * Durable ID for a citation binding derived from its logical fingerprint.
+ */
+internal fun scopedCitationBindingId(fingerprint: String): String {
+    return "bnd_${fingerprint.takeLast(16)}"
 }
 
 /**
@@ -208,7 +233,7 @@ internal fun mergeClaims(
             // Existing claim: Merge evidence and reconcile support
             val mergedEvidenceIds = (existingClaim.supportingEvidenceIds + incomingClaim.supportingEvidenceIds).distinct()
             val mergedSourceUrls = (existingClaim.sourceUrls + incomingClaim.sourceUrls).distinct()
-            val mergedBindings = (existingClaim.citationBindings + incomingClaim.citationBindings).distinctBy { it.id }
+            val mergedBindings = mergeCitationBindings(existingClaim.citationBindings, incomingClaim.citationBindings)
             
             val mergedBase = existingClaim.copy(
                 supportingEvidenceIds = mergedEvidenceIds,
@@ -238,6 +263,41 @@ internal fun mergeClaims(
 }
 
 /**
+ * Merges citation bindings deterministically and idempotently.
+ */
+internal fun mergeCitationBindings(
+    existing: List<CitationBinding>,
+    incoming: List<CitationBinding>
+): List<CitationBinding> {
+    if (incoming.isEmpty()) return existing
+    
+    // Key by logical fingerprint if available, otherwise by ID
+    fun bindingKey(b: CitationBinding): String = b.logicalFingerprint ?: b.id
+    
+    val result = existing.associateBy { bindingKey(it) }.toMutableMap()
+    
+    incoming.forEach { incomingBinding ->
+        val key = bindingKey(incomingBinding)
+        val existingBinding = result[key]
+        if (existingBinding == null) {
+            result[key] = incomingBinding
+        } else {
+            // Reconcile bindings: favor those with identity metadata over legacy
+            if (existingBinding.identitySchemaVersion == 0 && incomingBinding.identitySchemaVersion > 0) {
+                result[key] = incomingBinding
+            } else if (existingBinding.identitySchemaVersion == incomingBinding.identitySchemaVersion) {
+                // If same version, favor higher confidence or preserve existing if equal
+                if (incomingBinding.confidence > existingBinding.confidence) {
+                    result[key] = incomingBinding
+                }
+            }
+        }
+    }
+    
+    return result.values.toList().sortedBy { it.id }
+}
+
+/**
  * Merges source reads following the Source-Merge Law.
  * Preserves distinct snapshots of the same URL if content differs, 
  * resolves provenance conflicts, and ensures ID uniqueness.
@@ -252,19 +312,17 @@ internal fun mergeSourceReads(existing: List<SourceRead>, incoming: List<SourceR
         if (existingRead == null) {
             result[incomingRead.id] = incomingRead
         } else {
-            // Resolve provenance conflicts (favor stronger provenance)
+            // IMMUTABILITY: If it exists, do not change identity-bearing or historical fields.
+            // However, we can preserve the strongest provenance if it's the same content snapshot.
             val existingStrength = existingRead.provenance.provenanceStrength()
             val incomingStrength = incomingRead.provenance.provenanceStrength()
             
             if (incomingStrength > existingStrength) {
-                result[incomingRead.id] = incomingRead
-            } else if (incomingStrength == existingStrength) {
-                // If same strength, favor the more recent retrieval
-                if (incomingRead.retrievedAt > existingRead.retrievedAt) {
-                    result[incomingRead.id] = incomingRead
-                }
+                // Update provenance but KEEP existing retrievedAt and identity fields
+                result[incomingRead.id] = existingRead.copy(
+                    provenance = incomingRead.provenance
+                )
             }
-            // If incoming is weaker or older same-strength, preserve existing
         }
     }
     

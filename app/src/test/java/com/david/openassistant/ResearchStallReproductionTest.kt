@@ -71,7 +71,7 @@ class ResearchStallReproductionTest {
                 sourceUrls = listOf(url),
                 claimFingerprint = "fp-$index",
                 citationBindings = listOf(
-                    CitationBinding(
+                    CitationBinding.createLegacy(
                         claimId = claimId,
                         sourceReadId = scopedSourceReadId(url, "h1"),
                         documentId = scopedSourceDocumentId(url),

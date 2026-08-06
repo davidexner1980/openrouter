@@ -1956,6 +1956,28 @@ open class AgentStore private constructor(
         }
         val restoredEvents = json.optJSONArray("events").decodeList(::decodeEvent)
         
+        val decodedClaims = json.optJSONArray("claims").decodeList(::decodeClaim)
+        val decodedSourceReads = json.optJSONArray("source_reads").decodeList(::decodeSourceRead)
+
+        // Authoritative Support Re-evaluation (Recompute truth on load)
+        val verifiedClaims = decodedClaims.map { claim ->
+            if (claim.type == AgentClaimType.FACT) {
+                val decision = FactualClaimSupportPolicy.evaluate(claim, decodedSourceReads)
+                val support = when (decision) {
+                    is FactualClaimSupportDecision.Supported -> AgentClaimSupport.SUPPORTED
+                    is FactualClaimSupportDecision.PartiallyBound -> AgentClaimSupport.PARTIAL
+                    is FactualClaimSupportDecision.Contradicted -> AgentClaimSupport.CONTRADICTED
+                    else -> AgentClaimSupport.UNSUPPORTED
+                }
+                val validBindings = when (decision) {
+                    is FactualClaimSupportDecision.Supported -> decision.validBindings
+                    is FactualClaimSupportDecision.PartiallyBound -> decision.validBindings
+                    else -> emptyList()
+                }
+                claim.copy(support = support, citationBindings = validBindings)
+            } else claim
+        }
+
         val goalBeforeCycles = AgentGoal(
             id = json.getString("id"),
             conversationId = storedConversationId,
@@ -1985,11 +2007,11 @@ open class AgentStore private constructor(
             acceptanceChecks = json.optJSONArray("acceptance_checks").decodeList(::decodeCheck),
             attempts = json.optJSONArray("attempts").decodeList(::decodeAttempt),
             evidence = json.optJSONArray("evidence").decodeList(::decodeEvidence),
-            sourceReads = json.optJSONArray("source_reads").decodeList(::decodeSourceRead),
+            sourceReads = decodedSourceReads,
             evidenceCandidates = json.optJSONArray("evidence_candidates").decodeList(::decodeEvidenceCandidate),
             normalizedFacts = json.optJSONArray("normalized_facts").decodeList(::decodeNormalizedFact),
             acceptedClaims = json.optJSONArray("accepted_claims").decodeList(::decodeAcceptedClaim),
-            claims = json.optJSONArray("claims").decodeList(::decodeClaim),
+            claims = verifiedClaims,
             evidenceLinks = json.optJSONArray("evidence_links").decodeList(::decodeEvidenceLink),
             checkpoints = json.optJSONArray("checkpoints").decodeList(::decodeCheckpoint),
             conceptCandidates = json.optJSONArray("concept_candidates").decodeList(::decodeConcept),
@@ -3193,6 +3215,8 @@ open class AgentStore private constructor(
         .put("binding_method", binding.bindingMethod.name)
         .put("confidence", binding.confidence)
         .put("created_at", binding.createdAt)
+        .put("identity_schema_v", binding.identitySchemaVersion)
+        .put("logical_fingerprint", binding.logicalFingerprint ?: JSONObject.NULL)
 
     private fun decodeCitationBinding(json: JSONObject): CitationBinding = CitationBinding(
         id = json.getString("id"),
@@ -3206,7 +3230,9 @@ open class AgentStore private constructor(
         passageHash = json.optNullableString("passage_hash"),
         bindingMethod = json.optEnum("binding_method", CitationBindingMethod.LEGACY_UNKNOWN),
         confidence = json.optDouble("confidence", 0.0),
-        createdAt = json.optLong("created_at", System.currentTimeMillis())
+        createdAt = json.optLong("created_at", System.currentTimeMillis()),
+        identitySchemaVersion = json.optInt("identity_schema_v", 0),
+        logicalFingerprint = json.optNullableString("logical_fingerprint")
     )
 
     private fun encodeClaim(claim: AgentClaim): JSONObject = JSONObject()

@@ -44,12 +44,18 @@ object FactualClaimSupportPolicy {
 
         val readsById = sourceReads.associateBy { it.id }
         val validBindings = mutableListOf<CitationBinding>()
+        val partialBindings = mutableListOf<CitationBinding>()
         val reasons = mutableListOf<String>()
 
         claim.citationBindings.forEach { binding ->
             val validation = validateBinding(claim, binding, readsById[binding.sourceReadId])
             if (validation.isValid) {
-                validBindings.add(binding)
+                if (validation.isPublicationGrade) {
+                    validBindings.add(binding)
+                } else {
+                    partialBindings.add(binding)
+                    reasons.addAll(validation.reasons)
+                }
             } else {
                 reasons.addAll(validation.reasons)
             }
@@ -58,21 +64,42 @@ object FactualClaimSupportPolicy {
         return when {
             claim.support == AgentClaimSupport.CONTRADICTED -> FactualClaimSupportDecision.Contradicted(reasons)
             validBindings.isNotEmpty() -> FactualClaimSupportDecision.Supported(validBindings)
+            partialBindings.isNotEmpty() -> FactualClaimSupportDecision.PartiallyBound(partialBindings, reasons)
             reasons.isNotEmpty() -> FactualClaimSupportDecision.Unsupported(reasons)
             else -> FactualClaimSupportDecision.Unsupported(listOf("no_bindings_present"))
         }
     }
 
-    private data class BindingValidation(val isValid: Boolean, val reasons: List<String> = emptyList())
+    private data class BindingValidation(
+        val isValid: Boolean,
+        val isPublicationGrade: Boolean = false,
+        val reasons: List<String> = emptyList()
+    )
 
     private fun validateBinding(claim: AgentClaim, binding: CitationBinding, read: SourceRead?): BindingValidation {
         val reasons = mutableListOf<String>()
         
-        if (read == null) return BindingValidation(false, listOf("source_read_missing"))
+        if (read == null) return BindingValidation(false, false, listOf("source_read_missing"))
         
+        // Integrity: recompute hash
+        val recomputedHash = FingerprintUtils.hash(read.content)
+        if (recomputedHash != read.contentHash) {
+            reasons.add("source_content_hash_mismatch")
+        }
+        if (binding.contentHash != read.contentHash) {
+            reasons.add("binding_content_hash_mismatch")
+        }
+        
+        // Identity validation (Recompute and verify where practical)
+        if (read.documentId != scopedSourceDocumentId(read.canonicalUrl)) {
+            reasons.add("source_document_id_malformed")
+        }
+        if (read.id != scopedSourceReadId(read.canonicalUrl, read.contentHash)) {
+            reasons.add("source_read_id_malformed")
+        }
+
         if (binding.claimId != claim.id) reasons.add("claim_id_mismatch")
         if (binding.documentId != read.documentId) reasons.add("document_id_mismatch")
-        if (binding.contentHash != read.contentHash) reasons.add("content_hash_mismatch")
         
         val canonicalUrl = ResearchQualityGate.canonicalSourceUrl(read.url)
         if (claim.sourceUrls.none { ResearchQualityGate.canonicalSourceUrl(it) == canonicalUrl }) {
@@ -80,6 +107,7 @@ object FactualClaimSupportPolicy {
         }
 
         if (binding.citationExcerpt.isBlank()) reasons.add("citation_excerpt_missing")
+        if (read.content.isBlank()) reasons.add("source_content_blank")
 
         // Re-match excerpt
         val matchResult = CitationValidator.containsExcerpt(read.content, binding.citationExcerpt)
@@ -104,47 +132,78 @@ object FactualClaimSupportPolicy {
         }
 
         // Admissibility
-        if (read.provenance !in setOf(SourceReadProvenance.VERIFIED_FETCH, SourceReadProvenance.PROVIDER_EXTRACT, SourceReadProvenance.LEGACY_ASSUMED)) {
-            reasons.add("inadmissible_provenance")
+        val isPublicationGradeProvenance = when (read.provenance) {
+            SourceReadProvenance.VERIFIED_FETCH -> true
+            SourceReadProvenance.PROVIDER_EXTRACT -> true
+            SourceReadProvenance.LEGACY_ASSUMED -> {
+                reasons.add("legacy_evidence_requires_revalidation")
+                false
+            }
+            SourceReadProvenance.UNVERIFIED_CITATION -> {
+                reasons.add("unverified_citation_inadmissible")
+                false
+            }
         }
 
         // Claim-to-passage alignment (Fail-closed)
-        if (!alignClaimToPassage(claim, binding, read)) {
+        val alignment = alignClaimToPassage(claim, binding, read)
+        if (!alignment.isSupported) {
             reasons.add("claim_passage_alignment_failed")
         }
+        if (alignment.isContradicted) {
+            reasons.add("claim_passage_contradiction_detected")
+            return BindingValidation(false, false, reasons)
+        }
 
-        return BindingValidation(reasons.isEmpty(), reasons)
+        val isValid = reasons.isEmpty() || (reasons.all { it == "legacy_evidence_requires_revalidation" } && alignment.isSupported)
+        val isPublicationGrade = isValid && isPublicationGradeProvenance
+
+        return BindingValidation(isValid, isPublicationGrade, reasons)
     }
 
-    private fun alignClaimToPassage(claim: AgentClaim, binding: CitationBinding, read: SourceRead): Boolean {
-        if (binding.passageStart == null || binding.passageEnd == null) return false
+    private data class AlignmentResult(val isSupported: Boolean, val isContradicted: Boolean = false)
+
+    private fun alignClaimToPassage(claim: AgentClaim, binding: CitationBinding, read: SourceRead): AlignmentResult {
+        if (binding.passageStart == null || binding.passageEnd == null) return AlignmentResult(false)
         val passage = read.content.substring(binding.passageStart, binding.passageEnd).trim()
         
-        if (passage.isBlank() || passage.length < 4) return false
+        if (passage.isBlank() || passage.length < 4) return AlignmentResult(false)
 
         // Exact or case-insensitive alignment
         if (passage.contains(claim.text, ignoreCase = true) || claim.text.contains(passage, ignoreCase = true)) {
-            return true
+            return AlignmentResult(true)
         }
         
         // Normalized token alignment
         val normalizedPassage = CitationValidator.normalizeForComparison(passage)
         val normalizedClaim = CitationValidator.normalizeForComparison(claim.text)
         if (normalizedPassage.contains(normalizedClaim) || normalizedClaim.contains(normalizedPassage)) {
-            return true
+            return AlignmentResult(true)
         }
 
-        // Material identifiers check (numbers, dates)
-        val materialIds = extractMaterialIdentifiers(claim.text)
-        if (materialIds.isNotEmpty()) {
-            return materialIds.all { passage.contains(it, ignoreCase = true) }
+        // Polarity check (Safeguard)
+        if (detectPolarityMismatch(claim.text, passage)) {
+            return AlignmentResult(false, isContradicted = true)
         }
 
-        return false
+        return AlignmentResult(false)
     }
 
-    private fun extractMaterialIdentifiers(text: String): List<String> {
-        // Simple regex for numbers, dates-like, and potential units
-        return Regex("""\b(\d+[\d.,/]*|[A-Z][a-z]+ \d{1,2},? \d{4})\b""").findAll(text).map { it.value }.toList()
+    private fun detectPolarityMismatch(claim: String, passage: String): Boolean {
+        val pairs = listOf(
+            "rose" to "fell",
+            "increased" to "decreased",
+            "up" to "down",
+            "above" to "below",
+            "more than" to "less than",
+            "before" to "after",
+            "approved" to "rejected",
+            "present" to "absent",
+            "positive" to "negative"
+        )
+        return pairs.any { (p1, p2) ->
+            (claim.contains(p1, ignoreCase = true) && passage.contains(p2, ignoreCase = true)) ||
+            (claim.contains(p2, ignoreCase = true) && passage.contains(p1, ignoreCase = true))
+        }
     }
 }

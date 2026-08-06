@@ -93,22 +93,30 @@ class SynthesisRecoveryTest {
         ),
     )
 
-    private fun sourceRead(url: String) = SourceRead(
-        id = scopedSourceReadId(url, "h1"),
-        url = url,
-        canonicalUrl = ResearchQualityGate.canonicalSourceUrl(url),
-        documentId = scopedSourceDocumentId(url),
-        contentHash = "h1",
-        httpCode = 200,
-        contentType = "text/plain",
-        content = "Factual finding from $url.",
-        sourceRole = "research",
-        authorityScore = 10,
-        provenance = SourceReadProvenance.VERIFIED_FETCH
-    )
+    private fun sourceRead(url: String): SourceRead {
+        val content = "Factual finding from $url."
+        val hash = FingerprintUtils.hash(content)
+        return SourceRead(
+            id = scopedSourceReadId(url, hash),
+            url = url,
+            canonicalUrl = ResearchQualityGate.canonicalSourceUrl(url),
+            documentId = scopedSourceDocumentId(url),
+            contentHash = hash,
+            httpCode = 200,
+            contentType = "text/plain",
+            content = content,
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = SourceReadProvenance.VERIFIED_FETCH
+        )
+    }
 
     private fun factClaim(taskId: String, url: String, id: String): AgentClaim {
         val text = "Factual finding from $url."
+        val content = "Factual finding from $url."
+        val hash = FingerprintUtils.hash(content)
+        val readId = scopedSourceReadId(url, hash)
+        val docId = scopedSourceDocumentId(url)
         return AgentClaim(
             id = id,
             taskId = taskId,
@@ -119,11 +127,11 @@ class SynthesisRecoveryTest {
             sourceUrls = listOf(url),
             claimFingerprint = "fp-$id",
             citationBindings = listOf(
-                CitationBinding(
+                CitationBinding.createLegacy(
                     claimId = id,
-                    sourceReadId = scopedSourceReadId(url, "h1"),
-                    documentId = scopedSourceDocumentId(url),
-                    contentHash = "h1",
+                    sourceReadId = readId,
+                    documentId = docId,
+                    contentHash = hash,
                     citationExcerpt = "finding",
                     passageStart = 8,
                     passageEnd = 15,

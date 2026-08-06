@@ -1333,42 +1333,49 @@ class AutonomyRuntimeTest {
         createdAt = createdAt,
     )
 
-    private fun sourceRead(url: String) = SourceRead(
-        id = com.david.openassistant.agent.scopedSourceReadId(url, "h1"),
-        url = url,
-        canonicalUrl = url,
-        documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),
-        contentHash = "h1",
-        httpCode = 200,
-        contentType = "text/plain",
-        content = "Factual finding from $url.",
-        sourceRole = "research",
-        authorityScore = 10,
-        provenance = SourceReadProvenance.VERIFIED_FETCH
-    )
+    private fun sourceRead(url: String): com.david.openassistant.agent.SourceRead {
+        val content = "Factual finding from $url."
+        val hash = com.david.openassistant.agent.FingerprintUtils.hash(content)
+        return com.david.openassistant.agent.SourceRead(
+            id = com.david.openassistant.agent.scopedSourceReadId(url, hash),
+            url = url,
+            canonicalUrl = com.david.openassistant.agent.ResearchQualityGate.canonicalSourceUrl(url),
+            documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),
+            contentHash = hash,
+            httpCode = 200,
+            contentType = "text/plain",
+            content = content,
+            sourceRole = "research",
+            authorityScore = 10,
+            provenance = com.david.openassistant.agent.SourceReadProvenance.VERIFIED_FETCH
+        )
+    }
 
-    private fun factClaims(taskId: String, vararg urls: String): List<AgentClaim> = urls.map { url ->
+    private fun factClaims(taskId: String, vararg urls: String): List<com.david.openassistant.agent.AgentClaim> = urls.map { url ->
         factClaim(taskId, url)
     }
 
-    private fun factClaim(taskId: String, url: String): AgentClaim {
+    private fun factClaim(taskId: String, url: String): com.david.openassistant.agent.AgentClaim {
         val claimId = "clm-${com.david.openassistant.agent.FingerprintUtils.hash(taskId + url).takeLast(8)}"
         val text = "Factual finding from $url."
-        return AgentClaim(
+        val hash = com.david.openassistant.agent.FingerprintUtils.hash(text)
+        val readId = com.david.openassistant.agent.scopedSourceReadId(url, hash)
+        val docId = com.david.openassistant.agent.scopedSourceDocumentId(url)
+        return com.david.openassistant.agent.AgentClaim(
             id = claimId,
             taskId = taskId,
             text = text,
-            type = AgentClaimType.FACT,
+            type = com.david.openassistant.agent.AgentClaimType.FACT,
             confidence = 0.9,
-            support = AgentClaimSupport.SUPPORTED,
+            support = com.david.openassistant.agent.AgentClaimSupport.SUPPORTED,
             sourceUrls = listOf(url),
             claimFingerprint = "fp-$claimId",
             citationBindings = listOf(
-                com.david.openassistant.agent.CitationBinding(
+                com.david.openassistant.agent.CitationBinding.createLegacy(
                     claimId = claimId,
-                    sourceReadId = com.david.openassistant.agent.scopedSourceReadId(url, "h1"),
-                    documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),
-                    contentHash = "h1",
+                    sourceReadId = readId,
+                    documentId = docId,
+                    contentHash = hash,
                     citationExcerpt = text,
                     passageStart = 0,
                     passageEnd = text.length,

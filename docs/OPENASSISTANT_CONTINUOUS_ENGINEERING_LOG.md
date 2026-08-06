@@ -3338,3 +3338,73 @@ JVM VERIFIED
 - Lint: PASSED.
 - Journal Hygiene: Deduplicated, UTF-8 confirmed, null bytes removed.
 
+---
+
+## Correction
+
+**Historical Run ID**: CE-20260805-1452-0504c059
+**Incorrect Status**: VERIFIED
+**Missing Proof**: Evidence of stable binding identity across retries and recomputation of source hashes was incomplete; merging logic still allowed random ID deduplication.
+**Corrected Status**: REOPENED and fixed in CE-20260805-2231.
+
+**Historical Run ID**: CE-20260805-1520-Lineage-Repair
+**Incorrect Status**: VERIFIED
+**Missing Proof**: Full unit tests were not run due to environment blocker; status was based on logic trace.
+**Corrected Status**: REOPENED and verified in CE-20260805-2231.
+
+## Historical Commit Audit
+
+The following commits named `1` were recorded:
+- `7e6409700e6d756aa8099e36ebddb3ad6d80aa13`: Implement Unicode-safe citation excerpt matching (Candidate RUN CE-20260805-1335-e7f84c47).
+- `2542fbc89bf30528d0e0adcbdb2c25d53fe7e193`: Implement stable SourceRead IDs and idempotent evidence merging (Candidate RUN CE-20260805-1452-0504c059).
+- `e025d3cbb038c6647248ede94b778482a270981f`: Journal integrity pass and lineage repair (Candidate RUN CE-20260805-1520-Lineage-Repair).
+
+---
+
+## Run CE-20260805-2231-e025d3cb — 2026-08-05T22:31:00
+
+### Status
+VERIFIED
+
+### Risk Class
+R2
+
+### Evidence Level
+JVM VERIFIED | INTEGRATION VERIFIED | RESTART VERIFIED
+
+### Repository
+- Branch: main
+- Starting commit: e025d3cbb038c6647248ede94b778482a270981f
+- Run commit: SELF — commit containing this entry
+- Commit message: Continuous improvement CE-20260805-2231-e025d3cb: stabilize citation binding identity and factual support truth
+
+### Selected Issue
+- Issue ID: EVIDENCE-BINDING-INTEGRITY-STABILIZATION
+- Problem: Unstable citation identities, untrusted source hashes, and semantically unsafe support decisions.
+- First causal failure: Random UUID defaults for citation bindings and lack of content hash re-verification.
+- Authoritative owner: FactualClaimSupportPolicy, ClaimSemantics, AgentStore.
+
+### Confirmed Defects
+- Stable binding identity: FIXED (Deterministic identity derived from claim, source, and passage).
+- Source hash recomputation: FIXED (Enforced recomputation of content hash during validation).
+- Semantic alignment: FIXED (Numbers/dates alone no longer establish support; polarity checks added).
+- Legacy provenance: FIXED (LEGACY_ASSUMED yields PARTIAL support).
+- Snapshot immutability: FIXED (Historical fields preserved during merge).
+
+### Verification
+- Baseline: 642 tests (after lineage repair candidate)
+- Focused: PASSED (CitationIntegrityStabilizationTest, SourceReadIdentityTest)
+- Full Unit Total: 647
+- Passed: 647
+- Failed: 0
+- Lint: PASSED
+- Assemble: PASSED
+- Process Death: VERIFIED (Real store reload assertions).
+- Migration: VERIFIED (Legacy bindings readable and preserved).
+
+### Open Issues
+- Still open: Physical acceptance on Samsung SM-G998U.
+
+### Recommended Next Pass
+- Scope: Physical acceptance on Samsung SM-G998U.
+

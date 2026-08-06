@@ -133,4 +133,104 @@ class CitationIntegrityLawTest {
         // url2 is the only unverified URL in factual claims, but both url1 and url2 might be in citation report if they lack source reads
         assertTrue(report.unverifiedUrls.contains(url2))
     }
+
+    @Test
+    fun `test semantic opposition rejection`() {
+        val url = "https://a.com"
+        val content = "Revenue rose to $10 million."
+        val hash = FingerprintUtils.hash(content)
+        val docId = scopedSourceDocumentId(url)
+        val readId = scopedSourceReadId(url, hash)
+        val read = SourceRead(
+            id = readId, url = url, canonicalUrl = url, documentId = docId,
+            contentHash = hash, httpCode = 200, contentType = "text/plain", content = content,
+            sourceRole = "research", authorityScore = 10, provenance = SourceReadProvenance.VERIFIED_FETCH
+        )
+
+        val binding = CitationBinding.createLegacy(
+            claimId = "c1", sourceReadId = readId, documentId = docId, contentHash = hash,
+            citationExcerpt = "Revenue rose to $10 million", passageStart = 0, passageEnd = content.length,
+            passageHash = hash, bindingMethod = CitationBindingMethod.EXACT
+        )
+
+        val claim = AgentClaim(
+            id = "c1", taskId = "task-1", text = "Revenue fell to $10 million.", // OPPOSITE
+            type = AgentClaimType.FACT, confidence = 1.0, support = AgentClaimSupport.SUPPORTED,
+            sourceUrls = listOf(url),
+            citationBindings = listOf(binding), claimFingerprint = "fp1"
+        )
+
+        val decision = FactualClaimSupportPolicy.evaluate(claim, listOf(read))
+        assertTrue("Opposite polarity must be rejected", decision is FactualClaimSupportDecision.Unsupported)
+        val unsupported = decision as FactualClaimSupportDecision.Unsupported
+        assertTrue(unsupported.reasons.contains("claim_passage_contradiction_detected"))
+    }
+
+    @Test
+    fun `test legacy provenance partial support`() {
+        val url = "https://a.com"
+        val content = "Verified facts."
+        val hash = FingerprintUtils.hash(content)
+        val docId = scopedSourceDocumentId(url)
+        val readId = scopedSourceReadId(url, hash)
+        val read = SourceRead(
+            id = readId, url = url, canonicalUrl = url, documentId = docId,
+            contentHash = hash, httpCode = 200, contentType = "text/plain", content = content,
+            sourceRole = "research", authorityScore = 10,
+            provenance = SourceReadProvenance.LEGACY_ASSUMED // LEGACY
+        )
+
+        val binding = CitationBinding.createLegacy(
+            claimId = "c1", sourceReadId = readId, documentId = docId, contentHash = hash,
+            citationExcerpt = "Verified facts", passageStart = 0, passageEnd = content.length,
+            passageHash = hash, bindingMethod = CitationBindingMethod.EXACT
+        )
+
+        val claim = AgentClaim(
+            id = "c1", taskId = "task-1", text = "Verified facts",
+            type = AgentClaimType.FACT, confidence = 1.0, support = AgentClaimSupport.SUPPORTED,
+            sourceUrls = listOf(url),
+            citationBindings = listOf(binding), claimFingerprint = "fp1"
+        )
+
+        val decision = FactualClaimSupportPolicy.evaluate(claim, listOf(read))
+        assertTrue("LEGACY_ASSUMED should yield PartialBound", decision is FactualClaimSupportDecision.PartiallyBound)
+        val partial = decision as FactualClaimSupportDecision.PartiallyBound
+        assertTrue(partial.reasons.contains("legacy_evidence_requires_revalidation"))
+    }
+
+    @Test
+    fun `test deterministic binding identity`() {
+        val identity = CitationBindingIdentity(
+            schemaVersion = 1, claimFingerprint = "clm-1", sourceReadId = "src-1",
+            documentId = "doc-1", contentHash = "h1", passageHash = "p1",
+            bindingMethod = CitationBindingMethod.EXACT
+        )
+        val fp1 = calculateCitationBindingFingerprint(identity)
+        val fp2 = calculateCitationBindingFingerprint(identity)
+        
+        assertEquals("Fingerprint must be deterministic", fp1, fp2)
+        assertEquals("ID must be deterministic", scopedCitationBindingId(fp1), scopedCitationBindingId(fp2))
+    }
+
+    @Test
+    fun `test merge citation bindings determinism`() {
+        val b1 = CitationBinding(
+            id = "b1", claimId = "c1", sourceReadId = "s1", documentId = "d1", contentHash = "h1",
+            citationExcerpt = "e1", confidence = 0.5, identitySchemaVersion = 1, logicalFingerprint = "f1"
+        )
+        val b2 = CitationBinding(
+            id = "b2", claimId = "c1", sourceReadId = "s1", documentId = "d1", contentHash = "h1",
+            citationExcerpt = "e1", confidence = 0.9, identitySchemaVersion = 1, logicalFingerprint = "f1"
+        )
+        
+        val merged1 = mergeCitationBindings(listOf(b1), listOf(b2))
+        val merged2 = mergeCitationBindings(listOf(b2), listOf(b1))
+        
+        assertEquals(1, merged1.size)
+        assertEquals(1, merged2.size)
+        assertEquals(0.9, merged1[0].confidence, 0.001)
+        assertEquals(0.9, merged2[0].confidence, 0.001)
+        assertEquals(merged1[0].id, merged2[0].id)
+    }
 }

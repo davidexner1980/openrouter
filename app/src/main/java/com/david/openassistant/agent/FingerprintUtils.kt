@@ -131,7 +131,7 @@ object FingerprintUtils {
         return joinToString("") { "%02x".format(it) }
     }
 
-    private class CanonicalEncoder {
+    internal class CanonicalEncoder {
         private val buffer = StringBuilder()
 
         fun append(key: String, value: String) {

@@ -304,7 +304,7 @@ class ResearchAssessmentRecoveryTest {
             support = AgentClaimSupport.SUPPORTED,
             sourceUrls = listOf(url),
             citationBindings = listOf(
-                com.david.openassistant.agent.CitationBinding(
+                com.david.openassistant.agent.CitationBinding.createLegacy(
                     claimId = claimId,
                     sourceReadId = com.david.openassistant.agent.scopedSourceReadId(url, "h1"),
                     documentId = com.david.openassistant.agent.scopedSourceDocumentId(url),

@@ -2045,7 +2045,23 @@ open class AgentOpenRouterClient internal constructor(
                 if (matchingRead != null && !originalExcerpt.isNullOrBlank()) {
                     val match = CitationValidator.containsExcerpt(matchingRead.content, originalExcerpt)
                     if (match.confidence.isReliable()) {
+                        val passageHash = if (match.passageStart != null && match.passageEnd != null) {
+                            FingerprintUtils.hash(matchingRead.content.substring(match.passageStart, match.passageEnd))
+                        } else null
+                        
+                        val identity = CitationBindingIdentity(
+                            schemaVersion = 1,
+                            claimFingerprint = claimFingerprint,
+                            sourceReadId = matchingRead.id,
+                            documentId = matchingRead.documentId,
+                            contentHash = matchingRead.contentHash,
+                            passageHash = passageHash ?: "",
+                            bindingMethod = match.bindingMethod ?: CitationBindingMethod.LEGACY_UNKNOWN
+                        )
+                        val logicalFingerprint = calculateCitationBindingFingerprint(identity)
+
                         CitationBinding(
+                            id = scopedCitationBindingId(logicalFingerprint),
                             claimId = claimId,
                             sourceReadId = matchingRead.id,
                             documentId = matchingRead.documentId,
@@ -2053,11 +2069,11 @@ open class AgentOpenRouterClient internal constructor(
                             citationExcerpt = originalExcerpt.take(1000),
                             passageStart = match.passageStart,
                             passageEnd = match.passageEnd,
-                            passageHash = if (match.passageStart != null && match.passageEnd != null) {
-                                FingerprintUtils.hash(matchingRead.content.substring(match.passageStart, match.passageEnd))
-                            } else null,
+                            passageHash = passageHash,
                             bindingMethod = match.bindingMethod ?: CitationBindingMethod.LEGACY_UNKNOWN,
-                            confidence = match.confidence.score
+                            confidence = match.confidence.score,
+                            identitySchemaVersion = 1,
+                            logicalFingerprint = logicalFingerprint
                         )
                     } else null
                 } else null

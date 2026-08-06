@@ -27,8 +27,18 @@ enum class CitationBindingMethod {
     LEGACY_UNKNOWN,
 }
 
+data class CitationBindingIdentity(
+    val schemaVersion: Int,
+    val claimFingerprint: String,
+    val sourceReadId: String,
+    val documentId: String,
+    val contentHash: String,
+    val passageHash: String,
+    val bindingMethod: CitationBindingMethod,
+)
+
 data class CitationBinding(
-    val id: String = UUID.randomUUID().toString(),
+    val id: String,
     val claimId: String,
     val sourceReadId: String,
     val documentId: String,
@@ -40,7 +50,40 @@ data class CitationBinding(
     val bindingMethod: CitationBindingMethod = CitationBindingMethod.LEGACY_UNKNOWN,
     val confidence: Double = 1.0,
     val createdAt: Long = System.currentTimeMillis(),
-)
+    val identitySchemaVersion: Int = 0,
+    val logicalFingerprint: String? = null,
+) {
+    companion object {
+        fun createLegacy(
+            claimId: String,
+            sourceReadId: String,
+            documentId: String,
+            contentHash: String,
+            citationExcerpt: String,
+            passageStart: Int? = null,
+            passageEnd: Int? = null,
+            passageHash: String? = null,
+            bindingMethod: CitationBindingMethod = CitationBindingMethod.LEGACY_UNKNOWN,
+            confidence: Double = 1.0,
+            createdAt: Long = System.currentTimeMillis()
+        ): CitationBinding = CitationBinding(
+            id = UUID.randomUUID().toString(),
+            claimId = claimId,
+            sourceReadId = sourceReadId,
+            documentId = documentId,
+            contentHash = contentHash,
+            citationExcerpt = citationExcerpt,
+            passageStart = passageStart,
+            passageEnd = passageEnd,
+            passageHash = passageHash,
+            bindingMethod = bindingMethod,
+            confidence = confidence,
+            createdAt = createdAt,
+            identitySchemaVersion = 0,
+            logicalFingerprint = null
+        )
+    }
+}
 
 data class AgentClaim(
     val id: String = UUID.randomUUID().toString(),

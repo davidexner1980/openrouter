@@ -52,7 +52,7 @@ class CitationIntegrityRegressionTest {
     @Test
     fun `test policy rejects tampered content hash`() {
         val tamperedRead = sourceRead.copy(content = "Tampered content", contentHash = hash) // Hash says it's original
-        val binding = CitationBinding(
+        val binding = CitationBinding.createLegacy(
             claimId = "placeholder",
             sourceReadId = readId,
             documentId = docId,
@@ -68,7 +68,7 @@ class CitationIntegrityRegressionTest {
 
     @Test
     fun `test policy rejects forged document ID`() {
-        val binding = CitationBinding(
+        val binding = CitationBinding.createLegacy(
             claimId = "c1",
             sourceReadId = readId,
             documentId = "FORGED",
@@ -115,7 +115,7 @@ class CitationIntegrityRegressionTest {
     @Test
     fun `test re-verification detects changed citationExcerpt`() {
         // Original binding was for "speed of light"
-        val binding = CitationBinding(
+        val binding = CitationBinding.createLegacy(
             claimId = "c1",
             sourceReadId = readId,
             documentId = docId,
@@ -145,7 +145,7 @@ class CitationIntegrityRegressionTest {
     @Test
     fun `test admissible provenance rules`() {
         val unverifiedRead = sourceRead.copy(id = "unv-1", provenance = SourceReadProvenance.UNVERIFIED_CITATION)
-        val binding = CitationBinding(
+        val binding = CitationBinding.createLegacy(
             claimId = "c1",
             sourceReadId = "unv-1",
             documentId = docId,
