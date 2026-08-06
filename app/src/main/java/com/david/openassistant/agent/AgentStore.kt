@@ -1221,7 +1221,10 @@ open class AgentStore private constructor(
         if (goal.status.isFinalTerminalStatus()) return RecoveryPlanTransitionResult.GoalTerminal
 
         val validation = validateTicketInternalLocked(ticket)
-        if (validation !is TicketValidationResult.Valid) return RecoveryPlanTransitionResult.OwnershipRejected
+        if (validation !is TicketValidationResult.Valid) {
+            diagnostics?.warning("recovery_transition_ownership_rejected", mapOf("goal_id" to ticket.goalId, "validation" to validation.toString()))
+            return RecoveryPlanTransitionResult.OwnershipRejected
+        }
         
         val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return RecoveryPlanTransitionResult.PlanMissing
 
@@ -1239,9 +1242,18 @@ open class AgentStore private constructor(
             }
         }
 
-        if (plan.status != expectedStatus) return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
-        if (!plan.status.canTransitionTo(nextStatus)) return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
-        if (plan.inputExecutionFingerprint != expectedInputFingerprint) return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+        if (plan.status != expectedStatus) {
+            diagnostics?.warning("recovery_transition_status_mismatch", mapOf("planId" to planId, "expected" to expectedStatus.name, "actual" to plan.status.name))
+            return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+        }
+        if (!plan.status.canTransitionTo(nextStatus)) {
+            diagnostics?.warning("recovery_transition_illegal", mapOf("planId" to planId, "from" to plan.status.name, "to" to nextStatus.name))
+            return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+        }
+        if (plan.inputExecutionFingerprint != expectedInputFingerprint) {
+            diagnostics?.warning("recovery_transition_fingerprint_mismatch", mapOf("planId" to planId, "expected" to expectedInputFingerprint, "actual" to plan.inputExecutionFingerprint))
+            return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+        }
         
         val updatedGoal = mutation(goal, plan)
         // Ensure status transition is applied even if mutation forgets it

@@ -516,7 +516,10 @@ class AgentPlanner(
                         is RecoveryPlanTransitionResult.Committed, is RecoveryPlanTransitionResult.AlreadyAtTarget -> WorkerOutcome.CONTINUE
                         is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
                         is RecoveryPlanTransitionResult.OwnershipRejected -> WorkerOutcome.FAIL
-                        else -> WorkerOutcome.RETRY
+                        else -> {
+                            diagnostics.warning("recovery_proposal_commit_failed", mapOf("goal_id" to goal.id, "result" to transitionResult.toString()))
+                            WorkerOutcome.RETRY
+                        }
                     }
                 }
             }

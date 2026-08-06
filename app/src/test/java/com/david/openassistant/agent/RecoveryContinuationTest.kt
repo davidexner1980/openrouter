@@ -1,5 +1,6 @@
 package com.david.openassistant.agent
 
+import com.david.openassistant.data.diagnostics.DiagnosticEvent
 import com.david.openassistant.data.diagnostics.RuntimeDiagnostics
 import com.david.openassistant.data.openrouter.OpenRouterModel
 import kotlinx.coroutines.runBlocking
@@ -42,27 +43,100 @@ class RecoveryContinuationTest {
 
     @Test
     fun testSuccessfulRecoveryProposalTriggersContinuation() = runBlocking {
+        try {
+            val sessionId = DiagnosticEvent.PROCESS_SESSION_ID
+            val planId = "plan-" + UUID.randomUUID()
+            val ticket = PlanningTicket(goalId, workerId, sessionId, 1, "attempt-1", System.currentTimeMillis())
+            
+            val task = AgentTask(id = taskId, order = 0, title = "Task", instructions = "Inst", capability = AgentCapability.WEB_RESEARCH)
+            val initialGoal = AgentGoal(
+                id = goalId,
+                conversationId = "conv-1",
+                userRequest = "Objective",
+                title = "Title",
+                objective = "Objective",
+                finalOutputDescription = "Desc",
+                status = AgentGoalStatus.RECOVERING,
+                plannerModelId = "model",
+                executionModelId = "model",
+                tasks = listOf(task),
+                leaseGeneration = 1,
+                executionLease = AgentExecutionLease(workerId, sessionId, "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis()),
+                objectiveContract = ObjectiveContract(1, "Title", listOf("Objective"), null, "Desc", "GENERAL", "hash")
+            )
+            
+            val inputFp = FingerprintUtils.calculateExecutionFingerprint(initialGoal, task)
+            val plan = ResearchRecoveryPlan(
+                id = planId,
+                goalId = goalId,
+                taskId = taskId,
+                inputExecutionFingerprint = inputFp,
+                diagnosis = ExecutionStallDiagnosis.REPEATED_CONTEXT,
+                selectedTactic = EscalationTactic.REBUILD_QUERY_PORTFOLIO,
+                status = RecoveryPlanStatus.GENERATING,
+                logicalProviderRequestId = null,
+                proposal = null,
+                proposalFingerprint = null,
+                validationResult = null,
+                failureClassification = null,
+                failureMessage = null
+            )
+            
+            val goal = initialGoal.copy(recoveryPlans = listOf(plan), activeRecoveryPlanId = planId)
+            store.upsertGoal(goal, true)
+            
+            val proposal = RecoveryProposal(
+                revisedInvestigationInterpretation = "new strategy for Objective",
+                specificUnresolvedGap = "gap",
+                selectedSourceFamilyShift = null,
+                evidenceTargets = listOf("target1"),
+                falsifiers = emptyList(),
+                newQueryPortfolio = listOf("query1"),
+                followUpRule = null,
+                rationale = "rationale",
+                expectedNoveltyDimensions = listOf("strategy")
+            )
+            
+            client.nextRecoveryProposal = RecoveryProposalGenerationResult.ProposalAvailable(proposal, AgentApiSummary(responseId = "resp-1", totalTokens = 50), "exchange-1", false)
+
+            // 1. Initial fingerprint
+            val initialFp = ContinuationSchedulingPolicy.fingerprint(goal)
+
+            // 2. Generate proposal
+            val outcome = planner.generateRecoveryProposal("key", goal, plan, ticket)
+            val finalSnap = store.loadSnapshot().goals.first { it.id == goalId }
+            val finalPlan = finalSnap.recoveryPlans.firstOrNull { it.id == planId }
+            
+            assertEquals("Outcome was $outcome. Final plan status: ${finalPlan?.status}. Goal error: ${finalSnap.error}", WorkerOutcome.CONTINUE, outcome)
+
+            // 3. Verify durable state
+            val updatedGoal = finalSnap
+            val updatedPlan = finalPlan
+            assertEquals(RecoveryPlanStatus.READY_TO_COMMIT, updatedPlan?.status)
+            assertNotNull(updatedPlan?.proposal)
+            assertEquals(proposal.revisedInvestigationInterpretation, updatedPlan?.proposal?.revisedInvestigationInterpretation)
+
+            // 4. Verify fingerprint change
+            val nextFp = ContinuationSchedulingPolicy.fingerprint(updatedGoal)
+            assertNotEquals("Fingerprint must change when plan status moves to READY_TO_COMMIT", initialFp, nextFp)
+
+            // 5. Verify schedulability
+            assertTrue("Mission must be schedulable after recovery progress", ContinuationSchedulingPolicy.isSchedulable(updatedGoal, goal))
+        } catch (e: Throwable) {
+            println("DEBUG: testSuccessfulRecoveryProposalTriggersContinuation caught: ${e.message}")
+            e.printStackTrace()
+            throw e
+        }
+    }
+
+    @Test
+    fun testReadyToCommitToCommittedChangesFingerprint() = runBlocking {
+        val sessionId = DiagnosticEvent.PROCESS_SESSION_ID
         val planId = "plan-1"
-        val inputFp = "fp-input"
-        val ticket = PlanningTicket(goalId, workerId, "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticket = PlanningTicket(goalId, workerId, sessionId, 1, "attempt-1", System.currentTimeMillis())
         
-        val plan = ResearchRecoveryPlan(
-            id = planId,
-            goalId = goalId,
-            taskId = taskId,
-            inputExecutionFingerprint = inputFp,
-            diagnosis = ExecutionStallDiagnosis.REPEATED_CONTEXT,
-            selectedTactic = EscalationTactic.REBUILD_QUERY_PORTFOLIO,
-            status = RecoveryPlanStatus.PREPARED,
-            logicalProviderRequestId = null,
-            proposal = null,
-            proposalFingerprint = null,
-            validationResult = null,
-            failureClassification = null,
-            failureMessage = null
-        )
-        
-        val goal = AgentGoal(
+        val task = AgentTask(id = taskId, order = 0, title = "Task", instructions = "Inst", capability = AgentCapability.WEB_RESEARCH)
+        val initialGoal = AgentGoal(
             id = goalId,
             conversationId = "conv-1",
             userRequest = "Objective",
@@ -72,62 +146,15 @@ class RecoveryContinuationTest {
             status = AgentGoalStatus.RECOVERING,
             plannerModelId = "model",
             executionModelId = "model",
-            tasks = listOf(
-                AgentTask(id = taskId, order = 0, title = "Task", instructions = "Inst", capability = AgentCapability.WEB_RESEARCH)
-            ),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId,
+            tasks = listOf(task),
             leaseGeneration = 1,
-            executionLease = AgentExecutionLease(workerId, "session-1", "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis()),
-            objectiveContract = ObjectiveContract(1, "Title", listOf("Objective"), null, "Desc", "GENERAL", "hash")
+            executionLease = AgentExecutionLease(workerId, sessionId, "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())
         )
         
-        store.upsertGoal(goal, true)
+        val inputFp = FingerprintUtils.calculateExecutionFingerprint(initialGoal, task)
         
         val proposal = RecoveryProposal(
-            revisedInvestigationInterpretation = "new strategy",
-            specificUnresolvedGap = "gap",
-            selectedSourceFamilyShift = null,
-            evidenceTargets = listOf("target1"),
-            falsifiers = emptyList(),
-            newQueryPortfolio = listOf("query1"),
-            followUpRule = null,
-            rationale = "rationale",
-            expectedNoveltyDimensions = listOf("strategy")
-        )
-        
-        client.nextRecoveryProposal = RecoveryProposalGenerationResult.ProposalAvailable(proposal, AgentApiSummary(responseId = "resp-1", totalTokens = 50), "exchange-1", false)
-
-        // 1. Initial fingerprint
-        val initialFp = ContinuationSchedulingPolicy.fingerprint(goal)
-
-        // 2. Generate proposal
-        val outcome = planner.generateRecoveryProposal("key", goal, plan, ticket)
-        assertEquals(WorkerOutcome.CONTINUE, outcome)
-
-        // 3. Verify durable state
-        val updatedGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        val updatedPlan = updatedGoal.recoveryPlans.first { it.id == planId }
-        assertEquals(RecoveryPlanStatus.READY_TO_COMMIT, updatedPlan.status)
-        assertNotNull(updatedPlan.proposal)
-        assertEquals(proposal.revisedInvestigationInterpretation, updatedPlan.proposal?.revisedInvestigationInterpretation)
-
-        // 4. Verify fingerprint change
-        val nextFp = ContinuationSchedulingPolicy.fingerprint(updatedGoal)
-        assertNotEquals("Fingerprint must change when plan status moves to READY_TO_COMMIT", initialFp, nextFp)
-
-        // 5. Verify schedulability
-        assertTrue("Mission must be schedulable after recovery progress", ContinuationSchedulingPolicy.isSchedulable(updatedGoal, goal))
-    }
-
-    @Test
-    fun testReadyToCommitToCommittedChangesFingerprint() = runBlocking {
-        val planId = "plan-1"
-        val inputFp = "fp-input"
-        val ticket = PlanningTicket(goalId, workerId, "session-1", 1, "attempt-1", System.currentTimeMillis())
-        
-        val proposal = RecoveryProposal(
-            revisedInvestigationInterpretation = "new strategy",
+            revisedInvestigationInterpretation = "new strategy for Objective",
             specificUnresolvedGap = "gap",
             selectedSourceFamilyShift = null,
             evidenceTargets = listOf("target1"),
@@ -148,42 +175,25 @@ class RecoveryContinuationTest {
             status = RecoveryPlanStatus.READY_TO_COMMIT,
             logicalProviderRequestId = null,
             proposal = proposal,
-            proposalFingerprint = "fp-prop",
+            proposalFingerprint = FingerprintUtils.calculateProposalFingerprint(proposal),
             validationResult = null,
             failureClassification = null,
             failureMessage = null
         )
         
-        val goal = AgentGoal(
-            id = goalId,
-            conversationId = "conv-1",
-            userRequest = "Objective",
-            title = "Title",
-            objective = "Objective",
-            finalOutputDescription = "Desc",
-            status = AgentGoalStatus.RECOVERING,
-            plannerModelId = "model",
-            executionModelId = "model",
-            tasks = listOf(
-                AgentTask(id = taskId, order = 0, title = "Task", instructions = "Inst", capability = AgentCapability.WEB_RESEARCH)
-            ),
-            recoveryPlans = listOf(plan),
-            activeRecoveryPlanId = planId,
-            leaseGeneration = 1,
-            executionLease = AgentExecutionLease(workerId, "session-1", "none", "attempt-1", 1, System.currentTimeMillis(), System.currentTimeMillis())
-        )
-        
+        val goal = initialGoal.copy(recoveryPlans = listOf(plan), activeRecoveryPlanId = planId)
         store.upsertGoal(goal, true)
         
         val fpAtReady = ContinuationSchedulingPolicy.fingerprint(goal)
         
         // Commit
         val outcome = planner.commitRecoveryEffect(goal, plan, ticket)
-        assertEquals(WorkerOutcome.CONTINUE, outcome)
-        
         val committedGoal = store.loadSnapshot().goals.first { it.id == goalId }
-        val committedPlan = committedGoal.recoveryPlans.first { it.id == planId }
-        assertEquals(RecoveryPlanStatus.COMMITTED, committedPlan.status)
+        val committedPlan = committedGoal.recoveryPlans.firstOrNull { it.id == planId }
+        
+        assertEquals("Outcome was $outcome. Plan status in store: ${committedPlan?.status}. Goal error: ${committedGoal.error}", WorkerOutcome.CONTINUE, outcome)
+        
+        assertEquals(RecoveryPlanStatus.COMMITTED, committedPlan?.status)
         assertEquals(AgentGoalStatus.QUEUED, committedGoal.status)
         
         val fpAtCommitted = ContinuationSchedulingPolicy.fingerprint(committedGoal)
