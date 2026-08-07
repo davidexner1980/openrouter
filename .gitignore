@@ -6,6 +6,7 @@
 /.idea/
 /.kotlin/
 /.artifacts/
+/temp_gradle_home/
 /build/
 /app/build/
 /local.properties

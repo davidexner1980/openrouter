@@ -1693,16 +1693,35 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun startResearchBriefing() {
+    fun startResearchBriefing(manualRequest: String? = null) {
         val state = _uiState.value
         if (state.isGenerating || state.isGeneratingBrief) return
 
         viewModelScope.launch {
             _uiState.update { it.copy(isGeneratingBrief = true, chatError = null) }
+            
+            val effectiveMessages = if (manualRequest?.isNotBlank() == true) {
+                val userMessage = ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = ChatRole.USER,
+                    content = manualRequest,
+                )
+                // Persist the manual request message so the briefing interactor can see it
+                appendMessageToConversation(state.activeConversationId, userMessage)
+                state.messages.filterNot { it.isStreaming } + userMessage
+            } else {
+                state.messages.filterNot { it.isStreaming }
+            }
+
+            if (effectiveMessages.isEmpty()) {
+                _uiState.update { it.copy(isGeneratingBrief = false, chatError = "Enter a research goal first.") }
+                return@launch
+            }
+
             val result = runCatching {
                 briefingInteractor.generateBriefAndStart(
                     conversationId = state.activeConversationId,
-                    messages = state.messages.filterNot { it.isStreaming },
+                    messages = effectiveMessages,
                     modelId = state.selectedModelId ?: com.david.openassistant.domain.model.AgentModelSelector.AUTO_BETA_ROUTER_MODEL_ID,
                     agentInteractor = agentInteractor,
                     monitor = researchMonitor,

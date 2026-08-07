@@ -44,7 +44,7 @@ fun ChatScreen(
     onStopGeneration: () -> Unit,
     onAttachImage: (Uri) -> Unit,
     onRemovePendingImage: () -> Unit,
-    onStartResearchBriefing: () -> Unit,
+    onStartResearchBriefing: (String?) -> Unit,
     onUpdateResearchBrief: (com.david.openassistant.agent.ResearchDraft) -> Unit,
     onCancelResearchBrief: () -> Unit,
     onStartResearchMission: (com.david.openassistant.agent.ResearchDraft) -> Unit,
@@ -271,7 +271,10 @@ fun ChatScreen(
                 if (!state.isGenerating && !state.isPlanningAgentGoal) {
                     if (activeMission == null) {
                         Button(
-                            onClick = onStartResearchBriefing,
+                            onClick = {
+                                onStartResearchBriefing(draft)
+                                draft = ""
+                            },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !state.isGeneratingBrief,
                             shape = RoundedCornerShape(12.dp)

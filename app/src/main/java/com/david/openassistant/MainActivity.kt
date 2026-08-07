@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
                     onExportResearchReport = assistantViewModel::exportResearchReport,
                     onSendMessage = assistantViewModel::sendMessage,
                     onStopGeneration = assistantViewModel::stopGeneration,
-                    onStartResearchBriefing = assistantViewModel::startResearchBriefing,
+                    onStartResearchBriefing = { manualRequest -> assistantViewModel.startResearchBriefing(manualRequest) },
                     onUpdateResearchBrief = assistantViewModel::updateResearchBrief,
                     onCancelResearchBrief = assistantViewModel::cancelResearchBrief,
                     onStartResearchMission = assistantViewModel::startResearchMission,

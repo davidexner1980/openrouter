@@ -39,7 +39,7 @@ fun OpenAssistantApp(
     onExportResearchReport: (String) -> Unit,
     onSendMessage: (String) -> Unit,
     onStopGeneration: () -> Unit,
-    onStartResearchBriefing: () -> Unit,
+    onStartResearchBriefing: (String?) -> Unit,
     onUpdateResearchBrief: (com.david.openassistant.agent.ResearchDraft) -> Unit,
     onCancelResearchBrief: () -> Unit,
     onStartResearchMission: (com.david.openassistant.agent.ResearchDraft) -> Unit,
