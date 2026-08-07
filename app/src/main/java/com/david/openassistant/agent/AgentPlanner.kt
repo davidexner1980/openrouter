@@ -410,7 +410,7 @@ class AgentPlanner(
             
             when (proposalResult) {
                 is RecoveryProposalGenerationResult.AlternateStrategyRequired -> {
-                    val descriptor = proposalResult.kind?.let { FailureClassifier.classifyReconciliation(it, currentGoal.id, planToUse.taskId, logicalRequestId) }
+                    val descriptor = proposalResult.kind?.let { FailureClassifier.classifyReconciliation(it, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.generation) }
                     val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = planToUse.id,
@@ -428,7 +428,7 @@ class AgentPlanner(
                     }
                 }
                 is RecoveryProposalGenerationResult.NeedsUserAction -> {
-                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId)
+                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.generation)
                     val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = planToUse.id,
@@ -446,7 +446,7 @@ class AgentPlanner(
                     }
                 }
                 is RecoveryProposalGenerationResult.ReconciliationRequired -> {
-                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId)
+                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.generation)
                     val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = planToUse.id,
@@ -807,12 +807,17 @@ class AgentPlanner(
         error: Throwable,
         ticket: PlanningTicket,
     ): WorkerOutcome {
+        val latest = store.loadSnapshot().goals.firstOrNull { it.id == goalId } ?: return WorkerOutcome.FAIL
         val statusCode = (error as? OpenRouterException)?.statusCode
         val failureDescriptor = FailureClassifier.classify(
             error = error,
             statusCode = statusCode,
             goalId = goalId,
             operationId = "recovery_generation",
+            ownerId = ticket.workerId,
+            generation = ticket.generation,
+            startTime = latest.createdAt,
+            attemptCount = latest.attempts.size,
         )
         
         val nextStatus = when (failureDescriptor.retryPolicy) {
@@ -858,6 +863,10 @@ class AgentPlanner(
             statusCode = statusCode,
             goalId = goalId,
             operationId = "plan_generation",
+            ownerId = ticket.workerId,
+            generation = ticket.generation,
+            startTime = latest.createdAt,
+            attemptCount = latest.attempts.size,
         )
         val decision = ProviderRecoveryPolicy.decideWithDescriptor(
             descriptor = failureDescriptor,

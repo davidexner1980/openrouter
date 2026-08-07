@@ -2,6 +2,18 @@ package com.david.openassistant.agent
 
 import java.util.UUID
 
+/**
+ * Represents an immutable snapshot of a research source at a specific point in time.
+ * Complies with the Immutable Source-Read Law.
+ */
+interface SourceSnapshot {
+    val canonicalUrl: String
+    val contentHash: String
+    val retrievedAt: Long
+    val content: String
+    val isPublicationGrade: Boolean
+}
+
 data class ResearchAllocationProfile(
     val complexity: ResearchComplexity = ResearchComplexity.MEDIUM,
     val risk: ResearchRisk = ResearchRisk.LOW,

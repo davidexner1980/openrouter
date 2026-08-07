@@ -663,6 +663,11 @@ class AgentTaskExecutor internal constructor(
             goalId = goalId,
             taskId = taskId,
             operationId = "task_execution",
+            ownerId = ticket.workerId,
+            generation = ticket.generation,
+            startTime = latest.createdAt,
+            lastProgressTime = latest.lastMeaningfulProgressAt,
+            attemptCount = latest.attempts.size,
             emptyModelOutput = error.message?.contains("model returned no usable text") == true,
         )
         val decision = ProviderRecoveryPolicy.decideWithDescriptor(
@@ -777,6 +782,7 @@ class AgentTaskExecutor internal constructor(
             }
             val failureFinishedAt = System.currentTimeMillis()
             val cooldownDuration = if (statusCode == 429 && !switchingModels) 120_000L else null 
+            val backoffMs = if (waitingForNetwork) BackoffUtils.computeBackoff(routedCurrent.networkRetryCount + 1) else 0L
 
             routedCurrent.copy(
                 status = when {
@@ -801,7 +807,7 @@ class AgentTaskExecutor internal constructor(
                 networkWaitStartedAt = if (waitingForNetwork) failureFinishedAt else routedCurrent.networkWaitStartedAt,
                 networkWaitReason = if (waitingForNetwork) decision.explanation else routedCurrent.networkWaitReason,
                 resumeStatusAfterNetwork = if (waitingForNetwork) AgentGoalStatus.QUEUED else routedCurrent.resumeStatusAfterNetwork,
-                nextRetryAt = if (waitingForNetwork) failureFinishedAt + 30_000L else routedCurrent.nextRetryAt,
+                nextRetryAt = if (waitingForNetwork) failureFinishedAt + backoffMs else routedCurrent.nextRetryAt,
                 tasks = routedCurrent.tasks.map { existing ->
                     if (existing.id == taskId) {
                         val failedTask = existing.copy(
@@ -990,69 +996,6 @@ class AgentTaskExecutor internal constructor(
         }
     }
 
-    private fun attachClaimsToEvidence(
-        claims: List<AgentClaim>,
-        evidenceItem: AgentEvidence,
-        priorEvidence: List<AgentEvidence>,
-        sourceReads: List<SourceRead>,
-    ): List<AgentClaim> {
-        val allEvidence = priorEvidence + evidenceItem
-        val validEvidenceIds = allEvidence.mapTo(mutableSetOf()) { it.id }
-        val evidenceIdsBySourceUrl = buildMap {
-            allEvidence.forEach { evidence ->
-                evidence.sources.forEach { source ->
-                    getOrPut(source.url) { mutableSetOf() }.add(evidence.id)
-                }
-            }
-        }
-        return claims.map { claim ->
-            val explicitlyReferencedEvidenceIds = claim.supportingEvidenceIds.filter(validEvidenceIds::contains)
-            val evidenceIds = buildList {
-                addAll(explicitlyReferencedEvidenceIds)
-                claim.sourceUrls.forEach { sourceUrl ->
-                    addAll(evidenceIdsBySourceUrl[sourceUrl].orEmpty())
-                }
-                if (
-                    claim.type != AgentClaimType.FACT ||
-                    evidenceItem.sources.isEmpty() ||
-                    evidenceItem.sources.any { it.url in claim.sourceUrls }
-                ) {
-                    add(evidenceItem.id)
-                }
-            }.distinct()
-            val resolvedSourceUrls = resolvePreciseClaimSourceUrls(
-                explicitSourceUrls = claim.sourceUrls,
-                referencedEvidenceIds = explicitlyReferencedEvidenceIds,
-                evidence = allEvidence,
-            )
-            
-            val baseClaim = claim.copy(
-                supportingEvidenceIds = evidenceIds,
-                sourceUrls = resolvedSourceUrls
-            )
-            
-            val decision = FactualClaimSupportPolicy.evaluate(baseClaim, sourceReads)
-            val support = when (decision) {
-                is FactualClaimSupportDecision.Supported -> AgentClaimSupport.SUPPORTED
-                is FactualClaimSupportDecision.PartiallyBound -> AgentClaimSupport.PARTIAL
-                is FactualClaimSupportDecision.Contradicted -> AgentClaimSupport.CONTRADICTED
-                is FactualClaimSupportDecision.Unsupported -> AgentClaimSupport.UNSUPPORTED
-            }
-
-            repairOverAttributedClaim(
-                claim = baseClaim.copy(
-                    support = support,
-                    citationBindings = when (decision) {
-                        is FactualClaimSupportDecision.Supported -> decision.validBindings
-                        is FactualClaimSupportDecision.PartiallyBound -> decision.validBindings
-                        else -> emptyList()
-                    }
-                ),
-                evidence = allEvidence,
-            )
-        }
-    }
-
     private fun buildEvidenceLinks(
         claims: List<AgentClaim>,
         currentEvidence: AgentEvidence,
@@ -1198,11 +1141,11 @@ class AgentTaskExecutor internal constructor(
 
         val candidateClaimsForTask = if (task.capability in setOf(AgentCapability.SYNTHESIZE, AgentCapability.CORRECT)) {
             refineImpreciseClaimSourceSelections(
-                claims = attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads),
+                claims = AgentClaimExtractor.attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads),
                 evidence = routedCurrent.evidence + candidateEvidenceItem,
             )
         } else {
-            attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads)
+            AgentClaimExtractor.attachClaimsToEvidence(result.claims, candidateEvidenceItem, routedCurrent.evidence, routedCurrent.sourceReads)
         }
 
         val addedSubstantiveSources = result.sources.any { s -> 
@@ -1210,7 +1153,7 @@ class AgentTaskExecutor internal constructor(
             canonical !in priorSourceUrls && result.toolExecutions.any { it.toolName == "public_web_fetch" && it.succeeded && it.summary.contains(s.url) && !it.summary.contains("Rejected") }
         }
         val addedFactualClaims = candidateClaimsForTask.any { c -> 
-            c.type == AgentClaimType.FACT && c.support == AgentClaimSupport.SUPPORTED && c.text.normalizedClaimText() !in priorClaimTexts 
+            c.type == AgentClaimType.FACT && c.support == AgentClaimSupport.SUPPORTED && with(AgentClaimExtractor) { c.text.normalizedClaimText() !in priorClaimTexts }
         }
         val resolvedCriterion = currentTask.acceptanceChecks.any { it.status == AgentAcceptanceCheckStatus.PASS } && !task.acceptanceChecks.any { it.status == AgentAcceptanceCheckStatus.PASS }
 
@@ -1348,9 +1291,18 @@ class AgentTaskExecutor internal constructor(
             else -> AgentGoalStatus.QUEUED
         }
 
+        val noProgressLimit = 10
+        val overallStalled = !madeMeaningfulProgress && (routedCurrent.noProgressCount + 1) >= noProgressLimit
+        
+        val finalStatus = if (overallStalled && nextStatus == AgentGoalStatus.QUEUED) {
+            AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED
+        } else {
+            nextStatus
+        }
+
         val nextGoal = routedCurrent.copy(
-            status = nextStatus,
-            blockedReason = if (nextStatus == AgentGoalStatus.BLOCKED || nextStatus == AgentGoalStatus.BLOCKED_NEEDS_ACTION) {
+            status = finalStatus,
+            blockedReason = if (finalStatus == AgentGoalStatus.BLOCKED || finalStatus == AgentGoalStatus.BLOCKED_NEEDS_ACTION) {
                 "PARTIAL_EVIDENCE_BOUNDARY"
             } else {
                 null
@@ -1359,7 +1311,7 @@ class AgentTaskExecutor internal constructor(
             attemptedStrategies = if (decision != null) (routedCurrent.attemptedStrategies + decision.action.name).takeLast(50) else routedCurrent.attemptedStrategies,
             lastMeaningfulProgressAt = if (madeMeaningfulProgress) finishedAt else routedCurrent.lastMeaningfulProgressAt,
             noProgressCount = if (madeMeaningfulProgress) 0 else routedCurrent.noProgressCount + 1,
-            finalValidationResult = if (nextStatus == AgentGoalStatus.COMPLETED) "Acceptance criteria passed." else routedCurrent.finalValidationResult,
+            finalValidationResult = if (finalStatus == AgentGoalStatus.COMPLETED) "Acceptance criteria passed." else routedCurrent.finalValidationResult,
             tasks = updatedTasks,
             attempts = retainAttempts(
                 routedCurrent.attempts.map { existing ->
@@ -1428,6 +1380,7 @@ class AgentTaskExecutor internal constructor(
             events = appendEvent(
                 routedCurrent.events,
                 when {
+                    overallStalled -> "Research cycle converged: no substantive new information discovered after $noProgressLimit attempts. Producing final qualified report."
                     recoveryPlan != null -> "Research stalled: ${stallDiagnosis.name}. Tactic pivot prepared: ${recoveryPlan.selectedTactic.name}."
                     decision != null -> "${decision.explanation} Milestone will retry with improved model intelligence."
                     synthesisRecoveryQueued -> "Synthesis exposed a concrete evidence gap. Recovery round queued before synthesis resumes."

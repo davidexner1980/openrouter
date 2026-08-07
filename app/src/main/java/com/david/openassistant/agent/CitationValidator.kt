@@ -183,8 +183,9 @@ object CitationValidator {
     }
 
     internal fun normalizeForComparison(text: String): String {
-        return text.lowercase(Locale.ROOT)
-            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        return text
+            .lowercase(Locale.ROOT)
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ") // Keep only Unicode letters and numbers
             .replace(Regex("\\s+"), " ")
             .trim()
     }

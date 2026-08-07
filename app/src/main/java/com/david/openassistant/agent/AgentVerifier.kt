@@ -112,7 +112,27 @@ class AgentVerifier(
             val reviewedClaims = AgentIntegrityEvaluator.applyClaimReviews(
                 currentAfterVerification.claims,
                 verification.claimReviews,
-            )
+            ).map { claim ->
+                // Phase 6: SUPPORTED status must not be blindly trusted; re-validate against stored source snapshots.
+                if (claim.type == AgentClaimType.FACT) {
+                    val decision = FactualClaimSupportPolicy.evaluate(claim, currentAfterVerification.sourceReads)
+                    val revalidatedSupport = when (decision) {
+                        is FactualClaimSupportDecision.Supported -> AgentClaimSupport.SUPPORTED
+                        is FactualClaimSupportDecision.PartiallyBound -> AgentClaimSupport.PARTIAL
+                        is FactualClaimSupportDecision.Contradicted -> AgentClaimSupport.CONTRADICTED
+                        is FactualClaimSupportDecision.Unsupported -> AgentClaimSupport.UNSUPPORTED
+                    }
+                    // Honor the verifier's downgrade, but don't blindly trust an upgrade.
+                    val finalSupport = if (claim.support == AgentClaimSupport.CONTRADICTED && revalidatedSupport != AgentClaimSupport.CONTRADICTED) {
+                         AgentClaimSupport.CONTRADICTED
+                    } else if (revalidatedSupport == AgentClaimSupport.SUPPORTED && claim.support != AgentClaimSupport.SUPPORTED) {
+                        claim.support // Keep the lower support if re-validation failed to reach SUPPORTED
+                    } else {
+                        revalidatedSupport
+                    }
+                    claim.copy(support = finalSupport)
+                } else claim
+            }
             val reviewedLinks = AgentIntegrityEvaluator.reconcileEvidenceLinks(
                 reviewedClaims,
                 currentAfterVerification.evidenceLinks,
@@ -547,6 +567,10 @@ class AgentVerifier(
                 statusCode = statusCode,
                 goalId = goal.id,
                 operationId = "verification",
+                ownerId = ticket.workerId,
+                generation = ticket.generation,
+                startTime = latest.createdAt,
+                attemptCount = latest.attempts.size,
                 emptyModelOutput = error.message?.contains("model returned no usable text") == true,
             )
             val decision = ProviderRecoveryPolicy.decideWithDescriptor(

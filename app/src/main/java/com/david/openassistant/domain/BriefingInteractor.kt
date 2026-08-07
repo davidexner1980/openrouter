@@ -2,6 +2,7 @@ package com.david.openassistant.domain
 
 import android.content.Context
 import com.david.openassistant.agent.AgentOpenRouterClient
+import com.david.openassistant.agent.ProviderActivityStore
 import com.david.openassistant.agent.ResearchDraft
 import com.david.openassistant.agent.ResearchDraftStatus
 import com.david.openassistant.agent.ResolvedResearchRequest
@@ -12,7 +13,8 @@ import kotlinx.coroutines.withContext
 
 class BriefingInteractor(context: Context) {
     private val keyStore = ApiKeyStore(context)
-    private val client = AgentOpenRouterClient()
+    private val activityStore = ProviderActivityStore(context)
+    private val client = AgentOpenRouterClient(activityStore = activityStore)
 
     suspend fun generateBriefAndStart(
         conversationId: String,

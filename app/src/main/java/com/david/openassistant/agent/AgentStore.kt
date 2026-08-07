@@ -1025,10 +1025,12 @@ open class AgentStore private constructor(
         }
 
         // Search for existing logical request across all generations, matching exact wire candidate identity
+        val effectiveWireVariantKind = wireVariantKind ?: ProviderWireVariantKind.PRIMARY
         val existingAttempts = goal.requestAttempts.filter { 
+            val existingKind = it.wireVariantKind ?: ProviderWireVariantKind.PRIMARY
             it.logicalRequestId == logicalRequestId && 
             it.recoveryPlanId == recoveryPlanId &&
-            (it.wireVariantKind == wireVariantKind || (it.wireVariantKind == null && wireVariantKind == ProviderWireVariantKind.PRIMARY)) &&
+            existingKind == effectiveWireVariantKind &&
             it.wireVariantOrdinal == wireVariantOrdinal
         }
         
@@ -1568,7 +1570,10 @@ open class AgentStore private constructor(
             AgentStateMachine.requireTransition(original.status, transformed.status)
         }
         
-        val updatedGoal = transformed.copy(updatedAt = System.currentTimeMillis())
+        val updatedGoal = transformed.copy(
+            revision = original.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
         writeGoalLocked(updatedGoal, signal = false)
         
         writeSelectionAndSignalLocked(current.selectedGoalId ?: goalId)
@@ -1776,12 +1781,20 @@ open class AgentStore private constructor(
         validateGoalIdentityForWrite(goal)
         goalsDirectory.mkdirs()
         val target = goalFileLocked(goal.id)
+        val atomicFile = AtomicFile(target)
         val encoded = encodeGoal(goal)
         val text = encoded.toString(2)
+        val backup = File(target.path + ATOMIC_BACKUP_SUFFIX)
         
+        var stream: FileOutputStream? = null
         try {
-            target.writeText(text)
+            stream = atomicFile.startWrite()
+            stream.write(text.toByteArray(StandardCharsets.UTF_8))
+            stream.flush()
+            try { stream.fd.sync() } catch (_: Exception) {}
+            atomicFile.finishWrite(stream)
         } catch (e: Exception) {
+            stream?.let { atomicFile.failWrite(it) }
             diagnostics?.error(
                 event = "goal_write_failed",
                 component = "storage",
@@ -1789,12 +1802,33 @@ open class AgentStore private constructor(
                 fields = mapOf("goal_id" to goal.id)
             )
             throw e
+        } finally {
+            // Windows Robustness: Ensure backup is gone so openRead() doesn't revert.
+            // AtomicFile.finishWrite() can fail silently on delete() if the file is busy.
+            if (backup.exists()) {
+                backup.delete()
+            }
+        }
+
+        // Verification & Fallback (Windows FS sync defense)
+        if (!target.exists() || target.readText() != text) {
+            try {
+                target.writeText(text)
+                if (backup.exists()) backup.delete()
+            } catch (e: Exception) {
+                diagnostics?.error(event = "goal_write_fallback_failed", component = "storage", throwable = e)
+            }
         }
 
         // Update cache immediately with the object we just wrote to avoid stale read-back
         // from file system with millisecond resolution issues.
         val readBack = decodeGoal(requireOpenRouterObject(text, "Written autonomous goal"))
-        goalCache[target.name] = CachedGoal(readBack, target.lastModified(), target.length())
+        
+        // Re-stat the file to get authoritative on-disk metadata for the cache.
+        // If lastModified is 0 (can happen on some systems immediately after rename), 
+        // we use current time as a safe fallback to ensure cache invalidation works.
+        val finalTimestamp = target.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
+        goalCache[target.name] = CachedGoal(readBack, finalTimestamp, target.length())
         
         if (signal) signalMutationLocked()
         return readBack
@@ -1811,7 +1845,12 @@ open class AgentStore private constructor(
             return cached.goal
         }
 
-        val raw = file.readText()
+        val raw = try {
+            AtomicFile(file).openRead().use { it.bufferedReader().readText() }
+        } catch (e: Exception) {
+            // Fallback for non-existent or corrupted files where AtomicFile might throw
+            if (file.exists()) file.readText() else throw e
+        }
         val goal = decodeGoal(requireOpenRouterObject(raw, "Stored autonomous goal"))
         
         goalCache[file.name] = CachedGoal(goal, file.lastModified(), file.length())

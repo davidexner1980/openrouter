@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.david.openassistant.ui.ConversationSummary
 import com.david.openassistant.OpenAssistantUiState
+import com.david.openassistant.ui.components.StatusBadge
 import java.text.DateFormat
 import java.util.Date
 
@@ -79,8 +80,10 @@ fun ArchiveScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(state.conversations, key = { it.id }) { conversation ->
+                val mission = state.agentGoals.firstOrNull { it.conversationId == conversation.id }
                 ConversationCard(
                     conversation = conversation,
+                    missionStatus = mission?.status,
                     selected = conversation.id == state.activeConversationId,
                     onOpen = { onOpenConversation(conversation.id) },
                     onRename = {
@@ -145,6 +148,7 @@ fun ArchiveScreen(
 @Composable
 private fun ConversationCard(
     conversation: ConversationSummary,
+    missionStatus: com.david.openassistant.agent.AgentGoalStatus?,
     selected: Boolean,
     onOpen: () -> Unit,
     onRename: () -> Unit,
@@ -182,6 +186,8 @@ private fun ConversationCard(
                         label = { Text("Active") },
                         leadingIcon = { Icon(Icons.Default.CheckCircle, null, Modifier.size(16.dp)) }
                     )
+                } else if (missionStatus != null) {
+                    StatusBadge(missionStatus)
                 }
             }
             Spacer(Modifier.height(12.dp))

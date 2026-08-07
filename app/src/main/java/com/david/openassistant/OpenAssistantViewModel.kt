@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.david.openassistant.agent.AutomationRoute
 import com.david.openassistant.agent.AutomationRouter
+import com.david.openassistant.agent.ProviderActivityStore
 import com.david.openassistant.agent.AutonomyPolicy
 import com.david.openassistant.ui.AppSection
 import com.david.openassistant.ui.ConversationSummary
@@ -123,11 +124,13 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     private val researchMonitor = ResearchMonitor(application)
     private val publicExportManager = PublicExportManager(application)
     private val attachmentStore = AttachmentStore(application) // Still needed for data URL provider
+    private val activityStore = ProviderActivityStore(application)
     
     private val _exportEvents = kotlinx.coroutines.flow.MutableSharedFlow<ExportEvent>()
     val exportEvents = _exportEvents.asSharedFlow()
     private val openRouterClient = OpenRouterClient(
         researchMonitor = researchMonitor,
+        activityStore = activityStore,
         attachmentDataUrlProvider = attachmentStore::toDataUrl,
     )
     
@@ -1197,11 +1200,15 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
 
     fun deleteAgentGoal(goalId: String) {
         viewModelScope.launch {
-            agentInteractor.cancel(goalId)
-            val snapshot = agentInteractor.deleteGoal(goalId)
-            diagnostics.warning("agent_goal_deleted", mapOf("goal_id" to goalId))
-            val counts = autonomousToolRuntime.loadToolCounts()
-            apply(snapshot, counts.activeRecipeCount, counts.workspaceFileCount)
+            runCatching {
+                agentInteractor.cancel(goalId)
+                val snapshot = agentInteractor.deleteGoal(goalId)
+                diagnostics.warning("agent_goal_deleted", mapOf("goal_id" to goalId))
+                val counts = autonomousToolRuntime.loadToolCounts()
+                apply(snapshot, counts.activeRecipeCount, counts.workspaceFileCount)
+            }.onFailure { error ->
+                _uiState.update { it.copy(agentError = "Failed to delete mission: ${error.message}") }
+            }
         }
     }
 
@@ -1253,7 +1260,16 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     }
                 }
                 val file = File(getApplication<Application>().filesDir, "RESEARCH_REPORT_${goal.id.take(8)}.md")
-                file.writeText(report)
+                val atomicFile = androidx.core.util.AtomicFile(file)
+                var stream: java.io.FileOutputStream? = null
+                try {
+                    stream = atomicFile.startWrite()
+                    stream.write(report.toByteArray(java.nio.charset.StandardCharsets.UTF_8))
+                    atomicFile.finishWrite(stream)
+                } catch (e: Exception) {
+                    atomicFile.failWrite(stream)
+                    throw e
+                }
                 _uiState.update { it.copy(agentMessage = "Report exported to internal storage: ${file.name}", agentError = null) }
             }.onFailure { error ->
                 _uiState.update { it.copy(agentError = "Failed to export report: ${error.message}", agentMessage = null) }

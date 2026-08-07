@@ -27,36 +27,60 @@ internal fun publicationAnswerWithSourceLinks(
         .filterNot { source -> normalizedAnswer.contains(source.url) }
         .take(maximumSources.coerceAtLeast(0))
         .toList()
-    if (sources.isEmpty() || maximumCharacters <= 0) {
+
+    val contradictions = claims.filter { it.support == AgentClaimSupport.CONTRADICTED }
+    val uncertainties = claims.filter { it.type == AgentClaimType.UNCERTAINTY }
+
+    val appendixBuilder = StringBuilder()
+
+    // 1. Honesty: Expose unresolved contradictions
+    if (contradictions.isNotEmpty()) {
+        appendixBuilder.append("\n\n### Unresolved contradictions\n")
+        contradictions.distinctBy { it.text.lowercase(Locale.US) }.take(5).forEach { claim ->
+            appendixBuilder.append("- ${claim.text}\n")
+        }
+    }
+
+    // 2. Honesty: Expose uncertainties
+    if (uncertainties.isNotEmpty()) {
+        appendixBuilder.append("\n\n### Uncertainties\n")
+        uncertainties.distinctBy { it.text.lowercase(Locale.US) }.take(5).forEach { claim ->
+            appendixBuilder.append("- ${claim.text}\n")
+        }
+    }
+
+    // 3. Supporting sources
+    if (sources.isNotEmpty()) {
+        appendixBuilder.append("\n\n### Supporting sources")
+        var appendedSourceCount = 0
+        sources.forEach { source ->
+            val safeUrl = source.url.replace("(", "%28").replace(")", "%29")
+            val line = "- [${source.host}]($safeUrl)"
+            if (appendixBuilder.length + line.length + 1 > maximumCharacters) return@forEach
+            appendixBuilder.append("\n").append(line)
+            appendedSourceCount += 1
+        }
+    }
+
+    if (appendixBuilder.isEmpty()) {
         return normalizedAnswer.take(maximumCharacters.coerceAtLeast(0))
     }
 
-    val appendixBuilder = StringBuilder("### Supporting sources")
-    var appendedSourceCount = 0
-    sources.forEach { source ->
-        val safeUrl = source.url.replace("(", "%28").replace(")", "%29")
-        val line = "- [${source.host}]($safeUrl)"
-        val prefix = if (appendedSourceCount == 0) "\n\n" else "\n"
-        if (appendixBuilder.length + prefix.length + line.length > maximumCharacters) {
-            return@forEach
-        }
-        appendixBuilder.append(prefix).append(line)
-        appendedSourceCount += 1
-    }
-    if (appendedSourceCount == 0) return normalizedAnswer.take(maximumCharacters)
     val appendix = appendixBuilder.toString()
     val separator = if (normalizedAnswer.isBlank()) "" else "\n\n"
     val availableAnswerCharacters =
         (maximumCharacters - separator.length - appendix.length).coerceAtLeast(0)
+    
     val boundedAnswer = if (normalizedAnswer.length <= availableAnswerCharacters) {
         normalizedAnswer
     } else {
-        val omission = "\n\n[Answer text shortened to preserve its verified source links.]"
+        val omission = "\n\n[Answer text shortened to preserve its verified research context.]"
         normalizedAnswer
             .take((availableAnswerCharacters - omission.length).coerceAtLeast(0))
             .trimEnd() + omission.take(availableAnswerCharacters)
     }
-    return boundedAnswer + separator + appendix
+    
+    return (boundedAnswer + separator + appendix).take(maximumCharacters)
 }
 
 private data class PublicationSource(val url: String, val host: String)

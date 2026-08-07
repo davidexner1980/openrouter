@@ -1,5 +1,8 @@
 package com.david.openassistant.data.openrouter
 
+import com.david.openassistant.agent.ProviderActivityStore
+import com.david.openassistant.agent.NonMissionProviderRecord
+import com.david.openassistant.agent.ExchangeOutcome
 import com.david.openassistant.BuildConfig
 import com.david.openassistant.data.diagnostics.ResearchMonitor
 import com.david.openassistant.data.network.filterSensitive
@@ -26,20 +29,21 @@ import java.util.concurrent.TimeUnit
 class OpenRouterClient(
     private val client: OkHttpClient = sharedClient,
     private val researchMonitor: ResearchMonitor? = null,
+    private val activityStore: ProviderActivityStore? = null,
     private val attachmentDataUrlProvider: (ChatAttachment) -> String = {
         error("No attachment data provider is configured.")
     },
 ) {
     suspend fun validateKey(apiKey: String): OpenRouterKeyInfo {
         val request = baseRequest(KEY_URL, apiKey).get().build()
-        val response = executeCapturedCall(request, "validate_key", null)
+        val response = executeCapturedCall(request, "validate_key", null, apiKey = apiKey)
         if (!response.successful) throw openRouterException(response.code, response.body, apiKey)
         return parseOpenRouterKeyInfo(response.body)
     }
 
     suspend fun fetchModels(apiKey: String): List<OpenRouterModel> {
         val request = baseRequest(MODELS_URL, apiKey).get().build()
-        val response = executeCapturedCall(request, "fetch_model_catalog", null)
+        val response = executeCapturedCall(request, "fetch_model_catalog", null, apiKey = apiKey)
         if (!response.successful) throw openRouterException(response.code, response.body, apiKey)
         return parseModels(response.body)
     }
@@ -79,7 +83,7 @@ class OpenRouterClient(
         val request = baseRequest(CHAT_URL, apiKey)
             .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val captured = executeCapturedCall(request, "staged_vision_chat", wirePayloadText)
+        val captured = executeCapturedCall(request, "staged_vision_chat", wirePayloadText, apiKey = apiKey)
         if (!captured.successful) throw openRouterException(captured.code, captured.body, apiKey)
         val root = requireOpenRouterObject(captured.body, "OpenRouter vision response")
         val choice = root.optJSONArray("choices")?.optJSONObject(0)
@@ -153,6 +157,7 @@ class OpenRouterClient(
                 operation = "automatic_tool_loop_round_$round",
                 requestBody = wirePayloadText,
                 prebuiltCall = call,
+                apiKey = apiKey,
             )
             if (!captured.successful) throw openRouterException(captured.code, captured.body, apiKey)
             val root = requireOpenRouterObject(captured.body, "OpenRouter automatic tool response")
@@ -313,6 +318,7 @@ class OpenRouterClient(
         call.enqueue(
             object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
+                    val duration = System.currentTimeMillis() - startedAt
                     researchMonitor?.record(
                         category = "provider",
                         event = "failure",
@@ -322,10 +328,23 @@ class OpenRouterClient(
                             "provider" to "OpenRouter",
                             "operation" to "stream_chat_completion",
                             "cancelled" to call.isCanceled(),
-                            "duration_ms" to (System.currentTimeMillis() - startedAt),
+                            "duration_ms" to duration,
                             "error_type" to e::class.java.name,
                             "error_message" to e.message.orEmpty(),
                         ),
+                    )
+                    activityStore?.recordActivity(
+                        NonMissionProviderRecord(
+                            exchangeId = exchangeId,
+                            contextType = "CONVERSATION",
+                            contextId = "stream",
+                            operation = "stream_chat",
+                            requestedModel = payload.optString("model"),
+                            outcome = if (call.isCanceled()) ExchangeOutcome.CANCELLED else ExchangeOutcome.TRANSPORT_FAILURE,
+                            startedAt = startedAt,
+                            finishedAt = System.currentTimeMillis(),
+                            failureClass = if (call.isCanceled()) "CANCELLED" else e::class.java.simpleName
+                        )
                     )
                     listener.onError(
                         OpenRouterException(
@@ -341,6 +360,7 @@ class OpenRouterClient(
 
                 override fun onResponse(call: Call, response: Response) {
                     response.use { currentResponse ->
+                        val duration = System.currentTimeMillis() - startedAt
                         if (!currentResponse.isSuccessful) {
                             val body = currentResponse.body.string()
                             researchMonitor?.record(
@@ -353,11 +373,24 @@ class OpenRouterClient(
                                     "operation" to "stream_chat_completion",
                                     "http_status" to currentResponse.code,
                                     "successful" to false,
-                                    "duration_ms" to (System.currentTimeMillis() - startedAt),
+                                    "duration_ms" to duration,
                                     "response_headers" to currentResponse.headers.filterSensitive().toString(),
-                                    "response_body" to body,
+                                    "response_body" to SecretRedactor.redact(body, apiKey),
                                     "response_bytes" to body.toByteArray().size,
                                 ),
+                            )
+                            activityStore?.recordActivity(
+                                NonMissionProviderRecord(
+                                    exchangeId = exchangeId,
+                                    contextType = "CONVERSATION",
+                                    contextId = "stream",
+                                    operation = "stream_chat",
+                                    requestedModel = payload.optString("model"),
+                                    outcome = if (currentResponse.code == 429) ExchangeOutcome.RATE_LIMITED else ExchangeOutcome.RESPONSE_ERROR,
+                                    startedAt = startedAt,
+                                    finishedAt = System.currentTimeMillis(),
+                                    failureClass = "HTTP_${currentResponse.code}"
+                                )
                             )
                             listener.onError(currentResponse.toException(body, apiKey))
                             return@use
@@ -379,6 +412,12 @@ class OpenRouterClient(
                             if (responseRecorded) return
                             responseRecorded = true
                             val safeHeaders = currentResponse.headers.filterSensitive()
+                            val finalOutcome = when {
+                                error != null -> ExchangeOutcome.RESPONSE_ERROR
+                                call.isCanceled() -> ExchangeOutcome.CANCELLED
+                                else -> ExchangeOutcome.RESPONSE_SUCCESS
+                            }
+                            val summary = mutableSummary.toImmutable()
                             researchMonitor?.record(
                                 category = "provider",
                                 event = "response",
@@ -392,11 +431,28 @@ class OpenRouterClient(
                                     "cancelled" to call.isCanceled(),
                                     "duration_ms" to (System.currentTimeMillis() - startedAt),
                                     "response_headers" to safeHeaders.toString(),
-                                    "response_body_sse" to rawStream.toString(),
+                                    "response_body_sse" to SecretRedactor.redact(rawStream.toString(), apiKey),
                                     "stream_capture_truncated" to (rawStream.length >= MAX_CAPTURED_STREAM_CHARS),
                                     "error_type" to error?.let { it::class.java.name },
                                     "error_message" to error?.message,
                                 ),
+                            )
+                            activityStore?.recordActivity(
+                                NonMissionProviderRecord(
+                                    exchangeId = exchangeId,
+                                    contextType = "CONVERSATION",
+                                    contextId = "stream",
+                                    operation = "stream_chat",
+                                    requestedModel = payload.optString("model"),
+                                    outcome = finalOutcome,
+                                    promptTokens = summary.promptTokens,
+                                    completionTokens = summary.completionTokens,
+                                    totalTokens = summary.totalTokens,
+                                    costUsdMicros = summary.cost?.let { (it * 1_000_000).toLong() },
+                                    startedAt = startedAt,
+                                    finishedAt = System.currentTimeMillis(),
+                                    failureClass = error?.javaClass?.simpleName
+                                )
                             )
                         }
 
@@ -567,11 +623,12 @@ class OpenRouterClient(
     }
 
 
-    private suspend fun executeCapturedCall(
+    private fun executeCapturedCall(
         request: Request,
         operation: String,
         requestBody: String?,
         prebuiltCall: Call? = null,
+        apiKey: String? = null,
     ): CapturedHttpResponse {
         val exchangeId = "openrouter-${UUID.randomUUID()}"
         val startedAt = System.currentTimeMillis()
@@ -613,9 +670,27 @@ class OpenRouterClient(
                         "successful" to semanticSuccess,
                         "duration_ms" to (System.currentTimeMillis() - startedAt),
                         "response_headers" to response.headers.filterSensitive().toString(),
-                        "response_body" to body,
+                        "response_body" to SecretRedactor.redact(body, apiKey),
                         "response_bytes" to body.toByteArray().size,
                     ),
+                )
+                activityStore?.recordActivity(
+                    NonMissionProviderRecord(
+                        exchangeId = exchangeId,
+                        contextType = "INFRASTRUCTURE",
+                        contextId = operation,
+                        operation = operation,
+                        requestedModel = "meta",
+                        outcome = when {
+                            semanticSuccess -> ExchangeOutcome.RESPONSE_SUCCESS
+                            response.code == 429 -> ExchangeOutcome.RATE_LIMITED
+                            response.code == 401 || response.code == 403 -> ExchangeOutcome.AUTHENTICATION_FAILED
+                            else -> ExchangeOutcome.RESPONSE_ERROR
+                        },
+                        startedAt = startedAt,
+                        finishedAt = System.currentTimeMillis(),
+                        failureClass = if (!semanticSuccess) "HTTP_${response.code}" else null
+                    )
                 )
                 CapturedHttpResponse(response.code, semanticSuccess, body)
             }

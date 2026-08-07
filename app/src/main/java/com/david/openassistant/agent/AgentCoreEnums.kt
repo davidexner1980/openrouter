@@ -59,7 +59,6 @@ fun AgentGoalStatus.isInactive(): Boolean = this in setOf(
     AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
     AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
     AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-    AgentGoalStatus.FINALIZING,
     AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
     AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
 )
@@ -75,6 +74,7 @@ fun AgentGoalStatus.isActivePhase(): Boolean = this in setOf(
     AgentGoalStatus.SYNTHESIZING,
     AgentGoalStatus.VERIFYING,
     AgentGoalStatus.RECOVERING,
+    AgentGoalStatus.FINALIZING,
 )
 
 enum class AgentTaskStatus {

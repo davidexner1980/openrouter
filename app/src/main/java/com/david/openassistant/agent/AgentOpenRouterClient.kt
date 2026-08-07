@@ -393,6 +393,7 @@ open class AgentOpenRouterClient internal constructor(
     protected val store: AgentStore? = null,
     private val terminalHook: TerminalTransitionHook? = null,
     private val postActiveHook: PostActivePreDispatchHook? = null,
+    private val activityStore: ProviderActivityStore? = null,
 ) {
     private val missionClient: OkHttpClient = client.newBuilder()
         .retryOnConnectionFailure(false)
@@ -749,7 +750,13 @@ open class AgentOpenRouterClient internal constructor(
                 is MissionDispatchResult.ExistingAmbiguous -> RecoveryProposalGenerationResult.ReconciliationRequired(result.attempt, ProviderReconciliationFailureKind.DELIVERY_AMBIGUOUS, "Operation delivery is ambiguous; zero-replay policy prevents automatic dispatch.")
                 is MissionDispatchResult.ExistingInFlight -> RecoveryProposalGenerationResult.ReconciliationRequired(result.attempt, ProviderReconciliationFailureKind.EXISTING_IN_FLIGHT, "Existing active request owned by another worker or session.")
                 is MissionDispatchResult.ExistingNotDispatched -> RecoveryProposalGenerationResult.RetryableTransportFailure(
-                    FailureDescriptor(FailureDomain.PROVIDER, "NOT_DISPATCHED", FailureScope.REQUEST, RetryPolicy.IMMEDIATE_AFTER_LOCAL_REPAIR, null, null, null, null, null, null, null, "Not dispatched"),
+                    FailureDescriptor(
+                        domain = FailureDomain.PROVIDER,
+                        failureClass = "NOT_DISPATCHED",
+                        scope = FailureScope.REQUEST,
+                        retryPolicy = RetryPolicy.IMMEDIATE_AFTER_LOCAL_REPAIR,
+                        safeDiagnosticSummary = "Not dispatched"
+                    ),
                     result.attempt
                 )
                 is MissionDispatchResult.ExistingTerminalFailure -> RecoveryProposalGenerationResult.AlternateStrategyRequired(ProviderReconciliationFailureKind.EXISTING_TERMINAL_FAILURE, "Operation has already reached a terminal failure state.", result.attempt)

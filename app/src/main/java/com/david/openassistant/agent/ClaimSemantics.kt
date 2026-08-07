@@ -5,18 +5,30 @@ import java.util.Locale
 data class SourceRead(
     val id: String,
     val url: String,
-    val canonicalUrl: String,
+    override val canonicalUrl: String,
     val documentId: String,
-    val contentHash: String,
+    override val contentHash: String,
     val httpCode: Int,
     val contentType: String,
-    val content: String,
+    override val content: String,
     val sourceRole: String,
     val authorityScore: Int,
-    val retrievedAt: Long = System.currentTimeMillis(),
+    override val retrievedAt: Long = System.currentTimeMillis(),
     val readAt: Long = System.currentTimeMillis(),
     val provenance: SourceReadProvenance = SourceReadProvenance.UNVERIFIED_CITATION,
-)
+) : SourceSnapshot {
+    override val isPublicationGrade: Boolean
+        get() = when (provenance) {
+            SourceReadProvenance.VERIFIED_FETCH -> true
+            SourceReadProvenance.PROVIDER_EXTRACT -> {
+                // Substantial extracts are publication-grade; snippets are not.
+                // MIN_PROVIDER_EXTRACT_CHARS = 600
+                content.length >= 600 && !sourceRole.contains("snippet", ignoreCase = true)
+            }
+            SourceReadProvenance.LEGACY_ASSUMED -> false
+            SourceReadProvenance.UNVERIFIED_CITATION -> false
+        }
+}
 
 data class EvidenceCandidate(
     val id: String,
@@ -313,14 +325,18 @@ internal fun mergeSourceReads(existing: List<SourceRead>, incoming: List<SourceR
             result[incomingRead.id] = incomingRead
         } else {
             // IMMUTABILITY: If it exists, do not change identity-bearing or historical fields.
+            // Preservation: Keep the EARLIEST retrievedAt to maintain truthful provenance.
+            val earliestRetrievedAt = minOf(existingRead.retrievedAt, incomingRead.retrievedAt)
+            
             // However, we can preserve the strongest provenance if it's the same content snapshot.
             val existingStrength = existingRead.provenance.provenanceStrength()
             val incomingStrength = incomingRead.provenance.provenanceStrength()
             
-            if (incomingStrength > existingStrength) {
-                // Update provenance but KEEP existing retrievedAt and identity fields
+            if (incomingStrength > existingStrength || earliestRetrievedAt < existingRead.retrievedAt) {
+                // Update provenance if stronger, and always use earliest timestamp
                 result[incomingRead.id] = existingRead.copy(
-                    provenance = incomingRead.provenance
+                    provenance = if (incomingStrength > existingStrength) incomingRead.provenance else existingRead.provenance,
+                    retrievedAt = earliestRetrievedAt
                 )
             }
         }

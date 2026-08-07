@@ -28,14 +28,25 @@ sealed interface SchedulingResult {
     data class EnqueueFailed(val error: Throwable) : SchedulingResult
 }
 
-class AgentScheduler(context: Context) {
-    private val workManager = WorkManager.getInstance(context.applicationContext)
+interface IAgentScheduler {
+    fun enqueue(goalId: String, replace: Boolean = false, generation: Int = 0)
+    fun enqueueAndWait(goalId: String, replace: Boolean = false, generation: Int = 0, activeLease: AgentExecutionLease? = null): SchedulingResult
+    fun enqueueContinuation(goalId: String, generation: Int = 0, fingerprint: String? = null): SchedulingResult
+    fun cancel(goalId: String, generation: Int = 0)
+    fun cancelAndWait(goalId: String, generation: Int = 0)
+    fun cancelAllForGoal(goalId: String)
+    fun isWorkRunning(goalId: String, generation: Int = 0): Boolean
+    fun schedulePeriodicRecovery()
+}
+
+open class AgentScheduler(context: Context) : IAgentScheduler {
+    private val workManager = try { WorkManager.getInstance(context.applicationContext) } catch (e: Exception) { null }
     private val store = AgentStore(context.applicationContext)
     private val diagnostics = com.david.openassistant.data.diagnostics.RuntimeDiagnostics(context.applicationContext)
 
-    fun enqueue(goalId: String, replace: Boolean = false, generation: Int = 0) {
+    override fun enqueue(goalId: String, replace: Boolean, generation: Int) {
         val request = createRequest(goalId)
-        workManager.enqueueUniqueWork(
+        workManager?.enqueueUniqueWork(
             uniqueWorkName(goalId, generation),
             if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
             request,
@@ -46,11 +57,11 @@ class AgentScheduler(context: Context) {
      * Enqueues unique work with KEEP and inspects WorkInfo readback to classify results without fake UUIDs.
      * Implements pre-enqueue coalescing by inspecting current WorkManager state and active lease.
      */
-    fun enqueueAndWait(
+    override fun enqueueAndWait(
         goalId: String,
-        replace: Boolean = false,
-        generation: Int = 0,
-        activeLease: AgentExecutionLease? = null
+        replace: Boolean,
+        generation: Int,
+        activeLease: AgentExecutionLease?
     ): SchedulingResult {
         diagnostics.info(
             event = "mission_schedule_requested",
@@ -63,9 +74,11 @@ class AgentScheduler(context: Context) {
             return SchedulingResult.CoalescedDuplicate("Goal has a valid active lease for worker ${activeLease.workerId}")
         }
 
+        val wm = workManager ?: return SchedulingResult.EnqueueFailed(IllegalStateException("WorkManager not available"))
+
         // 2. Pre-enqueue WorkManager state check
         val existingWork = runCatching {
-            workManager.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get(3, TimeUnit.SECONDS)
+            wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get(3, TimeUnit.SECONDS)
         }.getOrNull()?.firstOrNull { info ->
             info.state == WorkInfo.State.ENQUEUED ||
                 info.state == WorkInfo.State.RUNNING ||
@@ -79,7 +92,7 @@ class AgentScheduler(context: Context) {
         val request = createRequest(goalId)
 
         val enqueueResult = runCatching {
-            val operation = workManager.enqueueUniqueWork(
+            val operation = wm.enqueueUniqueWork(
                 uniqueWorkName(goalId, generation),
                 if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                 request,
@@ -93,7 +106,7 @@ class AgentScheduler(context: Context) {
         }
 
         val workInfosResult = runCatching {
-            workManager.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get(3, TimeUnit.SECONDS)
+            wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get(3, TimeUnit.SECONDS)
         }
 
         if (workInfosResult.isFailure) {
@@ -148,7 +161,8 @@ class AgentScheduler(context: Context) {
         return finalResult
     }
 
-    fun enqueueContinuation(goalId: String, generation: Int = 0, fingerprint: String? = null): SchedulingResult {
+    override fun enqueueContinuation(goalId: String, generation: Int, fingerprint: String?): SchedulingResult {
+        val wm = workManager ?: return SchedulingResult.EnqueueFailed(IllegalStateException("WorkManager not available"))
         val f = fingerprint ?: "none"
         val workName = uniqueWorkName(goalId, generation)
         
@@ -165,7 +179,7 @@ class AgentScheduler(context: Context) {
             val request = createRequest(goalId)
             
             // 2. Enqueue unique work with APPEND_OR_REPLACE
-            val operation = workManager.enqueueUniqueWork(
+            val operation = wm.enqueueUniqueWork(
                 workName,
                 ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request,
@@ -175,7 +189,7 @@ class AgentScheduler(context: Context) {
             operation.result.get(OPERATION_WAIT_SECONDS, TimeUnit.SECONDS)
             
             // 4. Query WorkInfo
-            val infos = workManager.getWorkInfosForUniqueWork(workName).get(3, TimeUnit.SECONDS)
+            val infos = wm.getWorkInfosForUniqueWork(workName).get(3, TimeUnit.SECONDS)
             val info = infos.firstOrNull { it.id == request.id } ?: infos.firstOrNull { 
                 it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.BLOCKED
             }
@@ -198,17 +212,17 @@ class AgentScheduler(context: Context) {
         }
     }
 
-    fun cancel(goalId: String, generation: Int = 0) {
+    override fun cancel(goalId: String, generation: Int) {
         AgentCallCancellationRegistry.cancel(goalId)
-        workManager.cancelUniqueWork(uniqueWorkName(goalId, generation))
+        workManager?.cancelUniqueWork(uniqueWorkName(goalId, generation))
     }
 
-    fun cancelAndWait(goalId: String, generation: Int = 0) {
+    override fun cancelAndWait(goalId: String, generation: Int) {
         AgentCallCancellationRegistry.cancel(goalId)
         try {
-            workManager.cancelUniqueWork(uniqueWorkName(goalId, generation))
-                .result
-                .get(CANCELLATION_WAIT_SECONDS, TimeUnit.SECONDS)
+            workManager?.cancelUniqueWork(uniqueWorkName(goalId, generation))
+                ?.result
+                ?.get(CANCELLATION_WAIT_SECONDS, TimeUnit.SECONDS)
         } catch (error: Throwable) {
             android.util.Log.w("AgentScheduler", "WorkManager cancellation wait failed for $goalId", error)
             if (error is InterruptedException) {
@@ -217,21 +231,23 @@ class AgentScheduler(context: Context) {
         }
     }
 
-    fun cancelAllForGoal(goalId: String) {
+    override fun cancelAllForGoal(goalId: String) {
         AgentCallCancellationRegistry.cancel(goalId)
-        workManager.cancelAllWorkByTag(goalTag(goalId))
+        workManager?.cancelAllWorkByTag(goalTag(goalId))
     }
 
-    fun isWorkRunning(goalId: String, generation: Int = 0): Boolean {
+    override fun isWorkRunning(goalId: String, generation: Int): Boolean {
+        val wm = workManager ?: return false
         return try {
-            val infos = workManager.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get()
+            val infos = wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get()
             infos.any { it.state == androidx.work.WorkInfo.State.RUNNING }
         } catch (e: Exception) {
             false
         }
     }
 
-    fun schedulePeriodicRecovery() {
+    override fun schedulePeriodicRecovery() {
+        val wm = workManager ?: return
         val request = PeriodicWorkRequestBuilder<MissionRecoveryWorker>(30, TimeUnit.MINUTES)
             .addTag("mission_recovery_watchdog")
             .setConstraints(
@@ -241,7 +257,7 @@ class AgentScheduler(context: Context) {
             )
             .build()
         
-        workManager.enqueueUniquePeriodicWork(
+        wm.enqueueUniquePeriodicWork(
             "mission_recovery_watchdog",
             ExistingPeriodicWorkPolicy.KEEP,
             request

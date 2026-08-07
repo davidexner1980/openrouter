@@ -66,10 +66,11 @@ object ProviderRequestLedger {
         claimGeneration: Int = 0,
         effectFingerprint: String? = null,
         targetObjectIds: List<String> = emptyList(),
+        ticket: AgentOwnershipTicket? = null,
     ): Boolean {
         var claimed = false
         val now = System.currentTimeMillis()
-        store.updateGoal(goalId) { goal ->
+        store.updateGoalAtomic(goalId, ticket) { goal ->
             val existing = goal.idempotencyRecords.firstOrNull { it.key == key }
             if (existing != null) {
                 if (existing.state == IdempotencyState.COMMITTED) {
@@ -117,9 +118,10 @@ object ProviderRequestLedger {
         store: AgentStore,
         goalId: String,
         reconciliationOwner: String,
+        ticket: AgentOwnershipTicket? = null,
     ) {
         val now = System.currentTimeMillis()
-        store.updateGoal(goalId) { goal ->
+        store.updateGoalAtomic(goalId, ticket) { goal ->
             var modified = false
             val updatedAttempts = goal.requestAttempts.map { attempt ->
                 if (attempt.exchangeOutcome == ExchangeOutcome.ACTIVE) {

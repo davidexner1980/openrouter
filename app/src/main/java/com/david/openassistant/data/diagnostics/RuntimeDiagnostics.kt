@@ -418,7 +418,8 @@ open class RuntimeDiagnostics internal constructor(
         private val FORBIDDEN_FIELD_NAMES = setOf(
             "api_key", "apikey", "authorization", "cookie", "set_cookie", "credential",
             "password", "private_key", "secret", "token", "access_token", "refresh_token",
-            "reasoning", "hidden_reasoning", "prompt", "request_text", "response_text", "message_content"
+            "reasoning", "hidden_reasoning", "prompt", "request_text", "response_text", "message_content",
+            "latitude", "longitude", "altitude"
         )
         private val FILE_LOCK = Any()
         private val INITIALIZED = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -466,4 +467,6 @@ private val DIAGNOSTIC_SECRET_PATTERNS = listOf(
     Regex("\\bsk-or(?:-v1)?-[A-Za-z0-9_-]{8,}\\b"),
     Regex("\\bsk-[A-Za-z0-9_-]{16,}\\b"),
     Regex("(?i)\\b(api[_-]?key|authorization|access[_-]?token|token)=([^&\\s]+)"),
+    Regex("(?i)(\\\"(?:latitude|longitude|altitude)\\\"\\s*:\\s*)-?\\d+(?:\\.\\d+)?"),
+    Regex("(?i)\\b(latitude|longitude|altitude)=([^&\\s]+)"),
 )

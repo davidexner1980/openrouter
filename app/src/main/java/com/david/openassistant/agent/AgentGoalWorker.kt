@@ -29,12 +29,14 @@ class AgentGoalWorker(
     private val keyStore = ApiKeyStore(appContext)
     private val toolRuntime = AutonomousToolRuntime(appContext)
     private val autonomyPolicy = AutonomyPolicy.DEFAULT
+    private val activityStore = ProviderActivityStore(appContext)
     private val client = AgentOpenRouterClient(
         toolRuntime = toolRuntime,
         autonomyPolicy = autonomyPolicy,
         researchMonitor = researchMonitor,
         diagnostics = diagnostics,
         store = store,
+        activityStore = activityStore,
     )
     private val scheduler = AgentScheduler(appContext)
 
@@ -143,6 +145,7 @@ class AgentGoalWorker(
                                     current.copy(
                                         status = current.resumeStatusAfterNetwork ?: AgentGoalStatus.QUEUED,
                                         networkRetryCount = current.networkRetryCount + 1,
+                                        nextRetryAt = null,
                                         events = appendEvent(current.events, "Automatically resumed mission after network wait.")
                                     )
                                 } else current
@@ -215,7 +218,11 @@ class AgentGoalWorker(
                             NoTaskDecision.WAIT_FOR_NETWORK -> {
                                 store.updateGoalAtomic(goalId, null) { current ->
                                     if (current.status != AgentGoalStatus.WAITING_FOR_NETWORK) {
-                                        current.copy(status = AgentGoalStatus.WAITING_FOR_NETWORK, networkWaitReason = "All tasks waiting for network.")
+                                        current.copy(
+                                            status = AgentGoalStatus.WAITING_FOR_NETWORK,
+                                            networkWaitReason = "All tasks waiting for network.",
+                                            resumeStatusAfterNetwork = current.status
+                                        )
                                     } else current
                                 }
                                 return@coroutineScope Result.success()
@@ -396,7 +403,7 @@ class AgentGoalWorker(
                     activeTicket = ticket
 
                     // Canonical controlled stale-exchange reconciliation under goal lease lock
-                    ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId)
+                    ProviderRequestLedger.reconcileStaleExchanges(store, goalId, workerId, activeTicket)
                     
                     // Protocol 42.6: Reload snapshot after potential reconciliation mutations to ensure
                     // subsequent priority and allocation checks use the ground truth.
@@ -631,6 +638,17 @@ class AgentGoalWorker(
                             ),
                         )
                         finalizeMonitorForTerminalGoal(goalId)
+                        
+                        // V43: Transition FINALIZING missions to their terminal state after report generation
+                        val snapshotAfterFinalize = findGoal(goalId)
+                        if (snapshotAfterFinalize?.status == AgentGoalStatus.FINALIZING) {
+                            store.updateGoalAtomic(goalId, activeTicket) { current ->
+                                if (current.status == AgentGoalStatus.FINALIZING) {
+                                    current.copy(status = AgentGoalStatus.CANCELLED)
+                                } else current
+                            }
+                        }
+                        
                         workerResult
                     } finally {
                         heartbeatJob.cancel()
@@ -714,7 +732,9 @@ class AgentGoalWorker(
 
     private fun finalizeMonitorForTerminalGoal(goalId: String) {
         val finalGoal = findGoal(goalId) ?: return
-        if (!finalGoal.status.isFinalTerminalStatus() && finalGoal.status !in setOf(AgentGoalStatus.FAILED, AgentGoalStatus.BLOCKED)) return
+        if (!finalGoal.status.isFinalTerminalStatus() && 
+            finalGoal.status !in setOf(AgentGoalStatus.FAILED, AgentGoalStatus.BLOCKED, AgentGoalStatus.FINALIZING)
+        ) return
         if (!researchMonitor.isActive()) return
         researchMonitor.record(
             category = "mission",

@@ -131,20 +131,6 @@ object FactualClaimSupportPolicy {
             }
         }
 
-        // Admissibility
-        val isPublicationGradeProvenance = when (read.provenance) {
-            SourceReadProvenance.VERIFIED_FETCH -> true
-            SourceReadProvenance.PROVIDER_EXTRACT -> true
-            SourceReadProvenance.LEGACY_ASSUMED -> {
-                reasons.add("legacy_evidence_requires_revalidation")
-                false
-            }
-            SourceReadProvenance.UNVERIFIED_CITATION -> {
-                reasons.add("unverified_citation_inadmissible")
-                false
-            }
-        }
-
         // Claim-to-passage alignment (Fail-closed)
         val alignment = alignClaimToPassage(claim, binding, read)
         if (!alignment.isSupported) {
@@ -155,8 +141,18 @@ object FactualClaimSupportPolicy {
             return BindingValidation(false, false, reasons)
         }
 
-        val isValid = reasons.isEmpty() || (reasons.all { it == "legacy_evidence_requires_revalidation" } && alignment.isSupported)
-        val isPublicationGrade = isValid && isPublicationGradeProvenance
+        val isValid = reasons.isEmpty()
+
+        // Admissibility: Search snippets are candidates only; they do NOT support publication-grade claims.
+        val isPublicationGrade = isValid && read.isPublicationGrade
+
+        if (isValid && read.provenance == SourceReadProvenance.LEGACY_ASSUMED) {
+            reasons.add("legacy_evidence_requires_revalidation")
+        }
+
+        if (isValid && !read.isPublicationGrade) {
+            reasons.add("source_is_candidate_only_snippet_or_unverified")
+        }
 
         return BindingValidation(isValid, isPublicationGrade, reasons)
     }
@@ -165,6 +161,12 @@ object FactualClaimSupportPolicy {
 
     private fun alignClaimToPassage(claim: AgentClaim, binding: CitationBinding, read: SourceRead): AlignmentResult {
         if (binding.passageStart == null || binding.passageEnd == null) return AlignmentResult(false)
+        
+        // Ensure bounds are valid for the current content to avoid IndexOutOfBoundsException during re-evaluation
+        if (binding.passageStart < 0 || binding.passageEnd > read.content.length || binding.passageStart >= binding.passageEnd) {
+            return AlignmentResult(false)
+        }
+
         val passage = read.content.substring(binding.passageStart, binding.passageEnd).trim()
         
         if (passage.isBlank() || passage.length < 4) return AlignmentResult(false)

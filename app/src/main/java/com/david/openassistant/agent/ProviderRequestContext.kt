@@ -17,6 +17,12 @@ sealed class ProviderRequestContext {
         val parentOperationId: String,
         val logicalRequestId: String? = null,
         val recoveryPlanId: String? = null,
+        val startTime: Long = System.currentTimeMillis(),
+        val lastProgressTime: Long = startTime,
+        val deadline: Long? = null,
+        val attemptCount: Int = 1,
+        val generation: Int = executionGeneration,
+        val ownerId: String = workerId,
     ) : ProviderRequestContext() {
         fun toTicket(acquiredAt: Long): AgentOwnershipTicket {
             val session = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID

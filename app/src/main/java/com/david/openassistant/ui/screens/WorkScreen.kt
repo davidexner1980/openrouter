@@ -221,54 +221,6 @@ private fun AgentGoalListCard(
     }
 }
 
-@Composable
-fun StatusBadge(status: AgentGoalStatus) {
-    val (color, text) = when (status) {
-        AgentGoalStatus.PLANNING -> MaterialTheme.colorScheme.tertiary to "Planning"
-        AgentGoalStatus.QUEUED -> MaterialTheme.colorScheme.secondary to "Queued"
-        AgentGoalStatus.RUNNING,
-        AgentGoalStatus.RESEARCHING,
-        AgentGoalStatus.RETRIEVING,
-        AgentGoalStatus.EXTRACTING,
-        AgentGoalStatus.VERIFYING,
-        AgentGoalStatus.VALIDATING,
-        AgentGoalStatus.SYNTHESIZING,
-        AgentGoalStatus.RECOVERING -> MaterialTheme.colorScheme.primary to status.name.lowercase().replaceFirstChar(Char::uppercase)
-        AgentGoalStatus.WAITING_FOR_CREDENTIAL -> MaterialTheme.colorScheme.error to "Key Needed"
-        AgentGoalStatus.WAITING_FOR_NETWORK -> MaterialTheme.colorScheme.secondary to "Network"
-        AgentGoalStatus.WAITING_FOR_USER,
-        AgentGoalStatus.REQUIRES_USER_CLARIFICATION -> MaterialTheme.colorScheme.tertiary to "User Action"
-        AgentGoalStatus.COMPLETED,
-        AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS -> MissionSuccess to "Success"
-        AgentGoalStatus.FAILED,
-        AgentGoalStatus.REJECTED,
-        AgentGoalStatus.BLOCKED,
-        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
-        AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
-        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION -> MaterialTheme.colorScheme.error to "Blocked"
-        AgentGoalStatus.PAUSED,
-        AgentGoalStatus.CANCELLED -> MaterialTheme.colorScheme.outline to status.name.lowercase().replaceFirstChar(Char::uppercase)
-        AgentGoalStatus.CANCELLING,
-        AgentGoalStatus.FINALIZING -> MaterialTheme.colorScheme.primary to status.name.lowercase().replaceFirstChar(Char::uppercase)
-    }
-    
-    Surface(
-        color = color.copy(alpha = 0.12f),
-        shape = RoundedCornerShape(4.dp),
-    ) {
-        Text(
-            text = text.uppercase(),
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.ExtraBold,
-            color = color
-        )
-    }
-}
 
 @Composable
 private fun AgentGoalDetailCard(
@@ -405,9 +357,16 @@ private fun AgentGoalDetailCard(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        StatItem("Claims", goal.claims.size.toString(), Modifier.weight(1f))
+                        StatItem("Conflicts", goal.contradictedClaimCount.toString(), Modifier.weight(1f))
+                        StatItem("Total Cost", "$${"%.3f".format(goal.totalCostUsd)}", Modifier.weight(1f))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         StatItem("Integrity", percentLabel(goal.integrityScore), Modifier.weight(1f))
                         StatItem("Health", percentLabel(goal.graphHealthScore), Modifier.weight(1f))
-                        StatItem("Total Cost", "$${"%.3f".format(goal.totalCostUsd)}", Modifier.weight(1f))
                     }
                 }
             }
@@ -517,6 +476,33 @@ private fun MissionCommandPanel(goal: AgentGoal) {
 
             goal.missionNextMove()?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+            }
+
+            if (goal.status == AgentGoalStatus.RECOVERING || goal.nextRetryAt != null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Autorenew, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.secondary)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                if (goal.status == AgentGoalStatus.RECOVERING) "Recovery in progress" else "Scheduled for retry",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        goal.nextRetryAt?.let { retryAt ->
+                            val secondsLeft = (retryAt - System.currentTimeMillis()) / 1000
+                            if (secondsLeft > 0) {
+                                Text("Retrying in ${secondsLeft}s...", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
             }
 
             activeTask?.let { task ->

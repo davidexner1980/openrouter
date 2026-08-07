@@ -6,6 +6,7 @@ import com.david.openassistant.agent.AgentGoalStatus
 import com.david.openassistant.agent.AgentLifecycleReducer
 import com.david.openassistant.domain.model.AgentModelSelector
 import com.david.openassistant.agent.AgentRoutingStage
+import com.david.openassistant.agent.IAgentScheduler
 import com.david.openassistant.agent.AgentScheduler
 import com.david.openassistant.agent.AgentSnapshot
 import com.david.openassistant.agent.AgentStore
@@ -93,7 +94,7 @@ sealed class MissionStartResult {
 class AgentInteractor internal constructor(
     context: Context?,
     private val agentStore: AgentStore?,
-    private val agentScheduler: AgentScheduler?,
+    private val agentScheduler: IAgentScheduler?,
     private val boundaryHook: MissionStartBoundaryHook?
 ) : AgentRefreshSource {
     
@@ -366,7 +367,7 @@ class AgentInteractor internal constructor(
                             monitor = monitor,
                             goalId = existingGoal.id,
                             submissionId = startingDraft.id,
-                            exceptionType = schedResult::class.java.simpleName,
+                            exceptionType = schedResult.javaClass.simpleName,
                             message = schedResult.toString(),
                             policy = "KEEP",
                             type = "reused",
@@ -626,7 +627,7 @@ class AgentInteractor internal constructor(
                     monitor = monitor,
                     goalId = createdGoal.id,
                     submissionId = startingDraft.id,
-                    exceptionType = schedResult::class.java.simpleName,
+                    exceptionType = schedResult.javaClass.simpleName,
                     message = schedResult.toString(),
                     policy = "KEEP",
                     type = if (recoveryReason != null) "recovery" else "initial",
