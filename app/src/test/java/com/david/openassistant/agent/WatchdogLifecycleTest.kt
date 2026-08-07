@@ -112,6 +112,19 @@ class WatchdogLifecycleTest {
         assertFalse("Watchdog should skip PAUSED goal even with stale lease", isRecoverable)
     }
 
+    @Test
+    fun testWatchdogRecoversNetworkWaitGoalWithoutTimestamp() {
+        val goal = createTestGoal(status = AgentGoalStatus.WAITING_FOR_NETWORK).copy(nextRetryAt = null)
+        store.saveSnapshot(AgentSnapshot(goals = listOf(goal)))
+
+        val snapshot = store.loadSnapshot()
+        val loadedGoal = snapshot.goals.first()
+        val now = System.currentTimeMillis()
+        val isRecoverable = isRecoverableInWorker(loadedGoal, now)
+        
+        assertTrue("Watchdog should recover WAITING_FOR_NETWORK goal even without timestamp", isRecoverable)
+    }
+
     /**
      * Mimics UPDATED logic from MissionRecoveryWorker.kt
      */
@@ -121,7 +134,7 @@ class WatchdogLifecycleTest {
         
         val isRecoverableStatus = when {
             goal.status.isActivePhase() -> true
-            goal.status == AgentGoalStatus.WAITING_FOR_NETWORK -> goal.nextRetryAt != null && now >= goal.nextRetryAt
+            goal.status == AgentGoalStatus.WAITING_FOR_NETWORK -> goal.nextRetryAt == null || now >= goal.nextRetryAt
             else -> false
         }
         

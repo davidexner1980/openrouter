@@ -218,14 +218,16 @@ class AgentGoalWorker(
                             NoTaskDecision.WAIT_FOR_NETWORK -> {
                                 store.updateGoalAtomic(goalId, null) { current ->
                                     if (current.status != AgentGoalStatus.WAITING_FOR_NETWORK) {
+                                        val backoffMs = BackoffUtils.computeBackoff(current.networkRetryCount + 1)
                                         current.copy(
                                             status = AgentGoalStatus.WAITING_FOR_NETWORK,
                                             networkWaitReason = "All tasks waiting for network.",
-                                            resumeStatusAfterNetwork = current.status
+                                            resumeStatusAfterNetwork = current.status,
+                                            nextRetryAt = System.currentTimeMillis() + backoffMs
                                         )
                                     } else current
                                 }
-                                return@coroutineScope Result.success()
+                                return@coroutineScope Result.retry()
                             }
                             NoTaskDecision.WAIT_FOR_CREDENTIAL -> {
                                 waitForCredential(goalId, null, "Waiting for a valid OpenRouter credential.")

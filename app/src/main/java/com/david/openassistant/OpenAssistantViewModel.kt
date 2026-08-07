@@ -2519,6 +2519,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
                 AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
                 AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+                AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
             )
         }
         if (pending.isEmpty()) return false
@@ -2559,6 +2560,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
                     AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
                     AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
+                    AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
                     -> buildString {
                         appendLine("### Research Mission Stopped With Partial Evidence")
                         appendLine()

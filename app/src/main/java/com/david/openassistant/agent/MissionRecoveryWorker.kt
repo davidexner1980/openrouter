@@ -61,7 +61,7 @@ class MissionRecoveryWorker(
             // REQUIRED CHANGE 7: Watchdog must respect durable intent
             val isRecoverableStatus = when {
                 goal.status.isActivePhase() -> true
-                goal.status == AgentGoalStatus.WAITING_FOR_NETWORK -> goal.nextRetryAt != null && now >= goal.nextRetryAt
+                goal.status == AgentGoalStatus.WAITING_FOR_NETWORK -> goal.nextRetryAt == null || now >= goal.nextRetryAt
                 else -> {
                     if (goal.status == AgentGoalStatus.PAUSED && (lease == null || isStale)) {
                         diagnostics.info("watchdog_skipped_user_paused_goal", mapOf("goal_id" to goal.id))

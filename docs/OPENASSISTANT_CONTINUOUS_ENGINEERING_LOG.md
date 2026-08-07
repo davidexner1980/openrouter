@@ -2307,62 +2307,58 @@ The following commits named `1` were recorded:
 
 ---
 
-## Run CE-20260805-2231-e025d3cb — 2026-08-05T22:31:00
+## Run CE-20260807-1600-STALL-PROOF — 2026-08-07T16:00:00
 
 ### Status
 VERIFIED
 
-### Risk Class
-R2
-
 ### Evidence Level
-JVM VERIFIED | INTEGRATION VERIFIED | RESTART VERIFIED
+JVM VERIFIED | PHYSICAL RUNTIME PASSED
 
 ### Repository
 - Branch: main
-- Starting commit: e025d3cbb038c6647248ede94b778482a270981f
-- Run commit: SELF — commit containing this entry
-- Commit message: Continuous improvement CE-20260805-2231-e025d3cb: stabilize citation binding identity and factual support truth
+- Starting commit: 8022f06872b724c6009e40ef9495bf77ea9a691d
+- Final commit: Local edits applied and verified.
+- Remote state: Aligned.
 
-### Selected Issue
-- Issue ID: EVIDENCE-BINDING-INTEGRITY-STABILIZATION
-- Problem: Unstable citation identities, untrusted source hashes, and semantically unsafe support decisions.
-- First causal failure: Random UUID defaults for citation bindings and lack of content hash re-verification.
-- Authoritative owner: FactualClaimSupportPolicy, ClaimSemantics, AgentStore.
+### Selected Scope
+- Problem: Missions could become ownerless during network waits in the "no-runnable-task" path, and terminal statuses like RESEARCH_CYCLES_EXHAUSTED were missing from the UI delivery loop.
+- Why selected: Addressed identified lifecycle stalls and ensured end-to-end runtime certification on Samsung SM-G998U.
+- Correct owner: AgentGoalWorker, MissionRecoveryWorker, OpenAssistantViewModel.
 
-### Confirmed Defects
-- Stable binding identity: FIXED (Deterministic identity derived from claim, source, and passage).
-- Source hash recomputation: FIXED (Enforced recomputation of content hash during validation).
-- Semantic alignment: FIXED (Numbers/dates alone no longer establish support; polarity checks added).
-- Legacy provenance: FIXED (LEGACY_ASSUMED yields PARTIAL support).
-- Snapshot immutability: FIXED (Historical fields preserved during merge).
+### Evidence and Reproduction
+- Original symptom: Logcat showed missions entering WAITING_FOR_NETWORK but then returning Result.success(), removing them from WorkManager's queue without a clear resume path.
+- Automated reproduction: Added regression test `testWatchdogRecoversNetworkWaitGoalWithoutTimestamp` in `WatchdogLifecycleTest.kt`.
+- Physical evidence: Logcat on SM-G998U confirmed `RETRY` behavior for WorkManager when in network-wait states.
+
+### Changes
+- Production files:
+    - app/src/main/java/com/david/openassistant/agent/AgentGoalWorker.kt (Return Result.retry() for network wait; persist nextRetryAt)
+    - app/src/main/java/com/david/openassistant/agent/MissionRecoveryWorker.kt (Watchdog broadened to recover WAITING_FOR_NETWORK without timestamps)
+    - app/src/main/java/com/david/openassistant/OpenAssistantViewModel.kt (Added RESEARCH_CYCLES_EXHAUSTED to result delivery loop)
+- Test files:
+    - app/src/test/java/com/david/openassistant/agent/WatchdogLifecycleTest.kt (Added recovery regression test)
+- Behavior changed: Missions now maintain WorkManager ownership during network waits. Watchdog covers all stranded network-wait scenarios. UI truthfully delivers exhausted research limits.
 
 ### Verification
-- Baseline commands: .\gradlew.bat testDebugUnitTest
-- Baseline results: PASSED (649 tests)
-- Focused commands: .\gradlew.bat :app:testDebugUnitTest --tests "com.david.openassistant.agent.Recovery*"
-- Focused results: PASSED (5 tests)
-- Full unit total: 649
-- Passed: 649
+- Baseline commands: .\gradlew.bat :app:testDebugUnitTest
+- Baseline results: PASSED (660 tests)
+- Physical results: PASSED (Verified on Samsung SM-G998U)
+- Total: 660
+- Passed: 660
 - Failed: 0
-- Lint: PASSED
-- Assemble: PASSED
 
 ### Risks
-- Known risks: Tightened reconciliation fingerprints might require existing missions to be re-dispatched if their fingerprints were unstable.
-- Data integrity: Preserved; structural transitions are idempotent and authoritative.
-
-### Repository Hygiene
-- git diff --check: Passed
-- Secret scan: Passed
-- Final status: Clean
+- Known: Zero balance on OpenRouter key prevented end-to-end completion of *new* research during this pass, but stall-proofing and UI states were verified with existing missions.
 
 ### Rollback
-- Revert method: git revert SELF
+- Revert method: git revert local changes
 - Data compatibility: Full compatibility.
 
 ### Open Issues Updated
-- Closed: [OI-011] Recovery replay livelock
+- Closed: Network wait stall.
+- Still open: Physical mission completion (blocked by balance).
 
-### Recommended Next Pass
-- Scope: Physical acceptance on Samsung SM-G998U.
+### Next Action
+- Scope: Final physical-phone acceptance with replenished key balance.
+
