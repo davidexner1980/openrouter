@@ -390,7 +390,7 @@ open class AgentOpenRouterClient internal constructor(
     private val client: OkHttpClient = sharedClient,
     private val researchMonitor: ResearchMonitor? = null,
     private val diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = null,
-    private val store: AgentStore? = null,
+    protected val store: AgentStore? = null,
     private val terminalHook: TerminalTransitionHook? = null,
     private val postActiveHook: PostActivePreDispatchHook? = null,
 ) {
@@ -689,35 +689,8 @@ open class AgentOpenRouterClient internal constructor(
         requestContext: ProviderRequestContext.Mission,
     ): RecoveryProposalGenerationResult {
         val generation = requestContext.executionGeneration
-        val systemPrompt = "You are an expert Research Recovery Analyst."
-        val userPrompt = buildString {
-            appendLine("The current research task has stalled. Your goal is to propose a materially novel investigation strategy.")
-            appendLine("Diagnosis: ${plan.diagnosis.name}")
-            appendLine("Selected Tactic: ${plan.selectedTactic.name}")
-            appendLine()
-            appendLine("Current Operational Objective: ${goal.objective}")
-            appendLine("Constraints: ${goal.confirmedConstraints.joinToString(", ")}")
-            appendLine()
-            appendLine("Available Evidence Context:")
-            evidence.forEach { item ->
-                appendLine("- [${item.kind}] ${item.title}: ${item.summary}")
-                if (plan.selectedTactic == EscalationTactic.FOLLOW_CITATIONS) {
-                    val explicitUrls = item.sources.mapTo(mutableSetOf()) { it.url }
-                    val embeddedLinks = recoverHttpsSourceCitations(item.content).filter { it.url !in explicitUrls }
-                    if (embeddedLinks.isNotEmpty()) {
-                        appendLine("  Embedded cross-domain citations found in this content:")
-                        embeddedLinks.take(5).forEach { link ->
-                            appendLine("  - ${link.url}")
-                        }
-                    }
-                }
-            }
-            if (plan.selectedTactic == EscalationTactic.FOLLOW_CITATIONS) {
-                appendLine()
-                appendLine("INSTRUCTION: The selected tactic is FOLLOW_CITATIONS. You MUST include exact URLs from the 'Embedded cross-domain citations' above in your new_query_portfolio to fetch and explore out-of-domain sources. The system supports direct URL fetching when you provide an exact URL as a search query.")
-            }
-        }
-
+        val (systemPrompt, userPrompt) = buildResearchRecoveryProposalPrompts(goal, plan, evidence)
+        
         try {
             val response = executeStructuredWithFallback(
                 apiKey = apiKey,
@@ -787,6 +760,63 @@ open class AgentOpenRouterClient internal constructor(
                 is MissionDispatchResult.Success -> throw IllegalStateException("Success should not throw ReconciliationException")
             }
         }
+    }
+
+    internal open fun buildResearchRecoveryProposalPrompts(
+        goal: AgentGoal,
+        plan: ResearchRecoveryPlan,
+        evidence: List<AgentEvidence>
+    ): Pair<String, String> {
+        val systemPrompt = "You are an expert Research Recovery Analyst."
+        val userPrompt = buildString {
+            appendLine("The current research task has stalled. Your goal is to propose a materially novel investigation strategy.")
+            appendLine("Diagnosis: ${plan.diagnosis.name}")
+            appendLine("Selected Tactic: ${plan.selectedTactic.name}")
+            appendLine()
+            appendLine("Current Operational Objective: ${goal.objective}")
+            appendLine("Constraints: ${goal.confirmedConstraints.joinToString(", ")}")
+            appendLine()
+            appendLine("Available Evidence Context:")
+            evidence.forEach { item ->
+                appendLine("- [${item.kind}] ${item.title}: ${item.summary}")
+                if (plan.selectedTactic == EscalationTactic.FOLLOW_CITATIONS) {
+                    val explicitUrls = item.sources.mapTo(mutableSetOf()) { it.url }
+                    val embeddedLinks = recoverHttpsSourceCitations(item.content).filter { it.url !in explicitUrls }
+                    if (embeddedLinks.isNotEmpty()) {
+                        appendLine("  Embedded cross-domain citations found in this content:")
+                        embeddedLinks.take(5).forEach { link ->
+                            appendLine("  - ${link.url}")
+                        }
+                    }
+                }
+            }
+            if (plan.selectedTactic == EscalationTactic.FOLLOW_CITATIONS) {
+                appendLine()
+                appendLine("INSTRUCTION: The selected tactic is FOLLOW_CITATIONS. You MUST include exact URLs from the 'Embedded cross-domain citations' above in your new_query_portfolio to fetch and explore out-of-domain sources. The system supports direct URL fetching when you provide an exact URL as a search query.")
+            }
+        }
+        return systemPrompt to userPrompt
+    }
+
+    internal open fun buildResearchRecoveryProposalPayload(
+        apiKey: String,
+        modelId: String,
+        goal: AgentGoal,
+        plan: ResearchRecoveryPlan,
+        evidence: List<AgentEvidence>,
+        freeOnly: Boolean
+    ): JSONObject {
+        val (systemPrompt, userPrompt) = buildResearchRecoveryProposalPrompts(goal, plan, evidence)
+        val (p, _) = basePayload(
+            modelId, systemPrompt, userPrompt,
+            reasoningEffort = if (isFreeOnlyModel(modelId)) null else "medium",
+            role = AgentTaskRole.PRIMARY_REASONING,
+            selectionReason = "recovery_proposal",
+            freeOnly = freeOnly
+        )
+        p.put("response_format", jsonSchemaResponseFormat("research_recovery_proposal", recoveryProposalSchema()))
+        p.put("temperature", 0.1)
+        return p
     }
 
     private fun recoveryProposalSchema(): JSONObject = JSONObject()
@@ -4898,7 +4928,6 @@ open class AgentOpenRouterClient internal constructor(
             exchangeId = exchangeId,
             newOutcome = resolution.outcome,
             context = requestContext,
-            proposal = resolution.proposal,
             summary = resolution.summary,
             statusCode = resolution.statusCode,
             failureClass = resolution.failureClass,
@@ -5011,7 +5040,7 @@ open class AgentOpenRouterClient internal constructor(
         data class StorageFailure(val cause: Throwable) : MissionDispatchResult
     }
 
-    private suspend fun executeCapturedOpenRouterBody(
+    internal open suspend fun executeCapturedOpenRouterBody(
         apiKey: String,
         canonicalPayload: JSONObject,
         attribution: ProviderResponseAttribution,

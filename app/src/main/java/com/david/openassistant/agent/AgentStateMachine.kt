@@ -83,6 +83,7 @@ object AgentStateMachine {
             AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
             AgentGoalStatus.BLOCKED_NEEDS_ACTION,
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+            AgentGoalStatus.PAUSED,
             AgentGoalStatus.FAILED,
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.CANCELLED,

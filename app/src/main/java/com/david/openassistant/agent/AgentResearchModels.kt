@@ -113,7 +113,14 @@ enum class RecoveryPlanStatus {
 
     fun canTransitionTo(next: RecoveryPlanStatus): Boolean = when (this) {
         PREPARED -> next == GENERATING
-        GENERATING -> next in setOf(READY_TO_COMMIT, FAILED_RETRYABLE, RECONCILIATION_REQUIRED, ALTERNATE_STRATEGY_REQUIRED, FAILED_NEEDS_ACTION)
+        GENERATING -> next in setOf(
+            READY_TO_COMMIT,
+            REJECTED_NOT_NOVEL,
+            FAILED_RETRYABLE,
+            RECONCILIATION_REQUIRED,
+            ALTERNATE_STRATEGY_REQUIRED,
+            FAILED_NEEDS_ACTION
+        )
         READY_TO_COMMIT -> next in setOf(COMMITTED, REJECTED_NOT_NOVEL, STRATEGY_EXHAUSTED)
         FAILED_RETRYABLE -> next in setOf(GENERATING, RECONCILIATION_REQUIRED, ALTERNATE_STRATEGY_REQUIRED)
         RECONCILIATION_REQUIRED -> next in setOf(GENERATING, ALTERNATE_STRATEGY_REQUIRED, FAILED_NEEDS_ACTION)
@@ -262,6 +269,26 @@ sealed interface RecoveryPlanTransitionResult {
     data class StatusMismatch(
         val expected: RecoveryPlanStatus,
         val actual: RecoveryPlanStatus,
+    ) : RecoveryPlanTransitionResult
+
+    data class IllegalTransition(
+        val from: RecoveryPlanStatus,
+        val to: RecoveryPlanStatus,
+    ) : RecoveryPlanTransitionResult
+
+    data class InputFingerprintMismatch(
+        val expected: String,
+        val actual: String,
+    ) : RecoveryPlanTransitionResult
+
+    data class ProposalIdentityMismatch(
+        val expected: String?,
+        val actual: String?,
+    ) : RecoveryPlanTransitionResult
+
+    data class LogicalRequestMismatch(
+        val expected: String?,
+        val actual: String?,
     ) : RecoveryPlanTransitionResult
 
     object OwnershipRejected : RecoveryPlanTransitionResult

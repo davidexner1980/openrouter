@@ -1222,7 +1222,6 @@ open class AgentStore private constructor(
 
         val validation = validateTicketInternalLocked(ticket)
         if (validation !is TicketValidationResult.Valid) {
-            diagnostics?.warning("recovery_transition_ownership_rejected", mapOf("goal_id" to ticket.goalId, "validation" to validation.toString()))
             return RecoveryPlanTransitionResult.OwnershipRejected
         }
         
@@ -1230,29 +1229,31 @@ open class AgentStore private constructor(
 
         // Idempotency check: Already at target?
         if (plan.status == nextStatus) {
-            val idMatch = plan.id == planId
             val inputMatch = plan.inputExecutionFingerprint == expectedInputFingerprint
             val proposalMatch = targetProposalFingerprint == null || plan.proposalFingerprint == targetProposalFingerprint
-            val requestMatch = targetLogicalRequestId == null || plan.logicalProviderRequestId == targetLogicalRequestId
+            val requestMatch = targetLogicalRequestId == null || plan.logicalProviderRequestId == targetLogicalRequestId || plan.logicalProviderRequestId == null
             
-            return if (idMatch && inputMatch && proposalMatch && requestMatch) {
+            return if (inputMatch && proposalMatch && requestMatch) {
                 RecoveryPlanTransitionResult.AlreadyAtTarget(goal, plan)
+            } else if (!inputMatch) {
+                RecoveryPlanTransitionResult.InputFingerprintMismatch(expectedInputFingerprint, plan.inputExecutionFingerprint)
+            } else if (targetProposalFingerprint != null && plan.proposalFingerprint != targetProposalFingerprint) {
+                RecoveryPlanTransitionResult.ProposalIdentityMismatch(targetProposalFingerprint, plan.proposalFingerprint)
+            } else if (targetLogicalRequestId != null && plan.logicalProviderRequestId != null && plan.logicalProviderRequestId != targetLogicalRequestId) {
+                RecoveryPlanTransitionResult.LogicalRequestMismatch(targetLogicalRequestId, plan.logicalProviderRequestId)
             } else {
-                RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+                RecoveryPlanTransitionResult.StatusMismatch(nextStatus, plan.status)
             }
         }
 
         if (plan.status != expectedStatus) {
-            diagnostics?.warning("recovery_transition_status_mismatch", mapOf("planId" to planId, "expected" to expectedStatus.name, "actual" to plan.status.name))
             return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
         }
         if (!plan.status.canTransitionTo(nextStatus)) {
-            diagnostics?.warning("recovery_transition_illegal", mapOf("planId" to planId, "from" to plan.status.name, "to" to nextStatus.name))
-            return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+            return RecoveryPlanTransitionResult.IllegalTransition(plan.status, nextStatus)
         }
         if (plan.inputExecutionFingerprint != expectedInputFingerprint) {
-            diagnostics?.warning("recovery_transition_fingerprint_mismatch", mapOf("planId" to planId, "expected" to expectedInputFingerprint, "actual" to plan.inputExecutionFingerprint))
-            return RecoveryPlanTransitionResult.StatusMismatch(expectedStatus, plan.status)
+            return RecoveryPlanTransitionResult.InputFingerprintMismatch(expectedInputFingerprint, plan.inputExecutionFingerprint)
         }
         
         val updatedGoal = mutation(goal, plan)
@@ -1265,8 +1266,99 @@ open class AgentStore private constructor(
             updatedAt = System.currentTimeMillis()
         )
         
-        writeGoalLocked(finalGoal)
+        val writeResult = runCatching { writeGoalLocked(finalGoal) }
+        if (writeResult.isFailure) {
+            return RecoveryPlanTransitionResult.StorageFailure(writeResult.exceptionOrNull()!!)
+        }
+        
         return RecoveryPlanTransitionResult.Committed(finalGoal, finalPlan)
+    }
+
+    fun commitRecoveryProposalAtomic(
+        ticket: PlanningTicket,
+        planId: String,
+        expectedInputFingerprint: String,
+        logicalProviderRequestId: String,
+        proposal: RecoveryProposal,
+        proposalFingerprint: String,
+        accountingSummary: AgentApiSummary?,
+        retryAuthorizedFingerprint: String?,
+        targetStatus: RecoveryPlanStatus,
+        mutation: ((AgentGoal, ResearchRecoveryPlan) -> AgentGoal)? = null
+    ): RecoveryPlanTransitionResult = synchronized(STORE_LOCK) {
+        val currentSnapshot = loadSnapshotFromFilesLocked()
+        val goal = currentSnapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return RecoveryPlanTransitionResult.GoalMissing
+        
+        if (goal.status.isFinalTerminalStatus()) return RecoveryPlanTransitionResult.GoalTerminal
+
+        val validation = validateTicketInternalLocked(ticket)
+        if (validation !is TicketValidationResult.Valid) {
+            return RecoveryPlanTransitionResult.OwnershipRejected
+        }
+        
+        val plan = goal.recoveryPlans.firstOrNull { it.id == planId } ?: return RecoveryPlanTransitionResult.PlanMissing
+
+        // Idempotency check: Already at target?
+        if (plan.status == targetStatus) {
+            val inputMatch = plan.inputExecutionFingerprint == expectedInputFingerprint
+            val logicalMatch = plan.logicalProviderRequestId == logicalProviderRequestId
+            val proposalMatch = plan.proposalFingerprint == proposalFingerprint
+            val retryMatch = plan.retryAuthorizedFingerprint == retryAuthorizedFingerprint
+            
+            return if (inputMatch && logicalMatch && proposalMatch && retryMatch) {
+                RecoveryPlanTransitionResult.AlreadyAtTarget(goal, plan)
+            } else if (!inputMatch) {
+                RecoveryPlanTransitionResult.InputFingerprintMismatch(expectedInputFingerprint, plan.inputExecutionFingerprint)
+            } else if (plan.logicalProviderRequestId != logicalProviderRequestId) {
+                RecoveryPlanTransitionResult.LogicalRequestMismatch(logicalProviderRequestId, plan.logicalProviderRequestId)
+            } else if (plan.proposalFingerprint != proposalFingerprint) {
+                RecoveryPlanTransitionResult.ProposalIdentityMismatch(proposalFingerprint, plan.proposalFingerprint)
+            } else {
+                RecoveryPlanTransitionResult.StatusMismatch(targetStatus, plan.status)
+            }
+        }
+
+        if (plan.status != RecoveryPlanStatus.GENERATING) {
+             return RecoveryPlanTransitionResult.StatusMismatch(RecoveryPlanStatus.GENERATING, plan.status)
+        }
+        
+        if (!plan.status.canTransitionTo(targetStatus)) {
+            return RecoveryPlanTransitionResult.IllegalTransition(plan.status, targetStatus)
+        }
+
+        if (plan.inputExecutionFingerprint != expectedInputFingerprint) {
+            return RecoveryPlanTransitionResult.InputFingerprintMismatch(expectedInputFingerprint, plan.inputExecutionFingerprint)
+        }
+        
+        if (plan.logicalProviderRequestId != null && plan.logicalProviderRequestId != logicalProviderRequestId) {
+             return RecoveryPlanTransitionResult.LogicalRequestMismatch(logicalProviderRequestId, plan.logicalProviderRequestId)
+        }
+
+        val now = System.currentTimeMillis()
+        val updatedPlan = plan.copy(
+            status = targetStatus,
+            proposal = proposal,
+            proposalFingerprint = proposalFingerprint,
+            accountingSummary = accountingSummary,
+            retryAuthorizedFingerprint = retryAuthorizedFingerprint,
+            generatedAt = now
+        )
+        
+        var updatedGoal = goal.copy(
+            recoveryPlans = goal.recoveryPlans.map { if (it.id == planId) updatedPlan else it },
+            updatedAt = now
+        )
+        
+        if (mutation != null) {
+            updatedGoal = mutation(updatedGoal, updatedPlan)
+        }
+
+        val writeResult = runCatching { writeGoalLocked(updatedGoal) }
+        if (writeResult.isFailure) {
+            return RecoveryPlanTransitionResult.StorageFailure(writeResult.exceptionOrNull()!!)
+        }
+        
+        return RecoveryPlanTransitionResult.Committed(updatedGoal, updatedPlan)
     }
 
     fun createRecoveryPlanAtomic(
@@ -1358,12 +1450,19 @@ open class AgentStore private constructor(
         return@synchronized true
     }
 
+    /**
+     * Atomically updates a provider exchange outcome.
+     * 
+     * IMPORTANT: This method handles transport-layer terminalization ONLY.
+     * It MUST NOT automatically transition higher-level domain states such as 
+     * AgentTaskStatus or RecoveryPlanStatus. Authoritative semantic commits 
+     * remain the responsibility of the orchestrator (AgentPlanner/Executor).
+     */
     fun transitionExchangeOutcomeWithResultAtomic(
         goalId: String,
         exchangeId: String,
         newOutcome: ExchangeOutcome,
         context: ProviderRequestContext.Mission,
-        proposal: RecoveryProposal? = null,
         summary: AgentApiSummary? = null,
         statusCode: Int? = null,
         failureClass: String? = null,
@@ -1406,24 +1505,11 @@ open class AgentStore private constructor(
             finishedAt = now,
         )
 
-        var updatedGoal = goal.copy(
+        val updatedGoal = goal.copy(
             requestAttempts = goal.requestAttempts.map { if (it.exchangeId == exchangeId) updatedAttempt else it },
             updatedAt = now,
         )
         
-        if (proposal != null && context.recoveryPlanId != null) {
-            updatedGoal = updatedGoal.copy(
-                recoveryPlans = updatedGoal.recoveryPlans.map { 
-                    if (it.id == context.recoveryPlanId) it.copy(
-                        proposal = proposal,
-                        accountingSummary = summary,
-                        status = RecoveryPlanStatus.READY_TO_COMMIT,
-                        generatedAt = now
-                    ) else it
-                }
-            )
-        }
-
         val writeResult = runCatching { writeGoalLocked(updatedGoal) }
         if (writeResult.isFailure) {
             return@synchronized TransitionOutcomeResult.StorageFailure(writeResult.exceptionOrNull()!!)
