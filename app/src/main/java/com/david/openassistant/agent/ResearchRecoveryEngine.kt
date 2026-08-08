@@ -16,10 +16,10 @@ object ResearchRecoveryEngine {
         qualityAccepted: Boolean
     ): ExecutionStallDiagnosis {
         if (qualityAccepted) return ExecutionStallDiagnosis.NONE
-        if (!isFree) return ExecutionStallDiagnosis.NONE
 
         val consecutiveStalls = task.consecutiveNoProgressCount
-        if (consecutiveStalls < 2) return ExecutionStallDiagnosis.NONE
+        val stallThreshold = if (isFree) 2 else 3
+        if (consecutiveStalls < stallThreshold) return ExecutionStallDiagnosis.NONE
 
         val lastFingerprint = task.lastMaterialProgressFingerprint
         val currentFingerprint = task.progressFingerprint
@@ -48,7 +48,7 @@ object ResearchRecoveryEngine {
         diagnosis: ExecutionStallDiagnosis
     ): EscalationTactic {
         val attemptedTactics = goal.recoveryPlans
-            .filter { it.taskId == task.id && it.status == RecoveryPlanStatus.COMMITTED }
+            .filter { it.taskId == task.id && it.status.isTerminal() }
             .map { it.selectedTactic }
             .toSet()
 

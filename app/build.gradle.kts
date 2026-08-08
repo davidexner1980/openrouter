@@ -108,7 +108,6 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
 
     implementation(libs.okhttp)
-    implementation(libs.play.services.location)
 
     testImplementation(libs.junit)
     testImplementation(libs.androidx.room.testing)

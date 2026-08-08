@@ -2314,45 +2314,39 @@ open class AgentStore private constructor(
         // REQUIRED CHANGE 3: EXACT REPAIR FOR THE REPRODUCED STATE
         // Implement a deterministic, idempotent migration for missions created by the defective build.
         val hasNullCycleTasks = goal.tasks.any { it.cycleId == null }
-        val isInitialPlanState = goal.status in setOf(AgentGoalStatus.QUEUED, AgentGoalStatus.RUNNING) && 
-            goal.tasks.isNotEmpty() && 
-            goal.requestAttempts.none { it.taskId != null } && // No task provider request was dispatched.
-            goal.attempts.none { it.taskId != null && it.status != AgentAttemptStatus.RUNNING } // No task execution attempt has started.
         
         val repairKey = "v42-plan-cycle-binding:${goal.id}"
-        val alreadyRepaired = goal.idempotencyRecords.any { it.key == repairKey }
+        val broadRepairKey = "v43-null-cycle-task-repair:${goal.id}"
+        val alreadyRepaired = goal.idempotencyRecords.any { it.key == repairKey || it.key == broadRepairKey }
 
-        if (hasNullCycleTasks && isInitialPlanState && !alreadyRepaired) {
-            val baselineCycleId = ResearchRecoveryEngine.generateCycleIdentity(goal.id, 1)
-            val baselineCycle = goal.researchCycles.firstOrNull { it.id == baselineCycleId }
-                ?: goal.researchCycles.firstOrNull { it.ordinal == 1 }
-            
-            if (baselineCycle != null && goal.researchCycles.size == 1 && goal.objectiveRevisions.size == 1) {
-                val repairedTasks = goal.tasks.map { it.copy(cycleId = baselineCycle.id) }
-                val repairedEvidence = goal.evidence.map { if (it.cycleId == null) it.copy(cycleId = baselineCycle.id) else it }
-                val migrationRecord = IdempotencyRecord(
-                    key = repairKey,
-                    effectType = IdempotencyEffectType.SYSTEM_REPAIR,
-                    state = IdempotencyState.COMMITTED,
-                    claimOwner = "migration_v42_4",
-                    committedAt = System.currentTimeMillis()
+        if (hasNullCycleTasks && !alreadyRepaired) {
+            val repairedTasks = goal.tasks.map { it.copy(cycleId = it.cycleId ?: activeCycleId) }
+            val repairedEvidence = goal.evidence.map { if (it.cycleId == null) it.copy(cycleId = activeCycleId) else it }
+            val migrationRecord = IdempotencyRecord(
+                key = broadRepairKey,
+                effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                state = IdempotencyState.COMMITTED,
+                claimOwner = "migration_v43",
+                committedAt = System.currentTimeMillis()
+            )
+            diagnostics?.info(
+                event = "task_cycle_binding_repaired",
+                component = "storage",
+                fields = mapOf(
+                    "goal_id" to goal.id,
+                    "cycle_id" to activeCycleId,
+                    "task_count" to repairedTasks.size
                 )
-                diagnostics?.info(
-                    event = "initial_task_cycle_binding_repaired",
-                    component = "storage",
-                    fields = mapOf(
-                        "goal_id" to goal.id,
-                        "cycle_id" to baselineCycle.id,
-                        "task_count" to repairedTasks.size
-                    )
-                )
-                return goal.copy(
-                    tasks = repairedTasks,
-                    evidence = repairedEvidence,
-                    idempotencyRecords = goal.idempotencyRecords + migrationRecord,
-                    events = appendEvent(goal.events, "V42.4: Repaired initial task-cycle binding for mission.")
-                )
-            }
+            )
+            return goal.copy(
+                status = if (goal.status == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION) AgentGoalStatus.QUEUED else goal.status,
+                tasks = repairedTasks,
+                evidence = repairedEvidence,
+                isCorrupt = false,
+                error = if (goal.status == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION) null else goal.error,
+                idempotencyRecords = goal.idempotencyRecords + migrationRecord,
+                events = goal.events + AgentEvent(message = "System automatically bound orphaned tasks to active research cycle.")
+            )
         }
 
         // 4. Every executable task has a non-null cycle ID.

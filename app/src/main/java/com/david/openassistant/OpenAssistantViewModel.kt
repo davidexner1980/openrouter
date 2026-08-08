@@ -1700,11 +1700,14 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         viewModelScope.launch {
             _uiState.update { it.copy(isGeneratingBrief = true, chatError = null) }
             
-            val effectiveMessages = if (manualRequest?.isNotBlank() == true) {
+            // Fix: ensure manualRequest is trimmed and strictly non-blank before use
+            val trimmedRequest = manualRequest?.trim()?.takeIf { it.isNotBlank() }
+
+            val effectiveMessages = if (trimmedRequest != null) {
                 val userMessage = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     role = ChatRole.USER,
-                    content = manualRequest,
+                    content = trimmedRequest,
                 )
                 // Persist the manual request message so the briefing interactor can see it
                 appendMessageToConversation(state.activeConversationId, userMessage)
@@ -1713,35 +1716,39 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 state.messages.filterNot { it.isStreaming }
             }
 
-            if (effectiveMessages.isEmpty()) {
+            if (effectiveMessages.none { it.role == ChatRole.USER && it.content.isNotBlank() }) {
                 _uiState.update { it.copy(isGeneratingBrief = false, chatError = "Enter a research goal first.") }
                 return@launch
             }
 
             val result = runCatching {
-                briefingInteractor.generateBriefAndStart(
-                    conversationId = state.activeConversationId,
-                    messages = effectiveMessages,
-                    modelId = state.selectedModelId ?: com.david.openassistant.domain.model.AgentModelSelector.AUTO_BETA_ROUTER_MODEL_ID,
-                    agentInteractor = agentInteractor,
-                    monitor = researchMonitor,
-                    hasCredential = cachedApiKey != null,
-                    keyInfo = state.keyInfo,
-                    models = state.models,
-                    selectedModelId = state.selectedModelId,
-                    routingProfileName = state.selectedModelProfile.name
-                )
+                // Stall-Proofing: Add a hard timeout to the briefing generation
+                kotlinx.coroutines.withTimeout(90_000L) {
+                    briefingInteractor.generateBrief(
+                        conversationId = state.activeConversationId,
+                        messages = effectiveMessages,
+                        modelId = state.selectedModelId ?: com.david.openassistant.domain.model.AgentModelSelector.AUTO_BETA_ROUTER_MODEL_ID,
+                    )
+                }
             }
+
+
             
             _uiState.update { it.copy(isGeneratingBrief = false) }
 
-            result.onSuccess { startResult ->
-                handleMissionStartResult(startResult)
+            result.onSuccess { draft ->
+                updateResearchBrief(draft)
+                _uiState.update { it.copy(isResearchBriefEditRequested = true) }
             }.onFailure { error ->
-                _uiState.update { it.copy(chatError = "Briefing failed: ${error.message}") }
+                val message = when (error) {
+                    is kotlinx.coroutines.TimeoutCancellationException -> "Briefing timed out. The provider may be slow."
+                    else -> "Briefing failed: ${error.message}"
+                }
+                _uiState.update { it.copy(chatError = message) }
             }
         }
     }
+
 
     fun updateResearchBrief(draft: ResearchDraft) {
         _uiState.update { it.copy(researchDraft = draft) }
@@ -2539,6 +2546,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
                 AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
                 AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+                AgentGoalStatus.BLOCKED,
+                AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
             )
         }
         if (pending.isEmpty()) return false
@@ -2580,6 +2589,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
                     AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
                     AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
+                    AgentGoalStatus.BLOCKED,
+                    AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
                     -> buildString {
                         appendLine("### Research Mission Stopped With Partial Evidence")
                         appendLine()

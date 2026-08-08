@@ -453,6 +453,7 @@ class AgentVerifier(
                     existingTaskIds += correctionId
                     val correctionTask = AgentTask(
                         id = correctionId,
+                        cycleId = currentAfterVerification.activeResearchCycleId,
                         order = currentAfterVerification.tasks.size + routeIndex,
                         title = recoveryRoute.title,
                         instructions = if (!recoveryRoute.evidenceOnly) {

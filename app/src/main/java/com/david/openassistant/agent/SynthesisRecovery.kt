@@ -143,6 +143,7 @@ internal fun insertSynthesisGapRecovery(
     val hostedAnalysisAvailable = !goal.executionModelId.isFreeOnlyExecutionRoute()
     val researchTask = AgentTask(
         id = researchId,
+        cycleId = goal.activeResearchCycleId,
         order = synthesis.order,
         title = "Gap closure: synthesis evidence escape $round",
         instructions = buildString {
@@ -175,6 +176,7 @@ internal fun insertSynthesisGapRecovery(
         val analysisId = uniqueRecoveryTaskId("$SYNTHESIS_GAP_ANALYSIS_PREFIX$round", existingIds)
         val analysisTask = AgentTask(
             id = analysisId,
+            cycleId = goal.activeResearchCycleId,
             order = synthesis.order + 1,
             title = "Analyze the unresolved synthesis evidence deterministically",
             instructions = buildString {

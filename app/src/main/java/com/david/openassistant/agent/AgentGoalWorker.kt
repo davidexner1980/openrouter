@@ -260,8 +260,8 @@ class AgentGoalWorker(
                             NoTaskDecision.VERIFICATION -> {
                                 // Continue to acquire planning lease for verification
                             }
-                            NoTaskDecision.RECOVERY -> {
-                                if (hasActiveRecovery) {
+                            NoTaskDecision.RECOVERY, NoTaskDecision.PLANNING -> {
+                                if (hasActiveRecovery || goalSnapshot.status == AgentGoalStatus.PLANNING) {
                                     // Proceed to acquire planning lease
                                 } else {
                                     // REQUIRED CHANGE 5: Durable no-runnable recovery handoff
@@ -696,6 +696,7 @@ class AgentGoalWorker(
         ACTION_REQUIRED,
         VERIFICATION,
         RECOVERY,
+        PLANNING,
         TERMINAL_EXHAUSTED,
         FINALIZE
     }
@@ -708,7 +709,7 @@ class AgentGoalWorker(
             return NoTaskDecision.RECOVERY
         }
 
-        if (goal.status == AgentGoalStatus.PLANNING) return NoTaskDecision.RECOVERY // Should be planning
+        if (goal.status == AgentGoalStatus.PLANNING) return NoTaskDecision.PLANNING
         if (goal.status == AgentGoalStatus.FINALIZING) return NoTaskDecision.FINALIZE
         if (goal.isReadyForVerification) return NoTaskDecision.VERIFICATION
 
@@ -945,7 +946,10 @@ class AgentGoalWorker(
             }
             RecoveryPlanStatus.RECONCILIATION_REQUIRED,
             RecoveryPlanStatus.ALTERNATE_STRATEGY_REQUIRED -> {
-                store.repairTerminalRecoveryLivelockAtomic(goal.id, ticket)
+                val repairResult = store.repairTerminalRecoveryLivelockAtomic(goal.id, ticket)
+                if (repairResult is TerminalRecoveryRepairResult.AlreadyRepaired) {
+                    return repairBlockedWorkflow(goal, ticket)
+                }
                 WorkerOutcome.RETRY
             }
             RecoveryPlanStatus.READY_TO_COMMIT -> {
@@ -1068,11 +1072,13 @@ class AgentGoalWorker(
             val ordered = current.tasks.sortedBy { it.order }
             if (ordered.isEmpty()) {
                 val recoveryId = "recover_original_goal"
+                val cycleId = current.activeResearchCycleId ?: ResearchRecoveryEngine.generateCycleIdentity(current.id, 1)
                 return@updateGoalAtomic current.copy(
                     status = AgentGoalStatus.QUEUED,
                     tasks = listOf(
                         AgentTask(
                             id = recoveryId,
+                            cycleId = cycleId,
                             order = 0,
                             title = "Complete the original request",
                             instructions = "Reconstruct the missing plan from the original request, produce concrete progress, preserve evidence, and drive the mission toward verified completion.",
@@ -1139,11 +1145,12 @@ class AgentGoalWorker(
                 error = null,
             )
         }
-        return if (snapshot.goals.firstOrNull { it.id == goal.id }?.status == AgentGoalStatus.QUEUED) {
+        return if (snapshot.goals.firstOrNull { it.id == goal.id }?.status?.isActivePhase() == true) {
             WorkerOutcome.CONTINUE
         } else {
             WorkerOutcome.DONE
         }
+
     }
 
     private fun constructLearningSummary(goal: AgentGoal, reason: String): ResearchCycleLearningSummary {

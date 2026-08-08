@@ -150,6 +150,8 @@ internal const val MAX_REQUIRED_TOOL_MILESTONE_ATTEMPTS = 6
 internal const val MAX_EVIDENCE_BOUNDED_MILESTONE_ATTEMPTS = 4
 internal const val MAX_RESEARCH_MILESTONE_ATTEMPTS = 6
 internal const val MAX_GLOBAL_AUTOMATIC_RESEARCH_REOPENS = 4
+internal const val MAX_GLOBAL_AUTOMATIC_CORRECTION_REOPENS = 3
+internal const val MAX_GLOBAL_AUTOMATIC_STRUCTURED_REOPENS = 2
 internal const val MAX_CORRECTION_MILESTONE_ATTEMPTS = 6
 
 private const val MAX_ERROR_LENGTH = 2_000
@@ -234,12 +236,23 @@ internal fun automaticResearchRecoveryMessage(task: AgentTask, reason: String): 
 internal fun AgentTask.reopenAutomaticCorrectionWindow(
     preciseFailure: String,
     now: Long = System.currentTimeMillis(),
-): AgentTask = reopenAutomaticWindow(
-    capabilityFilter = { it == AgentCapability.CORRECT },
-    preciseFailure = preciseFailure,
-    errorMessageIfBlank = "The previous correction window did not pass the publication gate.",
-    now = now,
-)
+): AgentTask {
+    val maxGlobalReopens = MAX_GLOBAL_AUTOMATIC_CORRECTION_REOPENS
+    if (globalAutomaticWindowReopenCount >= maxGlobalReopens) {
+        return copy(
+            status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
+            lastError = "Exhausted $maxGlobalReopens automatic correction reopen windows. Preserved evidence and partial work remain available. Last deficiency: $preciseFailure",
+            finishedAt = now,
+        )
+    }
+    return reopenAutomaticWindow(
+        capabilityFilter = { it == AgentCapability.CORRECT },
+        preciseFailure = preciseFailure,
+        errorMessageIfBlank = "The previous correction window did not pass the publication gate.",
+        now = now,
+        incrementGlobal = true
+    )
+}
 
 internal fun automaticCorrectionRecoveryMessage(task: AgentTask, reason: String): String {
     val preciseReason = reason.trim().take(MAX_REASON_LENGTH).ifBlank {
@@ -254,12 +267,23 @@ internal fun automaticCorrectionRecoveryMessage(task: AgentTask, reason: String)
 internal fun AgentTask.reopenAutomaticEvidenceBoundedWindow(
     preciseFailure: String,
     now: Long = System.currentTimeMillis(),
-): AgentTask = reopenAutomaticWindow(
-    capabilityFilter = { it in AgentCapability.STRUCTURED_RESULT_CAPABILITIES },
-    preciseFailure = preciseFailure,
-    errorMessageIfBlank = "The previous evidence-bounded window did not pass its completion gate.",
-    now = now,
-)
+): AgentTask {
+    val maxGlobalReopens = MAX_GLOBAL_AUTOMATIC_STRUCTURED_REOPENS
+    if (globalAutomaticWindowReopenCount >= maxGlobalReopens) {
+        return copy(
+            status = AgentTaskStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
+            lastError = "Exhausted $maxGlobalReopens automatic evidence-bounded reopen windows. Preserved evidence remains available. Last deficiency: $preciseFailure",
+            finishedAt = now,
+        )
+    }
+    return reopenAutomaticWindow(
+        capabilityFilter = { it in AgentCapability.STRUCTURED_RESULT_CAPABILITIES },
+        preciseFailure = preciseFailure,
+        errorMessageIfBlank = "The previous evidence-bounded window did not pass its completion gate.",
+        now = now,
+        incrementGlobal = true
+    )
+}
 
 internal fun automaticEvidenceBoundedRecoveryMessage(task: AgentTask, reason: String): String {
     val preciseReason = reason.trim().take(MAX_REASON_LENGTH).ifBlank {

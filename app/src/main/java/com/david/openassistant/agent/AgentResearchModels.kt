@@ -118,6 +118,7 @@ enum class RecoveryPlanStatus {
         COMMITTED,
         REJECTED_NOT_NOVEL,
         STRATEGY_EXHAUSTED,
+        ALTERNATE_STRATEGY_REQUIRED,
         FAILED_NEEDS_ACTION
     )
 

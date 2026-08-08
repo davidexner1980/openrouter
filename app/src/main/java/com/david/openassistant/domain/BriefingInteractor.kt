@@ -16,18 +16,11 @@ class BriefingInteractor(context: Context) {
     private val activityStore = ProviderActivityStore(context)
     private val client = AgentOpenRouterClient(activityStore = activityStore)
 
-    suspend fun generateBriefAndStart(
+    suspend fun generateBrief(
         conversationId: String,
         messages: List<ChatMessage>,
         modelId: String,
-        agentInteractor: AgentInteractor,
-        monitor: com.david.openassistant.data.diagnostics.ResearchMonitor,
-        hasCredential: Boolean,
-        keyInfo: com.david.openassistant.data.openrouter.OpenRouterKeyInfo?,
-        models: List<com.david.openassistant.data.openrouter.OpenRouterModel>,
-        selectedModelId: String?,
-        routingProfileName: String,
-    ): MissionStartResult = withContext(Dispatchers.IO) {
+    ): ResearchDraft = withContext(Dispatchers.IO) {
         val apiKey = keyStore.load() ?: throw IllegalStateException("OpenRouter API key required for briefing.")
 
         val resolved = ResolvedResearchRequest.resolveFromHistory(messages, conversationId)
@@ -41,7 +34,7 @@ class BriefingInteractor(context: Context) {
 
         val (draft, _) = client.generateResearchBrief(apiKey, modelId, history)
 
-        val readyDraft = draft.copy(
+        draft.copy(
             conversationId = conversationId,
             originalUserRequest = resolved.resolvedRequest,
             resolvedResearchRequest = resolved,
@@ -49,8 +42,23 @@ class BriefingInteractor(context: Context) {
             status = ResearchDraftStatus.READY,
             updatedAt = System.currentTimeMillis(),
         )
+    }
+
+    suspend fun generateBriefAndStart(
+        conversationId: String,
+        messages: List<ChatMessage>,
+        modelId: String,
+        agentInteractor: AgentInteractor,
+        monitor: com.david.openassistant.data.diagnostics.ResearchMonitor,
+        hasCredential: Boolean,
+        keyInfo: com.david.openassistant.data.openrouter.OpenRouterKeyInfo?,
+        models: List<com.david.openassistant.data.openrouter.OpenRouterModel>,
+        selectedModelId: String?,
+        routingProfileName: String,
+    ): MissionStartResult {
+        val readyDraft = generateBrief(conversationId, messages, modelId)
         
-        agentInteractor.startMissionFromBrief(
+        return agentInteractor.startMissionFromBrief(
             draft = readyDraft,
             monitor = monitor,
             hasCredential = hasCredential,
@@ -61,4 +69,5 @@ class BriefingInteractor(context: Context) {
             automaticStart = true
         )
     }
+
 }

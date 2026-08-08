@@ -1857,6 +1857,7 @@ open class AgentOpenRouterClient internal constructor(
         val toolPlan = buildTaskToolPlan(
             task = AgentTask(
                 id = "verification",
+                cycleId = goal.activeResearchCycleId,
                 capability = AgentCapability.VERIFY,
                 title = "Independent verification",
                 instructions = "Independently verify the goal.",
@@ -4734,10 +4735,13 @@ open class AgentOpenRouterClient internal constructor(
     ): RawAgentResponse {
         val startedAt = System.currentTimeMillis()
         val context = ProviderRequestContext.Infrastructure(UUID.randomUUID().toString(), "research_briefing")
-        val body = executeNonMissionCapturedOpenRouterBody(apiKey, payload, attribution, context)
+        val body = kotlinx.coroutines.withTimeout(60_000L) {
+            executeNonMissionCapturedOpenRouterBody(apiKey, payload, attribution, context)
+        }
         // Non-mission path doesn't track status code reliably through the same loop yet, assume 200 if it returned body
         return parseResponse(body, apiKey, attribution, 200, System.currentTimeMillis() - startedAt, "non-mission")
     }
+
 
     private suspend fun executeNonMissionCapturedOpenRouterBody(
         apiKey: String,
@@ -4802,25 +4806,29 @@ open class AgentOpenRouterClient internal constructor(
         requestContext: ProviderRequestContext.Mission,
         maxAttempts: Int = 3,
     ): RawAgentResponse {
-        var response = runCatching { 
-            executeJsonRequest(apiKey, strict.first, strict.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA) 
-        }.recoverCatching { strictError ->
-            if (strictError is TerminalPersistenceException || strictError is CancellationException || strictError is ReconciliationException) throw strictError
-            if (!strictError.isStructuredOutputUnsupported()) throw strictError
-            executeJsonRequest(apiKey, jsonMode.first, jsonMode.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.JSON_OBJECT)
+        // Stall-Proofing: apply bounded timeout to the entire fallback chain
+        return kotlinx.coroutines.withTimeout(300_000L) {
+            var response = runCatching { 
+                executeJsonRequest(apiKey, strict.first, strict.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA) 
+            }.recoverCatching { strictError ->
+                if (strictError is TerminalPersistenceException || strictError is CancellationException || strictError is ReconciliationException) throw strictError
+                if (!strictError.isStructuredOutputUnsupported()) throw strictError
+                executeJsonRequest(apiKey, jsonMode.first, jsonMode.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.JSON_OBJECT)
+            }
+            .recoverCatching { jsonModeError ->
+                if (jsonModeError is TerminalPersistenceException || jsonModeError is CancellationException || jsonModeError is ReconciliationException) throw jsonModeError
+                if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
+                executeJsonRequest(apiKey, plain.first, plain.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.PLAIN_JSON)
+            }
+            .getOrThrow()
+    
+            if (response.summary.finishReason == "length") {
+                response = handleLengthFinishRecovery(apiKey, response, generation, requestContext)
+            }
+            response
         }
-        .recoverCatching { jsonModeError ->
-            if (jsonModeError is TerminalPersistenceException || jsonModeError is CancellationException || jsonModeError is ReconciliationException) throw jsonModeError
-            if (!jsonModeError.isStructuredOutputUnsupported()) throw jsonModeError
-            executeJsonRequest(apiKey, plain.first, plain.second, generation, requestContext, maxAttempts, wireVariantKind = ProviderWireVariantKind.PLAIN_JSON)
-        }
-        .getOrThrow()
-
-        if (response.summary.finishReason == "length") {
-            response = handleLengthFinishRecovery(apiKey, response, generation, requestContext)
-        }
-        return response
     }
+
 
     private suspend fun handleLengthFinishRecovery(
         apiKey: String,
@@ -5165,6 +5173,7 @@ open class AgentOpenRouterClient internal constructor(
             val call = missionClient.newCall(request)
             activeCalls += call
 
+            var terminalTransitionHandled = false
             try {
                 // 3. Outbound Validation (Already done in prepareOpenRouterWireRequest, but we can verify invariants)
                 postActiveHook?.afterActivePersisted(requestContext.goalId, exchangeId)
@@ -5240,6 +5249,7 @@ open class AgentOpenRouterClient internal constructor(
                     }
                     
                     handleTerminalTransition(requestContext, exchangeId, resolution)
+                    terminalTransitionHandled = true
 
                     researchMonitor?.record(
                         category = "provider",
@@ -5265,16 +5275,18 @@ open class AgentOpenRouterClient internal constructor(
                 val isCancellationTimeout = error.message?.contains("CANCELLATION_TIMEOUT") == true || 
                     error.cause?.message?.contains("CANCELLATION_TIMEOUT") == true
                 val isRealCancellation = isCancelled || error is CancellationException || isCancellationTimeout
-                
-                val resolution = ExchangeResolution(
-                    outcome = when {
-                        isCancellationTimeout -> ExchangeOutcome.CANCELLATION_TIMEOUT
-                        isRealCancellation -> ExchangeOutcome.CANCELLED
-                        else -> ExchangeOutcome.TRANSPORT_FAILURE
-                    },
-                    failureClass = error::class.java.simpleName,
-                )
-                handleTerminalTransition(requestContext, exchangeId, resolution)
+
+                if (!terminalTransitionHandled) {
+                    val resolution = ExchangeResolution(
+                        outcome = when {
+                            isCancellationTimeout -> ExchangeOutcome.CANCELLATION_TIMEOUT
+                            isRealCancellation -> ExchangeOutcome.CANCELLED
+                            else -> ExchangeOutcome.TRANSPORT_FAILURE
+                        },
+                        failureClass = error::class.java.simpleName,
+                    )
+                    handleTerminalTransition(requestContext, exchangeId, resolution)
+                }
                 
                 if (isRealCancellation) throw CancellationException("Mission cancelled during dispatch")
                 

@@ -248,8 +248,9 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
 
     override fun schedulePeriodicRecovery() {
         val wm = workManager ?: return
-        val request = PeriodicWorkRequestBuilder<MissionRecoveryWorker>(30, TimeUnit.MINUTES)
+        val request = PeriodicWorkRequestBuilder<MissionRecoveryWorker>(15, TimeUnit.MINUTES)
             .addTag("mission_recovery_watchdog")
+
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -280,12 +281,8 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
         private const val CANCELLATION_WAIT_SECONDS = 20L
         private const val OPERATION_WAIT_SECONDS = 10L
 
-        fun uniqueWorkName(goalId: String, generation: Int = 0): String {
-            return if (generation > 0) {
-                "openassistant_agent_goal_${goalId}_gen$generation"
-            } else {
-                "openassistant_agent_goal_$goalId"
-            }
+        fun uniqueWorkName(goalId: String, @Suppress("UNUSED_PARAMETER") generation: Int = 0): String {
+            return "openassistant_agent_goal_$goalId"
         }
         fun goalTag(goalId: String) = "openassistant_agent_tag_$goalId"
     }

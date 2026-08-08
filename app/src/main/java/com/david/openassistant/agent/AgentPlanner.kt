@@ -552,11 +552,10 @@ class AgentPlanner(
                         is RecoveryPlanTransitionResult.Committed, is RecoveryPlanTransitionResult.AlreadyAtTarget -> WorkerOutcome.CONTINUE
                         is RecoveryPlanTransitionResult.GoalTerminal -> WorkerOutcome.DONE
                         is RecoveryPlanTransitionResult.OwnershipRejected -> {
-                            println("DEBUG: commitRecoveryProposalAtomic rejected ownership for goal ${currentGoal.id}")
+                            diagnostics.warning("recovery_proposal_commit_rejected", mapOf("goal_id" to currentGoal.id))
                             WorkerOutcome.FAIL
                         }
                         else -> {
-                            println("DEBUG: commitRecoveryProposalAtomic failed with result: $transitionResult")
                             diagnostics.warning("recovery_proposal_commit_failed", mapOf("goal_id" to currentGoal.id, "result" to transitionResult.toString()))
                             WorkerOutcome.RETRY
                         }
