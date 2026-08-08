@@ -81,6 +81,23 @@ object ProviderRecoveryPolicy {
             )
         }
 
+        // Stall-Proofing: Allow a few retries on the current route for incompatible outputs
+        // before declaring the route exhausted, even if we are in the FREE stage or freeOnly.
+        // This prevents a single transient formatting failure from blocking the mission.
+        val incompatibleRouteFailure = descriptor.failureClass == "RESPONSE_SCHEMA_FAILURE" ||
+            descriptor.failureClass == "EMPTY_MODEL_OUTPUT" ||
+            descriptor.failureClass == "MALFORMED_RESPONSE"
+            
+        val isLowAttempt = (descriptor.attemptCount ?: 1) < 3
+        
+        if (incompatibleRouteFailure && isLowAttempt && (isFreeOnly || routingStage == AgentRoutingStage.FREE)) {
+             return ProviderRecoveryDecision(
+                action = ProviderRecoveryAction.RETRY_CURRENT_ROUTE,
+                nextModelId = currentModelId.ifBlank { AUTO_BETA_ROUTER_MODEL_ID },
+                explanation = "Current route returned an incompatible response. Retrying on the same route (attempt ${descriptor.attemptCount ?: 1}) before changing strategy.",
+            )
+        }
+
         return decide(
             statusCode = descriptor.statusCode,
             currentModelId = currentModelId,

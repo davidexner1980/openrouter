@@ -65,7 +65,7 @@ fun AgentWorkScreen(
                 Column {
                     Text("Research Missions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        "${state.agentGoals.size} recorded • ${state.agentGoals.count { it.status == AgentGoalStatus.RUNNING }} active",
+                        "${state.agentGoals.size} recorded • ${state.agentGoals.count { it.status.isActivePhase() }} active",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
