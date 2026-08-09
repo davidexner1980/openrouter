@@ -120,6 +120,15 @@ sealed class ExportEvent {
     object RequestNotificationPermission : ExportEvent()
 }
 
+private data class ChatOperation(
+    val operationId: String,
+    val originConversationId: String,
+    val assistantMessageId: String,
+    var job: Job? = null,
+    var call: Call? = null,
+    val safetyFilter: com.david.openassistant.agent.StreamingSafetyFilter = com.david.openassistant.agent.StreamingSafetyFilter()
+)
+
 class OpenAssistantViewModel(application: Application) : AndroidViewModel(application), RefreshStateApplier {
     private val researchMonitor = ResearchMonitor(application)
     private val publicExportManager = PublicExportManager(application)
@@ -205,12 +214,10 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         }
     }
     @Volatile
-    private var activeCall: Call? = null
-    private var activeAssistantMessageId: String? = null
+    private var currentChatOperation: ChatOperation? = null
     private val stopRequested = AtomicBoolean(false)
     private val goalsBeingFinalized = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val streamingDeltaAccumulator = StreamingDeltaAccumulator()
-    private val streamingSafetyFilter = com.david.openassistant.agent.StreamingSafetyFilter()
     private val streamFlushScheduled = AtomicBoolean(false)
     private var streamFlushJob: Job? = null
     private val streamDeltaCount = AtomicInteger(0)
@@ -597,7 +604,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     currentModelId = state.selectedModelId,
                 ) ?: chooseInitialModel(models)
                 val selectedId = selectedModel?.id
-                val summaries = persistActiveConversation(
+                val summaries = persistConversation(
+                    conversationId = state.activeConversationId,
                     messages = state.messages,
                     selectedModelId = selectedId,
                     modelProfile = state.selectedModelProfile,
@@ -660,7 +668,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             }
             return
         }
-        val summaries = persistActiveConversation(
+        val summaries = persistConversation(
+            conversationId = _uiState.value.activeConversationId,
             messages = _uiState.value.messages,
             selectedModelId = modelId,
             modelProfile = ModelProfile.MANUAL,
@@ -691,7 +700,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             return
         }
         val selectedId = model?.id ?: state.selectedModelId
-        val summaries = persistActiveConversation(
+        val summaries = persistConversation(
+            conversationId = state.activeConversationId,
             messages = state.messages,
             selectedModelId = selectedId,
             modelProfile = profile,
@@ -1060,13 +1070,13 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 )
             }
             refreshAgentSnapshot()
-            val goal = agentSnapshot.goals.firstOrNull { it.id == goalId }
+            val snapshot = withContext(Dispatchers.IO) { agentInteractor.loadSnapshot() }
+            val goal = snapshot.goals.firstOrNull { it.id == goalId }
             if (goal?.status in setOf(
                     AgentGoalStatus.PAUSED,
                     AgentGoalStatus.FAILED,
                     AgentGoalStatus.WAITING_FOR_CREDENTIAL,
                     AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
-                    AgentGoalStatus.CANCELLED,
                 )
             ) {
                 resumeAgentGoal(goalId)
@@ -1111,11 +1121,14 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 AgentGoalStatus.WAITING_FOR_NETWORK,
                 AgentGoalStatus.BLOCKED,
                 AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
-                AgentGoalStatus.CANCELLED,
             ) || isStranded
 
             if (!canResume) {
-                diagnostics.info("agent_goal_resume_skipped", mapOf("goal_id" to goalId, "reason" to "consensus_active", "status" to goal.status.name, "is_stranded" to isStranded))
+                if (goal.status == AgentGoalStatus.CANCELLED) {
+                    restartAgentGoal(goalId)
+                } else {
+                    diagnostics.info("agent_goal_resume_skipped", mapOf("goal_id" to goalId, "reason" to "consensus_active", "status" to goal.status.name, "is_stranded" to isStranded))
+                }
                 return@launch
             }
             
@@ -1124,6 +1137,19 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             }
             agentInteractor.enqueue(goalId, replace = true)
             diagnostics.info("agent_goal_resumed", mapOf("goal_id" to goalId, "is_stranded" to isStranded))
+            refreshAgentSnapshot()
+        }
+    }
+
+    fun restartAgentGoal(goalId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(agentMessage = "Restarting mission...") }
+            val result = agentInteractor.restartAgentGoal(goalId)
+            if (result is com.david.openassistant.agent.SchedulingResult.EnqueueFailed) {
+                _uiState.update { it.copy(agentError = "Failed to restart mission: ${result.error.message}") }
+            } else {
+                _uiState.update { it.copy(agentMessage = "Mission restarted.", agentError = null) }
+            }
             refreshAgentSnapshot()
         }
     }
@@ -1610,13 +1636,23 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         } else {
             state.currentConversationTitle
         }
-        val summaries = persistActiveConversation(
+        val summaries = persistConversation(
+            conversationId = state.activeConversationId,
             messages = requestMessages,
             selectedModelId = modelId,
             modelProfile = state.selectedModelProfile,
             title = conversationTitle,
         )
         stopRequested.set(false)
+
+        val assistantMessageId = UUID.randomUUID().toString()
+        val operationId = UUID.randomUUID().toString()
+        val chatOperation = ChatOperation(
+            operationId = operationId,
+            originConversationId = state.activeConversationId,
+            assistantMessageId = assistantMessageId
+        )
+        currentChatOperation = chatOperation
 
         _uiState.update {
             it.copy(
@@ -1643,26 +1679,29 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             isFreeOnly = freeOnly
         )
         
-        if (hasTools) {
+        val effectiveUseTools = hasTools && automationDecision.route != AutomationRoute.DIRECT_CHAT
+        
+        if (effectiveUseTools) {
             val supportsBoth = state.selectedModel?.supportsTools == true && state.selectedModel?.supportsVision == true
             if (pendingImage != null && !supportsBoth) {
-                startStagedMultimodalToolLoop(apiKey, modelId, requestMessages, pendingImage, freeOnly)
+                startStagedMultimodalToolLoop(chatOperation, apiKey, modelId, requestMessages, pendingImage, freeOnly)
             } else {
-                startAutomaticToolLoop(apiKey, modelId, requestMessages, freeOnly)
+                startAutomaticToolLoop(chatOperation, apiKey, modelId, requestMessages, freeOnly)
             }
         } else {
-            startNormalStream(apiKey, modelId, requestMessages, freeOnly)
+            startNormalStream(chatOperation, apiKey, modelId, requestMessages, freeOnly)
         }
     }
 
     private fun startStagedMultimodalToolLoop(
+        chatOperation: ChatOperation,
         apiKey: String,
         modelId: String,
         requestMessages: List<ChatMessage>,
         pendingImage: ChatAttachment,
         freeOnly: Boolean
     ) {
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             _uiState.update { it.copy(
                 isGenerating = true,
                 diagnostics = RequestDiagnostics.running("Multimodal Stage 1: Vision Interpretation", modelId)
@@ -1674,6 +1713,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 }
             }
             
+            if (currentChatOperation?.operationId != chatOperation.operationId) return@launch
+
             visionResult.onSuccess { description ->
                 val enrichedMessages = requestMessages.map { message ->
                     if (message.attachments.contains(pendingImage)) {
@@ -1688,11 +1729,12 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     diagnostics = RequestDiagnostics.running("Multimodal Stage 2: Tool-Assisted Reasoning", modelId)
                 )}
                 
-                startAutomaticToolLoop(apiKey, modelId, enrichedMessages, freeOnly)
+                startAutomaticToolLoop(chatOperation, apiKey, modelId, enrichedMessages, freeOnly)
             }.onFailure { error ->
-                failToolFlow(error.message ?: "Vision Stage failed", modelId, System.currentTimeMillis())
+                failToolFlow(chatOperation, error.message ?: "Vision Stage failed", modelId, System.currentTimeMillis())
             }
         }
+        chatOperation.job = job
     }
 
     fun startResearchBriefing(manualRequest: String? = null) {
@@ -1972,19 +2014,19 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun startNormalStream(
+        chatOperation: ChatOperation,
         apiKey: String,
         modelId: String,
         requestMessages: List<ChatMessage>,
         freeOnly: Boolean = false,
     ) {
         val assistantMessage = ChatMessage(
-            id = UUID.randomUUID().toString(),
+            id = chatOperation.assistantMessageId,
             role = ChatRole.ASSISTANT,
             content = "",
             isStreaming = true,
         )
-        activeAssistantMessageId = assistantMessage.id
-        resetStreamingBuffer()
+        resetStreamingBuffer(chatOperation)
         streamDeltaCount.set(0)
         streamCharacterCount.set(0)
         firstStreamDeltaLogged.set(false)
@@ -1996,6 +2038,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 "request_message_count" to requestMessages.size,
                 "attachment_count" to requestMessages.sumOf { it.attachments.size },
                 "free_only" to freeOnly,
+                "op_id" to chatOperation.operationId,
             ),
         )
         _uiState.update {
@@ -2006,29 +2049,29 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             )
         }
 
-        activeCall = openRouterClient.streamChat(
+        chatOperation.call = openRouterClient.streamChat(
             apiKey = apiKey,
             modelId = modelId,
             messages = requestMessages,
             freeOnly = freeOnly,
-            listener = createStreamListener(assistantMessage.id, startedAt, modelId),
+            listener = createStreamListener(chatOperation, startedAt, modelId),
         )
     }
 
     private fun startAutomaticToolLoop(
+        chatOperation: ChatOperation,
         apiKey: String,
         modelId: String,
         requestMessages: List<ChatMessage>,
         freeOnly: Boolean = false,
     ) {
         val assistantMessage = ChatMessage(
-            id = UUID.randomUUID().toString(),
+            id = chatOperation.assistantMessageId,
             role = ChatRole.ASSISTANT,
             content = "",
             isStreaming = true,
         )
-        activeAssistantMessageId = assistantMessage.id
-        resetStreamingBuffer()
+        resetStreamingBuffer(chatOperation)
         streamDeltaCount.set(0)
         streamCharacterCount.set(0)
         firstStreamDeltaLogged.set(false)
@@ -2039,6 +2082,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 "model_id" to modelId,
                 "request_message_count" to requestMessages.size,
                 "free_only" to freeOnly,
+                "op_id" to chatOperation.operationId,
             ),
         )
         _uiState.update {
@@ -2049,7 +2093,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             )
         }
 
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
                     openRouterClient.runAutomaticToolLoop(
@@ -2062,6 +2106,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                                 runtime = autonomousToolRuntime,
                                 networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
                                 credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
+                                publicWebConfigured = researchWebSettings.load().searxngBaseUrl != null,
                                 isFreeOnly = freeOnly
                             )
                         },
@@ -2091,11 +2136,12 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                             }
                             result
                         },
-                        onCallStarted = { call -> activeCall = call },
-                        shouldStop = { stopRequested.get() },
+                        onCallStarted = { call -> chatOperation.call = call },
+                        shouldStop = { stopRequested.get() || currentChatOperation?.operationId != chatOperation.operationId },
                     )
                 }
             }.onSuccess { loopResult ->
+                if (currentChatOperation?.operationId != chatOperation.operationId) return@onSuccess
                 val duration = System.currentTimeMillis() - startedAt
                 diagnostics.info(
                     "automatic_tool_loop_completed",
@@ -2105,12 +2151,13 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         "total_tokens" to (loopResult.summary.totalTokens ?: 0),
                         "successful_tool_count" to loopResult.executions.count { it.succeeded },
                         "tool_request_count" to loopResult.executions.size,
+                        "op_id" to chatOperation.operationId,
                     ),
                 )
                 _uiState.update {
                     it.copy(
                         messages = it.messages.map { msg ->
-                            if (msg.id == assistantMessage.id) {
+                            if (msg.id == chatOperation.assistantMessageId) {
                                 msg.copy(content = loopResult.content, isStreaming = false)
                             } else {
                                 msg
@@ -2125,29 +2172,31 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         ),
                     )
                 }
-                persistActiveConversation(
+                persistConversation(
+                    conversationId = chatOperation.originConversationId,
                     messages = _uiState.value.messages,
                     selectedModelId = modelId,
                     modelProfile = _uiState.value.selectedModelProfile,
                     title = _uiState.value.currentConversationTitle,
                 )
+                if (currentChatOperation?.operationId == chatOperation.operationId) {
+                    currentChatOperation = null
+                }
             }.onFailure { error ->
-                failToolFlow(error.message ?: "Tool loop failed", modelId, startedAt)
+                if (currentChatOperation?.operationId != chatOperation.operationId) return@onFailure
+                failToolFlow(chatOperation, error.message ?: "Tool loop failed", modelId, startedAt)
             }
         }
+        chatOperation.job = job
     }
 
-    private fun failToolFlow(message: String, modelId: String, startedAt: Long) {
-        val openRouterError = if (message == "Generation was stopped.") {
-            OpenRouterException(null, message)
-        } else {
-            OpenRouterException(null, message)
-        }
-        diagnostics.error("tool_flow_failed", openRouterError)
+    private fun failToolFlow(chatOperation: ChatOperation, message: String, modelId: String, startedAt: Long) {
+        val openRouterError = OpenRouterException(null, message)
+        diagnostics.error("tool_flow_failed", openRouterError, mapOf("op_id" to chatOperation.operationId))
         _uiState.update {
             it.copy(
                 messages = it.messages.map { msg ->
-                    if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+                    if (msg.id == chatOperation.assistantMessageId) msg.copy(isStreaming = false) else msg
                 },
                 isGenerating = false,
                 chatError = openRouterError.userMessage,
@@ -2159,32 +2208,69 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 ),
             )
         }
+        if (currentChatOperation?.operationId == chatOperation.operationId) {
+            currentChatOperation = null
+        }
     }
 
     fun stopGeneration() {
         stopRequested.set(true)
-        activeCall?.cancel()
-        activeCall = null
+        val op = currentChatOperation ?: return
+        op.call?.cancel()
+        op.job?.cancel()
+        
+        val finalContent = op.safetyFilter.finish().let { lastLine ->
+            if (lastLine.isNotEmpty()) {
+                streamingDeltaAccumulator.append(lastLine)
+            }
+            streamingDeltaAccumulator.content()
+        }
+
         _uiState.update { state ->
             state.copy(
                 isGenerating = false,
                 messages = state.messages.map { 
-                    if (it.isStreaming) it.copy(isStreaming = false) else it 
+                    if (it.id == op.assistantMessageId) {
+                        it.copy(content = finalContent, isStreaming = false)
+                    } else it 
                 }
             )
         }
+        
+        viewModelScope.launch {
+            persistConversation(
+                conversationId = op.originConversationId,
+                messages = _uiState.value.messages,
+                selectedModelId = _uiState.value.selectedModelId,
+                modelProfile = _uiState.value.selectedModelProfile,
+                title = _uiState.value.currentConversationTitle,
+            )
+        }
+        
+        currentChatOperation = null
     }
 
     private fun createStreamListener(
-        assistantMessageId: String,
+        chatOperation: ChatOperation,
         startedAt: Long,
         modelId: String,
     ) = object : ChatStreamListener {
         override fun onDelta(text: String) {
-            if (!stopRequested.get()) enqueueStreamDelta(assistantMessageId, text)
+            if (!stopRequested.get() && currentChatOperation?.operationId == chatOperation.operationId) {
+                enqueueStreamDelta(chatOperation, text)
+            }
         }
 
         override fun onComplete(summary: StreamSummary) {
+            if (currentChatOperation?.operationId != chatOperation.operationId) return
+            
+            val finalContent = chatOperation.safetyFilter.finish().let { lastLine ->
+                if (lastLine.isNotEmpty()) {
+                    streamingDeltaAccumulator.append(lastLine)
+                }
+                streamingDeltaAccumulator.content()
+            }
+
             val duration = System.currentTimeMillis() - startedAt
             diagnostics.info(
                 "chat_stream_completed",
@@ -2192,13 +2278,14 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     "duration_ms" to duration,
                     "model_id" to modelId,
                     "total_tokens" to (summary.totalTokens ?: 0),
+                    "op_id" to chatOperation.operationId,
                 ),
             )
             _uiState.update {
                 it.copy(
                     messages = it.messages.map { msg ->
-                        if (msg.id == assistantMessageId) {
-                            msg.copy(content = streamingDeltaAccumulator.content(), isStreaming = false)
+                        if (msg.id == chatOperation.assistantMessageId) {
+                            msg.copy(content = finalContent, isStreaming = false)
                         } else {
                             msg
                         }
@@ -2208,27 +2295,40 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         operation = "Completion",
                         startedAt = startedAt,
                         httpStatus = 200,
-                        note = summary.toString(), // Temporary fix
+                        note = summary.toString(),
                     ),
                 )
             }
             viewModelScope.launch {
-                persistActiveConversation(
+                persistConversation(
+                    conversationId = chatOperation.originConversationId,
                     messages = _uiState.value.messages,
                     selectedModelId = modelId,
                     modelProfile = _uiState.value.selectedModelProfile,
                     title = _uiState.value.currentConversationTitle,
                 )
+                if (currentChatOperation?.operationId == chatOperation.operationId) {
+                    currentChatOperation = null
+                }
             }
         }
 
         override fun onError(error: OpenRouterException) {
-            diagnostics.error("chat_stream_failed", error)
+            if (currentChatOperation?.operationId != chatOperation.operationId) return
+            diagnostics.error("chat_stream_failed", error, mapOf("op_id" to chatOperation.operationId))
+            
+            val finalContent = chatOperation.safetyFilter.finish().let { lastLine ->
+                if (lastLine.isNotEmpty()) {
+                    streamingDeltaAccumulator.append(lastLine)
+                }
+                streamingDeltaAccumulator.content()
+            }
+
             _uiState.update {
                 it.copy(
                     messages = it.messages.map { msg ->
-                        if (msg.id == assistantMessageId) {
-                            msg.copy(content = streamingDeltaAccumulator.content(), isStreaming = false)
+                        if (msg.id == chatOperation.assistantMessageId) {
+                            msg.copy(content = finalContent, isStreaming = false)
                         } else {
                             msg
                         }
@@ -2243,30 +2343,38 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     ),
                 )
             }
+            if (currentChatOperation?.operationId == chatOperation.operationId) {
+                currentChatOperation = null
+            }
         }
     }
 
-    private fun enqueueStreamDelta(messageId: String, delta: String) {
-        streamingDeltaAccumulator.append(delta)
+    private fun enqueueStreamDelta(chatOperation: ChatOperation, delta: String) {
+        val filtered = chatOperation.safetyFilter.filter(delta)
+        if (filtered.isEmpty()) return
+        
+        streamingDeltaAccumulator.append(filtered)
         streamDeltaCount.incrementAndGet()
-        streamCharacterCount.addAndGet(delta.length)
+        streamCharacterCount.addAndGet(filtered.length)
         if (!firstStreamDeltaLogged.getAndSet(true)) {
             diagnostics.debug("first_chat_delta_received")
         }
         if (streamFlushScheduled.compareAndSet(false, true)) {
             streamFlushJob = viewModelScope.launch {
                 delay(STREAM_UI_FLUSH_INTERVAL_MS)
-                flushStreamingBuffer(messageId)
+                if (currentChatOperation?.operationId == chatOperation.operationId) {
+                    flushStreamingBuffer(chatOperation.assistantMessageId)
+                }
             }
         }
     }
 
-    private fun resetStreamingBuffer() {
+    private fun resetStreamingBuffer(chatOperation: ChatOperation) {
         streamFlushJob?.cancel()
         streamFlushJob = null
         streamFlushScheduled.set(false)
         streamingDeltaAccumulator.clear()
-        streamingSafetyFilter.finish() // StreamingSafetyFilter has no reset(), draining is equivalent for start of new stream
+        chatOperation.safetyFilter.finish()
     }
 
     private fun flushStreamingBuffer(messageId: String) {
@@ -2281,16 +2389,16 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         streamFlushScheduled.set(false)
     }
 
-    private fun persistActiveConversation(
+    private fun persistConversation(
+        conversationId: String,
         messages: List<ChatMessage>,
         selectedModelId: String?,
         modelProfile: ModelProfile,
         title: String,
         touchUpdatedAt: Boolean = true,
     ): List<ConversationSummary> {
-        val activeId = conversationSnapshot.activeConversationId
         val updatedConversations = conversationSnapshot.conversations.map { conversation ->
-            if (conversation.id == activeId) {
+            if (conversation.id == conversationId) {
                 conversation.copy(
                     messages = messages,
                     selectedModelId = selectedModelId,

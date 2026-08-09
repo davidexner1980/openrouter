@@ -33,6 +33,7 @@ object AgentStateMachine {
             AgentGoalStatus.PAUSED,
             AgentGoalStatus.CANCELLED,
             AgentGoalStatus.FAILED,
+            AgentGoalStatus.REJECTED,
             AgentGoalStatus.BLOCKED,
             AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,

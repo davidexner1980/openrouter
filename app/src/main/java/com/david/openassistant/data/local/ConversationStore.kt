@@ -40,7 +40,7 @@ class ConversationStore(
     fun saveSnapshot(snapshot: ConversationSnapshot) = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
         val expectedFiles = snapshot.conversations.mapTo(mutableSetOf()) { conversationFileLocked(it.id).name }
-        snapshot.conversations.forEach(::writeConversationLocked)
+        snapshot.conversations.forEach { writeConversationLocked(it, signal = false) }
         discoverConversationFilesLocked()
             .filter { it.name !in expectedFiles }
             .forEach { file ->
@@ -52,17 +52,24 @@ class ConversationStore(
 
     private fun loadSnapshotFromFilesLocked(): ConversationSnapshot {
         conversationsDirectory.mkdirs()
+        val quarantined = mutableListOf<String>()
         val conversations = discoverConversationFilesLocked()
             .asSequence()
             .mapNotNull { file ->
-                runCatching { readConversationLocked(file) }.getOrNull()
+                runCatching { readConversationLocked(file) }
+                    .onFailure { error ->
+                        android.util.Log.e("ConversationStore", "Failed to read conversation file: ${file.name}", error)
+                        quarantineCorruptFileLocked(file, error)
+                        quarantined.add(file.name)
+                    }
+                    .getOrNull()
             }
             .sortedByDescending { it.updatedAt }
             .toList()
 
         if (conversations.isEmpty()) {
             val empty = StoredConversation.empty()
-            writeConversationLocked(empty)
+            writeConversationLocked(empty, signal = false)
             writeSelectionAndSignalLocked(empty.id)
             return ConversationSnapshot(listOf(empty), empty.id)
         }
@@ -92,24 +99,76 @@ class ConversationStore(
             .toList()
     }
 
-    private fun writeConversationLocked(conversation: StoredConversation) {
+    private fun writeConversationLocked(conversation: StoredConversation, signal: Boolean = true) {
         conversationsDirectory.mkdirs()
         val target = conversationFileLocked(conversation.id)
+        val atomicFile = AtomicFile(target)
         val text = encodeConversation(conversation).toString()
+        val backup = File(target.path + ATOMIC_BACKUP_SUFFIX)
         
-        FileOutputStream(target).use { stream ->
+        var stream: FileOutputStream? = null
+        try {
+            stream = atomicFile.startWrite()
             stream.write(text.toByteArray(StandardCharsets.UTF_8))
             stream.flush()
             try { stream.fd.sync() } catch (_: Exception) {}
+            atomicFile.finishWrite(stream)
+        } catch (e: Exception) {
+            stream?.let { atomicFile.failWrite(it) }
+            android.util.Log.e("ConversationStore", "Failed to write conversation ${conversation.id}", e)
+            throw e
+        } finally {
+            if (backup.exists()) {
+                backup.delete()
+            }
         }
-        // Re-write signal to notify UI
-        writeSelectionAndSignalLocked(preferences.getString(KEY_ACTIVE_CONVERSATION_ID, null))
+
+        // Verification & Fallback (Windows FS sync defense)
+        if (!target.exists() || target.readText(StandardCharsets.UTF_8) != text) {
+            try {
+                target.writeText(text, StandardCharsets.UTF_8)
+                if (backup.exists()) backup.delete()
+            } catch (e: Exception) {
+                android.util.Log.e("ConversationStore", "Fallback write failed for ${conversation.id}", e)
+            }
+        }
+        
+        if (signal) {
+            // Re-write signal to notify UI
+            writeSelectionAndSignalLocked(preferences.getString(KEY_ACTIVE_CONVERSATION_ID, null))
+        }
     }
 
     private fun readConversationLocked(file: File): StoredConversation {
         val atomicFile = AtomicFile(file)
-        val raw = atomicFile.openRead().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+        val raw = try {
+            atomicFile.openRead().use { it.bufferedReader(StandardCharsets.UTF_8).readText() }
+        } catch (e: Exception) {
+            // If atomic openRead fails, check if the base file exists and try a raw read
+            if (file.exists()) {
+                file.readText(StandardCharsets.UTF_8)
+            } else throw e
+        }
         return decodeConversation(JSONObject(raw))
+    }
+
+    private fun quarantineCorruptFileLocked(file: File, error: Throwable) {
+        runCatching {
+            val quarantineDir = File(conversationsDirectory, "quarantine")
+            quarantineDir.mkdirs()
+            val timestamp = System.currentTimeMillis()
+            val quarantinedFile = File(quarantineDir, "${file.name}.$timestamp.corrupt")
+            file.renameTo(quarantinedFile)
+            
+            val logFile = File(quarantineDir, "${file.name}.$timestamp.log")
+            logFile.writeText("Error reading conversation file: ${error.message}\n${error.stackTraceToString()}")
+            
+            // Also move backup if present
+            val backup = File(file.path + ATOMIC_BACKUP_SUFFIX)
+            if (backup.exists()) {
+                backup.renameTo(File(quarantineDir, "${backup.name}.$timestamp.corrupt"))
+            }
+        }
     }
 
     private fun conversationFileLocked(id: String): File {

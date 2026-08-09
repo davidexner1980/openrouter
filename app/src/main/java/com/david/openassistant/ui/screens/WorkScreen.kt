@@ -46,6 +46,7 @@ fun AgentWorkScreen(
     onSelectGoal: (String) -> Unit,
     onPauseGoal: (String) -> Unit,
     onResumeGoal: (String) -> Unit,
+    onRestartGoal: (String) -> Unit,
     onCancelGoal: (String) -> Unit,
     onDeleteGoal: (String) -> Unit,
     onRefineGoal: (String, String) -> Unit,
@@ -126,7 +127,7 @@ fun AgentWorkScreen(
                 selectedGoal?.let { goal ->
                     item {
                         val isWorkRunning = state.activeWorkRunningStates[goal.id] ?: false
-                        AgentGoalDetailCard(goal, isWorkRunning, onPauseGoal, onResumeGoal, onCancelGoal, onDeleteGoal, onRefineGoal, onExportReport)
+                        AgentGoalDetailCard(goal, isWorkRunning, onPauseGoal, onResumeGoal, onRestartGoal, onCancelGoal, onDeleteGoal, onRefineGoal, onExportReport)
                     }
                 }
 
@@ -228,6 +229,7 @@ private fun AgentGoalDetailCard(
     isWorkRunning: Boolean,
     onPauseGoal: (String) -> Unit,
     onResumeGoal: (String) -> Unit,
+    onRestartGoal: (String) -> Unit,
     onCancelGoal: (String) -> Unit,
     onDeleteGoal: (String) -> Unit,
     onRefineGoal: (String, String) -> Unit,
@@ -433,7 +435,14 @@ private fun AgentGoalDetailCard(
                     Button(onClick = { onResumeGoal(goal.id) }) {
                         Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (goal.status == AgentGoalStatus.CANCELLED) "Restart" else "Resume")
+                        Text("Resume")
+                    }
+                }
+                if (actions.contains(MissionUiAction.RESTART)) {
+                    Button(onClick = { onRestartGoal(goal.id) }) {
+                        Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Restart")
                     }
                 }
                 if (actions.contains(MissionUiAction.STOP)) {

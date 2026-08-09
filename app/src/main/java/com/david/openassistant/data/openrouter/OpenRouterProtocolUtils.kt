@@ -46,7 +46,7 @@ object OpenRouterProtocolUtils {
 
 
 
-    private fun toSortedString(obj: JSONObject): String {
+    internal fun toSortedString(obj: JSONObject): String {
         val keys = mutableListOf<String>()
         val it = obj.keys()
         while (it.hasNext()) keys.add(it.next())
@@ -64,7 +64,7 @@ object OpenRouterProtocolUtils {
         }
     }
 
-    private fun valueToString(value: Any?): String {
+    internal fun valueToString(value: Any?): String {
         return when (value) {
             null, JSONObject.NULL -> "null"
             is JSONObject -> toSortedString(value)

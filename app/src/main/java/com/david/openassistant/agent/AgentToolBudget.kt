@@ -9,6 +9,37 @@ internal const val MAX_LOCAL_TOOL_RESULT_PROMPT_CHARS = 5_000
 internal const val MAX_LOCAL_TOOL_TRANSCRIPT_CHARS = 48_000
 internal const val MIN_RESERVED_TOOL_RESULT_CHARS = 96
 
+enum class ToolBudgetPolicy {
+    CHAT,
+    MISSION
+}
+
+data class ToolBudget(
+    val maxRounds: Int,
+    val maxExecutions: Int,
+    val maxDurationMs: Long,
+    val maxOutputChars: Int = 64_000
+) {
+    companion object {
+        val CHAT = ToolBudget(
+            maxRounds = 10,
+            maxExecutions = 20,
+            maxDurationMs = 300_000L
+        )
+        
+        val MISSION = ToolBudget(
+            maxRounds = 32,
+            maxExecutions = 128,
+            maxDurationMs = 1_800_000L
+        )
+        
+        fun forPolicy(policy: ToolBudgetPolicy) = when(policy) {
+            ToolBudgetPolicy.CHAT -> CHAT
+            ToolBudgetPolicy.MISSION -> MISSION
+        }
+    }
+}
+
 /** Returns how many provider-requested calls may execute in the current round. */
 internal fun allowedLocalToolCalls(
     requestedCalls: Int,

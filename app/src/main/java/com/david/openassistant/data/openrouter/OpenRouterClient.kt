@@ -106,7 +106,9 @@ class OpenRouterClient(
         shouldStop: () -> Boolean = { false },
         freeOnly: Boolean = false,
         onCallStarted: (Call) -> Unit = {},
+        budgetPolicy: com.david.openassistant.agent.ToolBudgetPolicy = com.david.openassistant.agent.ToolBudgetPolicy.CHAT,
     ): AutomaticToolLoopResult {
+        val budget = com.david.openassistant.agent.ToolBudget.forPolicy(budgetPolicy)
         val payload = createBaseChatPayload(modelId, messages).apply { put("stream", false) }
         com.david.openassistant.agent.AgentRoutingPolicy.guardPayload(freeOnly, payload)
         val messageArray = payload.getJSONArray("messages")
@@ -124,14 +126,19 @@ class OpenRouterClient(
         var round = 0
 
         val loopStartedAt = System.currentTimeMillis()
+        val deadline = loopStartedAt + budget.maxDurationMs
         val availableNames = mutableSetOf<String>()
-        while (round < MAX_TOOL_ROUNDS) {
-            if (shouldStop()) throw OpenRouterException(null, "Generation was stopped.")
-            if (System.currentTimeMillis() - loopStartedAt > MAX_TOOL_LOOP_DURATION_MS) {
-                throw OpenRouterException(null, "Tool execution loop exceeded the maximum duration of ${MAX_TOOL_LOOP_DURATION_MS / 1000} seconds.")
+        
+        var currentCall: Call? = null
+        
+        while (round < budget.maxRounds) {
+            val now = System.currentTimeMillis()
+            if (shouldStop() || now > deadline) {
+                currentCall?.cancel()
+                throw OpenRouterException(null, if (now > deadline) "Tool execution loop exceeded the maximum duration of ${budget.maxDurationMs / 1000} seconds." else "Generation was stopped.")
             }
-            if (executions.size >= MAX_TOOL_EXECUTIONS) {
-                throw OpenRouterException(null, "Tool execution loop exceeded the maximum of $MAX_TOOL_EXECUTIONS tool calls.")
+            if (executions.size >= budget.maxExecutions) {
+                throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxExecutions} tool calls.")
             }
 
             val toolArray = toolDefinitions()
@@ -159,6 +166,7 @@ class OpenRouterClient(
                 .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
                 .build()
             val call = client.newCall(request)
+            currentCall = call
             onCallStarted(call)
             val captured = executeCapturedCall(
                 request = request,
@@ -207,11 +215,9 @@ class OpenRouterClient(
                         val name = function.optString("name")
                         val args = function.optString("arguments")
                         
-                        // V43: Normalize arguments for stable comparison
                         val normalizedArgs = runCatching {
                             val json = JSONObject(args)
-                            val sortedKeys = json.keys().asSequence().sorted().toList()
-                            sortedKeys.joinToString(",") { key -> "$key:${json.get(key)}" }
+                            OpenRouterProtocolUtils.toSortedString(json)
                         }.getOrDefault(args.trim())
                         
                         add("$name:$normalizedArgs")
@@ -231,6 +237,13 @@ class OpenRouterClient(
                 }
                 messageArray.put(JSONObject(message.toString()).put("role", "assistant"))
                 for (index in 0 until calls.length()) {
+                    if (executions.size >= budget.maxExecutions) {
+                        throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxExecutions} tool calls.")
+                    }
+                    if (System.currentTimeMillis() > deadline) {
+                        throw OpenRouterException(null, "Tool execution loop exceeded the maximum duration.")
+                    }
+
                     val rawCall = calls.optJSONObject(index)
                         ?: throw OpenRouterException(null, "The selected model returned an invalid tool request.")
                     val function = rawCall.optJSONObject("function")
@@ -240,7 +253,14 @@ class OpenRouterClient(
                         name = function.optString("name"),
                         argumentsJson = function.optString("arguments").ifBlank { "{}" },
                     )
-                    val signature = "${toolCall.name}:${toolCall.argumentsJson.trim()}"
+                    
+                    val normalizedArgsForSignature = runCatching {
+                        val json = JSONObject(toolCall.argumentsJson)
+                        OpenRouterProtocolUtils.toSortedString(json)
+                    }.getOrDefault(toolCall.argumentsJson.trim())
+                    
+                    val signature = "${toolCall.name}:$normalizedArgsForSignature"
+                    
                     val output = priorOutputsBySignature[signature]?.let { prior ->
                         val summary = "Reused the prior result for an identical tool request."
                         executions += AutomaticToolExecution(toolCall.name, summary, succeeded = true)
@@ -261,7 +281,7 @@ class OpenRouterClient(
                                 totalTokens += result.totalTokens
                                 totalCost += result.costUsd
                                 executions += AutomaticToolExecution(toolCall.name, result.displaySummary.take(600), succeeded = true)
-                                result.outputJson.take(MAX_AUTOMATIC_TOOL_OUTPUT_CHARS).also {
+                                result.outputJson.take(budget.maxOutputChars).also {
                                     priorOutputsBySignature[signature] = it
                                 }
                             }
@@ -300,7 +320,7 @@ class OpenRouterClient(
                 executions = executions.toList(),
             )
         }
-        throw OpenRouterException(null, "Tool execution loop exceeded the maximum of $MAX_TOOL_ROUNDS rounds.")
+        throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxRounds} rounds.")
     }
 
     private fun enqueueStream(
@@ -866,10 +886,6 @@ class OpenRouterClient(
                 "When tools are available, select and call as many bounded local tools as materially improve correctness. " +
                 "Low-risk local tools run automatically; returned tool results are authoritative evidence of what ran. " +
                 "When an image is attached, inspect only what is actually visible and state uncertainty when details are unclear."
-        const val MAX_TOOL_ROUNDS = 10
-        const val MAX_TOOL_EXECUTIONS = 20
-        const val MAX_TOOL_LOOP_DURATION_MS = 300_000L
-        const val MAX_AUTOMATIC_TOOL_OUTPUT_CHARS = 64_000
         const val MAX_CAPTURED_STREAM_CHARS = 4_000_000
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val sharedClient: OkHttpClient = OkHttpClient.Builder()

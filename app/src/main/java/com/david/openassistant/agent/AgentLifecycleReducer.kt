@@ -137,9 +137,9 @@ object AgentLifecycleReducer {
                         },
                         lastError = null,
                     )
-                    AgentTaskStatus.RUNNING, AgentTaskStatus.CANCELLED -> task.copy(
+                    AgentTaskStatus.RUNNING -> task.copy(
                         status = AgentTaskStatus.QUEUED,
-                        attemptCount = if (task.status == AgentTaskStatus.RUNNING) (task.attemptCount - 1).coerceAtLeast(0) else task.attemptCount,
+                        attemptCount = (task.attemptCount - 1).coerceAtLeast(0),
                     )
                     else -> task
                 }
@@ -148,6 +148,38 @@ object AgentLifecycleReducer {
             terminalResultDelivered = if (goal.status == AgentGoalStatus.FAILED) false else goal.terminalResultDelivered,
             error = null,
             events = appendEvent(goal.events, message),
+        )
+    }
+
+    fun restart(
+        goal: AgentGoal,
+        now: Long = System.currentTimeMillis(),
+        reason: String = "Goal restarted by the user.",
+    ): AgentGoal {
+        if (goal.status != AgentGoalStatus.CANCELLED) return goal
+
+        return goal.copy(
+            status = if (goal.tasks.isEmpty()) AgentGoalStatus.PLANNING else AgentGoalStatus.QUEUED,
+            leaseGeneration = goal.leaseGeneration + 1,
+            executionLease = null,
+            activeContinuationSchedulingClaim = null,
+            tasks = goal.tasks.map { task ->
+                if (task.status == AgentTaskStatus.CANCELLED || task.status == AgentTaskStatus.QUEUED || task.status == AgentTaskStatus.RUNNING) {
+                    task.copy(
+                        status = AgentTaskStatus.QUEUED,
+                        taskGeneration = task.taskGeneration + 1,
+                        finishedAt = null,
+                        lastError = null,
+                        waitReason = null,
+                        waitCondition = null
+                    )
+                } else {
+                    task
+                }
+            },
+            error = null,
+            events = appendEvent(goal.events, reason),
+            updatedAt = now
         )
     }
 

@@ -176,6 +176,24 @@ class AgentInteractor internal constructor(
         agentScheduler!!.cancelAndWait(goalId, generation)
     }
 
+    suspend fun restartAgentGoal(goalId: String): SchedulingResult = withContext(Dispatchers.IO) {
+        val initialGoal = agentStore!!.loadSnapshot().goals.firstOrNull { it.id == goalId }
+            ?: return@withContext SchedulingResult.EnqueueFailed(IllegalStateException("Goal $goalId not found"))
+            
+        if (initialGoal.status != AgentGoalStatus.CANCELLED) {
+            return@withContext SchedulingResult.EnqueueFailed(IllegalStateException("Only CANCELLED missions can be restarted. Current status: ${initialGoal.status}"))
+        }
+
+        agentStore.updateGoal(goalId) { current ->
+            AgentLifecycleReducer.restart(current)
+        }
+        
+        val restartedGoal = agentStore.loadSnapshot().goals.firstOrNull { it.id == goalId }
+            ?: return@withContext SchedulingResult.EnqueueFailed(IllegalStateException("Goal $goalId lost after restart update"))
+
+        agentScheduler!!.enqueueAndWait(goalId, replace = true, generation = restartedGoal.leaseGeneration)
+    }
+
     suspend fun finalize(goalId: String) = withContext(Dispatchers.IO) {
         try {
             var generation = 0

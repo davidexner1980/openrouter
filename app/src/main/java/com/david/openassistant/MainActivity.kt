@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
                     onSelectAgentGoal = assistantViewModel::selectAgentGoal,
                     onPauseAgentGoal = assistantViewModel::pauseAgentGoal,
                     onResumeAgentGoal = assistantViewModel::resumeAgentGoal,
+                    onRestartAgentGoal = assistantViewModel::restartAgentGoal,
                     onCancelAgentGoal = assistantViewModel::cancelAgentGoal,
                     onDeleteAgentGoal = assistantViewModel::deleteAgentGoal,
                     onRefineAgentGoal = assistantViewModel::refineAgentGoal,

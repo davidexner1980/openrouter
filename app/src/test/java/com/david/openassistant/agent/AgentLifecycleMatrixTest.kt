@@ -59,17 +59,13 @@ class AgentLifecycleMatrixTest {
                 AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
                 AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
                 AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
+                AgentGoalStatus.CANCELLED,
                 AgentGoalStatus.FAILED,
                 AgentGoalStatus.REJECTED -> {
                     assertTrue("Status $status should be inactive", isInactive)
                     if (status != AgentGoalStatus.FAILED && status != AgentGoalStatus.REJECTED) {
                         assertTrue("Status $status should be final terminal", isFinalTerminal)
                     }
-                }
-
-                AgentGoalStatus.CANCELLED -> {
-                    assertTrue("CANCELLED should be inactive", isInactive)
-                    assertFalse("CANCELLED should not be final terminal (it is resumable)", isFinalTerminal)
                 }
 
                 AgentGoalStatus.CANCELLING -> {

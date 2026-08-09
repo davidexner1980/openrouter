@@ -2,17 +2,6 @@ package com.david.openassistant.agent
 
 import java.util.UUID
 
-fun AgentGoalStatus.isFinalTerminalStatus(): Boolean = this in setOf(
-    AgentGoalStatus.COMPLETED,
-    AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-    AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-    AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-    AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-    AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-    AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
-    AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
-)
-
 data class AgentApiSummary(
     val responseId: String? = null,
     val resolvedModel: String? = null,
@@ -156,11 +145,15 @@ object MissionUiLogic {
                         AgentGoalStatus.BLOCKED,
                         AgentGoalStatus.WAITING_FOR_NETWORK,
                         AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
-                        AgentGoalStatus.CANCELLED,
                     ) || isStranded
                 )
             ) {
                 add(MissionUiAction.RESUME)
+            }
+            
+            // Show RESTART only for CANCELLED
+            if (goal.status == AgentGoalStatus.CANCELLED) {
+                add(MissionUiAction.RESTART)
             }
             
             // Only show STOP if NOT terminal and NOT already cancelled/cancelling
@@ -184,9 +177,14 @@ object AgentResultDeliveryLogic {
         diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = null
     ) {
         val goal = agentStore.loadSnapshot().goals.firstOrNull { it.id == goalId } ?: return
-        if ((goal.status.isFinalTerminalStatus() || goal.status == AgentGoalStatus.CANCELLED) && !goal.terminalResultDelivered) {
+        val currentGen = goal.leaseGeneration
+        val deliveryKind = "TERMINAL_RESULT"
+        
+        if (goal.status.isFinalTerminalStatus() && 
+            !goal.deliveryRecords.any { it.generation == currentGen && it.deliveryKind == deliveryKind }
+        ) {
             val resultText = goal.result ?: "The mission ended without producing a final result summary."
-            val content = "### Research Mission Final Status: ${goal.status.name}\n\n**${goal.title}**\n\n$resultText\n\n[Open Report](mission://${goal.id})"
+            val content = "### Research Mission Final Status: ${goal.status.name}\n\n**${goal.title}**\n\n$resultText\n\n[Open Report](mission://${goal.id}?gen=$currentGen)"
             
             val message = com.david.openassistant.data.openrouter.ChatMessage(
                 id = UUID.randomUUID().toString(),
@@ -198,27 +196,47 @@ object AgentResultDeliveryLogic {
             val snapshot = conversationStore.loadSnapshot()
             
             // Robustness: Check if this mission's link is already in the target conversation
-            val targetConv = snapshot.conversations.firstOrNull { it.id == goal.conversationId }
-            val alreadyDelivered = targetConv?.messages?.any { it.content.contains("mission://${goal.id}") } ?: false
+            val targetConv = snapshot.conversations.firstOrNull { it.id == goal.conversationId } ?: run {
+                diagnostics?.warning("mission_result_delivery_target_conversation_missing", mapOf("goal_id" to goalId, "conv_id" to goal.conversationId))
+                return // DO NOT mark delivered if conversation is missing
+            }
+            
+            val alreadyDelivered = targetConv.messages.any { it.content.contains("mission://${goal.id}?gen=$currentGen") }
             
             if (!alreadyDelivered) {
-                val updatedConversations = snapshot.conversations.map { conversation ->
-                    if (conversation.id == goal.conversationId) {
-                        conversation.copy(
-                            messages = conversation.messages + message,
-                            updatedAt = System.currentTimeMillis()
-                        )
-                    } else conversation
+                try {
+                    val updatedConversations = snapshot.conversations.map { conversation ->
+                        if (conversation.id == goal.conversationId) {
+                            conversation.copy(
+                                messages = conversation.messages + message,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        } else conversation
+                    }
+                    val nextSnapshot = snapshot.copy(conversations = updatedConversations)
+                    conversationStore.saveSnapshot(nextSnapshot)
+                    
+                    // Verify persistence immediately
+                    val reloaded = conversationStore.loadSnapshot().conversations.firstOrNull { it.id == goal.conversationId }
+                    if (reloaded == null || !reloaded.messages.any { it.id == message.id }) {
+                        diagnostics?.error("mission_result_delivery_persistence_verification_failed", IllegalStateException("Persistence verification failed"), mapOf("goal_id" to goalId))
+                        return
+                    }
+                } catch (e: Exception) {
+                    diagnostics?.error("mission_result_delivery_store_failed", e, mapOf("goal_id" to goalId))
+                    return // DO NOT mark delivered if write fails
                 }
-                conversationStore.saveSnapshot(snapshot.copy(conversations = updatedConversations))
             }
             
             // Phase 2: Mark as delivered in agent store (Commit Durable Intent)
             agentStore.updateGoal(goal.id) { current ->
-                current.copy(terminalResultDelivered = true)
+                current.copy(
+                    deliveryRecords = current.deliveryRecords + DeliveryRecord(currentGen, deliveryKind),
+                    terminalResultDelivered = true // Sync legacy flag
+                )
             }
             
-            diagnostics?.info("mission_result_delivered", mapOf("goal_id" to goalId, "conversation_id" to goal.conversationId, "status" to goal.status.name))
+            diagnostics?.info("mission_result_delivered", mapOf("goal_id" to goalId, "conversation_id" to goal.conversationId, "gen" to currentGen, "status" to goal.status.name))
         }
     }
 }

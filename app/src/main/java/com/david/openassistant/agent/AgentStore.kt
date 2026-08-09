@@ -1050,9 +1050,17 @@ open class AgentStore private constructor(
                     latestAttempt.wirePayloadFingerprint != wirePayloadFingerprint) {
                     val actualFp = "L:${latestAttempt.payloadFingerprint} W:${latestAttempt.wirePayloadFingerprint}"
                     val requestedFp = "L:$payloadFingerprint W:$wirePayloadFingerprint"
-                    println("RECONCILIATION_CONFLICT goal=$goalId id=$logicalRequestId")
-                    println("  Actual: $actualFp")
-                    println("  Requested: $requestedFp")
+                    
+                    diagnostics?.warning(
+                        event = "provider_request_reconciliation_conflict",
+                        component = "reconciliation",
+                        fields = mapOf(
+                            "goal_id" to goalId,
+                            "logical_id" to logicalRequestId,
+                            "actual_fp" to actualFp,
+                            "requested_fp" to requestedFp
+                        )
+                    )
                     return@synchronized ReconciliationResult.LogicalIdentityConflict(actualFp, requestedFp)
                 }
             } else {
@@ -1991,6 +1999,7 @@ open class AgentStore private constructor(
         json.put("error", goal.error ?: JSONObject.NULL)
         json.put("blocked_reason", goal.blockedReason ?: JSONObject.NULL)
         json.put("terminal_result_delivered", goal.terminalResultDelivered)
+        json.put("delivery_records", JSONArray().apply { goal.deliveryRecords.forEach { put(encodeDeliveryRecord(it)) } })
         json.put("next_retry_at", goal.nextRetryAt ?: JSONObject.NULL)
         json.put("network_wait_started_at", goal.networkWaitStartedAt ?: JSONObject.NULL)
         json.put("network_retry_count", goal.networkRetryCount)
@@ -2107,6 +2116,14 @@ open class AgentStore private constructor(
             } else claim
         }
 
+        val storedDeliveryRecords = json.optJSONArray("delivery_records").decodeList(::decodeDeliveryRecord)
+        val legacyDelivered = json.optBoolean("terminal_result_delivered", false)
+        val finalDeliveryRecords = if (legacyDelivered && storedDeliveryRecords.isEmpty()) {
+            listOf(DeliveryRecord(generation = json.optInt("lease_generation", 0), deliveryKind = "TERMINAL_RESULT"))
+        } else {
+            storedDeliveryRecords
+        }
+
         val goalBeforeCycles = AgentGoal(
             id = json.getString("id"),
             conversationId = storedConversationId,
@@ -2159,7 +2176,8 @@ open class AgentStore private constructor(
             result = json.optNullableString("result"),
             error = restoredError,
             blockedReason = json.optNullableString("blocked_reason"),
-            terminalResultDelivered = json.optBoolean("terminal_result_delivered", false),
+            terminalResultDelivered = legacyDelivered,
+            deliveryRecords = finalDeliveryRecords,
             nextRetryAt = json.optLongOrNull("next_retry_at"),
             networkWaitStartedAt = json.optLongOrNull("network_wait_started_at"),
             networkRetryCount = json.optInt("network_retry_count", 0),
@@ -2668,6 +2686,17 @@ open class AgentStore private constructor(
         expectedDeliverableKind = json.optNullableString("expected_deliverable_kind"),
         domainClassification = json.optString("domain_classification", "GENERAL"),
         contractHash = json.optNullableString("contract_hash"),
+    )
+
+    private fun encodeDeliveryRecord(rec: DeliveryRecord): JSONObject = JSONObject()
+        .put("generation", rec.generation)
+        .put("delivery_kind", rec.deliveryKind)
+        .put("delivered_at", rec.deliveredAt)
+
+    private fun decodeDeliveryRecord(json: JSONObject): DeliveryRecord = DeliveryRecord(
+        generation = json.optInt("generation", 0),
+        deliveryKind = json.optString("delivery_kind", "TERMINAL_RESULT"),
+        deliveredAt = json.optLong("delivered_at", System.currentTimeMillis())
     )
 
     private fun encodeTask(task: AgentTask): JSONObject = JSONObject()

@@ -187,10 +187,11 @@ object AgentToolRegistry {
         runtime: AutonomousToolRuntime?,
         networkAvailable: Boolean,
         credentialsAvailable: Boolean,
+        publicWebConfigured: Boolean = true,
         isFreeOnly: Boolean = false,
         includeAdvancedResearchTools: Boolean = false
     ): JSONArray = attachedToolsPayloadWithAudit(
-        runtime, networkAvailable, credentialsAvailable, true, isFreeOnly, includeAdvancedResearchTools
+        runtime, networkAvailable, credentialsAvailable, publicWebConfigured, isFreeOnly, includeAdvancedResearchTools
     ).tools
 
     fun hasOperationalTools(

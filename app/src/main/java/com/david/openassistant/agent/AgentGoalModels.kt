@@ -40,6 +40,12 @@ data class ContinuationSchedulingClaim(
     val attemptCount: Int = 1,
 )
 
+data class DeliveryRecord(
+    val generation: Int,
+    val deliveryKind: String,
+    val deliveredAt: Long = System.currentTimeMillis()
+)
+
 data class AgentGoal(
 
     val id: String = UUID.randomUUID().toString(),
@@ -92,6 +98,7 @@ data class AgentGoal(
     val error: String? = null,
     val blockedReason: String? = null,
     val terminalResultDelivered: Boolean = false,
+    val deliveryRecords: List<DeliveryRecord> = emptyList(),
     val nextRetryAt: Long? = null,
     val networkWaitStartedAt: Long? = null,
     val networkRetryCount: Int = 0,

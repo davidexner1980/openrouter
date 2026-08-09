@@ -1,5 +1,6 @@
 package com.david.openassistant.data.openrouter
 
+import com.david.openassistant.agent.ToolBudget
 import com.david.openassistant.domain.tools.ToolExecutionResult
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -52,8 +53,9 @@ class ToolLoopLivenessTest {
 
         val customClient = OpenRouterClient(client = okHttpClient)
 
+        val budget = ToolBudget.CHAT
         // Enqueue enough responses to hit the limit
-        repeat(OpenRouterClient.MAX_TOOL_ROUNDS + 1) { i ->
+        repeat(budget.maxRounds + 1) { i ->
             val toolCallJson = JSONObject()
                 .put("id", "call-$i")
                 .put("type", "function")
@@ -84,8 +86,8 @@ class ToolLoopLivenessTest {
         }
 
         assertTrue("Expected round limit error, got: ${exception.userMessage}", 
-            exception.userMessage.contains("exceeded the maximum of ${OpenRouterClient.MAX_TOOL_ROUNDS} rounds"))
-        assertEquals(OpenRouterClient.MAX_TOOL_ROUNDS, server.requestCount)
+            exception.userMessage.contains("exceeded the maximum of ${budget.maxRounds} rounds"))
+        assertEquals(budget.maxRounds, server.requestCount)
     }
 
     @Test
@@ -106,11 +108,12 @@ class ToolLoopLivenessTest {
             }
             .build()
 
+        val budget = ToolBudget.CHAT
         val customClient = OpenRouterClient(client = okHttpClient)
 
         // Mock a response with MANY tool calls in one round
         val toolCalls = JSONArray()
-        repeat(OpenRouterClient.MAX_TOOL_EXECUTIONS + 1) { i ->
+        repeat(budget.maxExecutions + 1) { i ->
             toolCalls.put(JSONObject()
                 .put("id", "call-$i")
                 .put("type", "function")
@@ -140,7 +143,7 @@ class ToolLoopLivenessTest {
         }
 
         assertTrue("Expected execution limit error, got: ${exception.userMessage}", 
-            exception.userMessage.contains("exceeded the maximum of ${OpenRouterClient.MAX_TOOL_EXECUTIONS} tool calls"))
+            exception.userMessage.contains("exceeded the maximum of ${budget.maxExecutions} tool calls"))
     }
 
     @Test

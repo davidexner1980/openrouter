@@ -56,7 +56,8 @@ class AgentResultDeliveryTest {
             executionModelId = "m2",
             tasks = emptyList(),
             result = "The final findings are here.",
-            terminalResultDelivered = false
+            terminalResultDelivered = false,
+            leaseGeneration = 1
         )
         store.saveSnapshot(AgentSnapshot(goals = listOf(goal)))
         
@@ -69,7 +70,7 @@ class AgentResultDeliveryTest {
         val message = updatedConv.messages.first()
         assertEquals(ChatRole.ASSISTANT, message.role)
         assertTrue(message.content.contains("The final findings are here."))
-        assertTrue(message.content.contains("mission://$goalId"))
+        assertTrue(message.content.contains("mission://$goalId?gen=1"))
         
         // 2. Verify flag updated in store
         val goalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
