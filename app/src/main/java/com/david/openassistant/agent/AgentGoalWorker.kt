@@ -929,6 +929,14 @@ class AgentGoalWorker(
         val activePlanId = goal.activeRecoveryPlanId ?: return repairBlockedWorkflow(goal, ticket)
         val plan = goal.recoveryPlans.firstOrNull { it.id == activePlanId } ?: return repairBlockedWorkflow(goal, ticket)
         
+        // V43: Clear stale recovery plan if goal state has diverged from the plan's baseline
+        val currentFingerprint = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
+        if (plan.inputExecutionFingerprint != currentFingerprint) {
+            diagnostics.warning("clearing_stale_recovery_plan", mapOf("goal_id" to goal.id, "plan_id" to plan.id, "reason" to "fingerprint_mismatch"))
+            store.updateGoalAtomic(goal.id, ticket) { it.copy(activeRecoveryPlanId = null) }
+            return WorkerOutcome.CONTINUE
+        }
+        
         return when (plan.status) {
             RecoveryPlanStatus.PREPARED,
             RecoveryPlanStatus.GENERATING -> {

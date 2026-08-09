@@ -65,6 +65,7 @@ object FingerprintUtils {
         encoder.append("user_request", goal.userRequest)
         encoder.append("final_output_description", goal.finalOutputDescription)
         goal.confirmedConstraints.sorted().forEach { encoder.append("constraint", it) }
+        goal.refinements.sorted().forEach { encoder.append("refinement", it) }
         
         goal.objectiveContract?.let { contract ->
             encoder.append("primary_subject", contract.primarySubject)

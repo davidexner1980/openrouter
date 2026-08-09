@@ -4,7 +4,6 @@ fun AgentGoalStatus.isFinalTerminalStatus(): Boolean = this in setOf(
     AgentGoalStatus.COMPLETED,
     AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
     AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-    AgentGoalStatus.CANCELLED,
     AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
     AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
     AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
@@ -155,6 +154,7 @@ object MissionUiLogic {
                         AgentGoalStatus.BLOCKED,
                         AgentGoalStatus.WAITING_FOR_NETWORK,
                         AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
+                        AgentGoalStatus.CANCELLED,
                     ) || isStranded
                 )
             ) {

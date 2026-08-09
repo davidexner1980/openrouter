@@ -224,24 +224,30 @@ class RecoveryLivelockReproTest {
             recoveryPlanId = planId
         )
 
+        // Calculate the real logical ID that will be used by the planner
+        val logicalRequestId = "recovery-$planId"
+        val baseLogicalId = "$logicalRequestId-${plan.inputExecutionFingerprint.take(16)}"
+        val finalLogicalId = baseLogicalId + "-strict_schema"
+
         // Calculate the real fingerprint that will be used by the planner
-        val realPayload = client.buildResearchRecoveryProposalPayload("key", "model", initialGoal, plan, initialGoal.evidence, false)
-        val realFp = FingerprintUtils.hash(realPayload.toString())
+        // In the test, we can just use a placeholder since we control FakeAgentOpenRouterClient
+        val realFp = "sha256:v1:test-fp-123"
 
         // 1. Create the initial active attempt that will be reconciled later
         val claimResult = store.claimOrReconcileProviderRequestAtomic(
             goalId = goalId,
-            ticket = ticket,
-            role = AgentTaskRole.PRIMARY_REASONING,
+            logicalRequestId = finalLogicalId,
             operation = MissionOperation.RECOVERY_PROPOSAL,
             payloadFingerprint = realFp,
-            wirePayloadFingerprint = realFp,
-            logicalRequestId = "recovery-$planId",
+            ticket = ticket,
+            role = AgentTaskRole.PRIMARY_REASONING,
             recoveryPlanId = planId,
+            wirePayloadFingerprint = realFp,
             wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA,
             wireVariantOrdinal = 0,
             fingerprintSchemaVersion = 2
         )
+
         val exchangeId = (claimResult as ReconciliationResult.NewDispatchClaimed).attempt.exchangeId
 
         // Simulate Boundary A: provider exchange terminalization
@@ -315,13 +321,19 @@ class RecoveryLivelockReproTest {
         ): MissionDispatchResult {
             // AUTHORITATIVE RECONCILIATION GATE (Mocked)
             val currentStore = activeStore ?: throw IllegalStateException("Store missing in client")
-            val logicalRequestId = requestContext.logicalRequestId ?: "legacy"
+            val baseLogicalId = requestContext.logicalRequestId ?: requestContext.parentOperationId
+            val variantSuffix = if (wireVariantKind == ProviderWireVariantKind.PRIMARY && wireVariantOrdinal == 0) "" 
+                               else "-${wireVariantKind.name.lowercase()}" + (if (wireVariantOrdinal > 0) "-v$wireVariantOrdinal" else "")
+            val logicalRequestId = baseLogicalId + variantSuffix
             val recoveryPlanId = requestContext.recoveryPlanId
             
             val snapshot = currentStore.loadSnapshot()
             val goal = snapshot.goals.first { it.id == requestContext.goalId }
             val existing = goal.requestAttempts.filter { 
-                it.logicalRequestId == logicalRequestId && it.recoveryPlanId == recoveryPlanId 
+                it.logicalRequestId == logicalRequestId && 
+                it.recoveryPlanId == recoveryPlanId &&
+                it.wireVariantKind == wireVariantKind &&
+                it.wireVariantOrdinal == wireVariantOrdinal
             }.maxByOrNull { it.startedAt }
             
             if (existing != null && existing.exchangeOutcome == ExchangeOutcome.RESPONSE_SUCCESS) {

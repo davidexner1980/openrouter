@@ -3,6 +3,7 @@ package com.david.openassistant.data.openrouter
 import com.david.openassistant.data.diagnostics.redactResearchMonitorText
 import org.json.JSONArray
 import org.json.JSONObject
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 /**
@@ -31,19 +32,66 @@ object OpenRouterProtocolUtils {
 
     /**
      * Calculates a stable SHA-256 fingerprint for a payload JSONObject string representation.
+     * Uses a deterministic sorted-key serialization to ensure stability across retries and restarts.
      */
+    fun computePayloadFingerprint(payload: JSONObject): String {
+        return computePayloadFingerprint(toSortedString(payload))
+    }
+
     fun computePayloadFingerprint(payloadText: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
-        val hash = digest.digest(payloadText.toByteArray(Charsets.UTF_8))
-        return hash.joinToString("") { "%02x".format(it) }
+        val hash = digest.digest(payloadText.toByteArray(StandardCharsets.UTF_8))
+        return "sha256:v1:${hash.joinToString("") { "%02x".format(it) }}"
     }
+
+
+
+    private fun toSortedString(obj: JSONObject): String {
+        val keys = mutableListOf<String>()
+        val it = obj.keys()
+        while (it.hasNext()) keys.add(it.next())
+        keys.sort()
+        
+        return buildString {
+            append("{")
+            keys.forEachIndexed { index, key ->
+                if (index > 0) append(",")
+                append(JSONObject.quote(key))
+                append(":")
+                append(valueToString(obj.get(key)))
+            }
+            append("}")
+        }
+    }
+
+    private fun valueToString(value: Any?): String {
+        return when (value) {
+            null, JSONObject.NULL -> "null"
+            is JSONObject -> toSortedString(value)
+            is JSONArray -> {
+                buildString {
+                    append("[")
+                    for (i in 0 until value.length()) {
+                        if (i > 0) append(",")
+                        append(valueToString(value.get(i)))
+                    }
+                    append("]")
+                }
+            }
+            is String -> JSONObject.quote(value)
+            is Number -> value.toString()
+            is Boolean -> value.toString()
+            else -> value.toString()
+        }
+    }
+
 
     /**
      * Validates an outbound canonical OpenRouter request payload.
      * Throws an [OpenRouterException] with structured [LocalSchemaFailureDetails] if invalid.
      */
     fun validateOutboundRequest(payload: JSONObject) {
-        val payloadFingerprint = computePayloadFingerprint(payload.toString())
+        val payloadFingerprint = computePayloadFingerprint(payload)
         val model = payload.optString("model")
         if (model.isBlank()) {
             throw OpenRouterException(

@@ -75,6 +75,7 @@ class AgentPlanner(
         }
 
         val parentOperationId = "op-plan-${UUID.randomUUID()}"
+        val stateFp = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
         val missionContext = ProviderRequestContext.Mission(
             goalId = goal.id,
             workerId = ticket.workerId,
@@ -85,6 +86,7 @@ class AgentPlanner(
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.CREATE_PLAN,
             parentOperationId = parentOperationId,
+            logicalRequestId = "plan-${stateFp.take(16)}",
         )
 
         return try {
@@ -95,6 +97,8 @@ class AgentPlanner(
                 freeOnly = goal.freeOnly,
                 requestContext = missionContext,
             )
+            diagnostics.info("planning_response_received", mapOf("goal_id" to goal.id, "tokens" to summary.totalTokens))
+
             currentCoroutineContext().ensureActive()
 
             // V43: Objective drift detection
@@ -296,6 +300,7 @@ class AgentPlanner(
             }
             throw error
         } catch (error: Throwable) {
+            diagnostics.error("planning_error_details", error, mapOf("goal_id" to goal.id, "worker_id" to ticket.workerId))
             persistPlanningFailure(goal.id, attempt.id, error, ticket, models)
         }
     }
@@ -361,7 +366,7 @@ class AgentPlanner(
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = if (planToUse.selectedTactic == EscalationTactic.CYCLE_ADVANCE) MissionOperation.CYCLE_ADVANCE else MissionOperation.RECOVERY_PROPOSAL,
             parentOperationId = "op-recovery-${planToUse.id}",
-            logicalRequestId = logicalRequestId,
+            logicalRequestId = "${logicalRequestId}-${planToUse.inputExecutionFingerprint.take(16)}",
             recoveryPlanId = planToUse.id
         )
 

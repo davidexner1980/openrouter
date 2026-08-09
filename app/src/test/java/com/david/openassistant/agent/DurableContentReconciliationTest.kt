@@ -142,8 +142,9 @@ class DurableContentReconciliationTest {
         assertNotNull(response1)
 
         // Verify it was persisted
+        val expectedLogicalId = "$logicalRequestId-test"
         val snapshot = store.loadSnapshot().goals.first { it.id == goalId }
-        val attempt = snapshot.requestAttempts.first { it.logicalRequestId == logicalRequestId }
+        val attempt = snapshot.requestAttempts.first { it.logicalRequestId == expectedLogicalId }
         assertEquals(ExchangeOutcome.RESPONSE_SUCCESS, attempt.exchangeOutcome)
         assertEquals(providerResponseBody, attempt.reconciledResponseContent)
 

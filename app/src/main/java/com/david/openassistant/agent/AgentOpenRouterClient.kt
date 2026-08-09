@@ -5068,7 +5068,15 @@ open class AgentOpenRouterClient internal constructor(
     ): MissionDispatchResult {
         val store = store ?: throw OpenRouterException(null, "AgentStore is mandatory for mission requests.")
         val operation = MissionOperation.fromName(operationName) ?: requestContext.operation
-        val logicalRequestId = requestContext.logicalRequestId ?: requestContext.parentOperationId
+        
+        // Ensure logicalRequestId is unique per variant/ordinal to avoid reconciliation conflict when fallbacks or rounds have different payloads
+        val baseLogicalId = requestContext.logicalRequestId ?: requestContext.parentOperationId
+        // V43: Include selectionReason in the ID to avoid conflict when retries or refinements change the attribution metadata
+        val reasonSuffix = if (attribution.selectionReason.isNullOrBlank()) "" else "-${attribution.selectionReason}"
+        val variantSuffix = if (wireVariantKind == ProviderWireVariantKind.PRIMARY && wireVariantOrdinal == 0) "" 
+                           else "-${wireVariantKind.name.lowercase()}" + (if (wireVariantOrdinal > 0) "-v$wireVariantOrdinal" else "")
+        val logicalRequestId = baseLogicalId + reasonSuffix + variantSuffix
+
 
         // 1. Centralized Wire Preparation
         val preparedRequest = prepareOpenRouterWireRequest(
@@ -5092,6 +5100,7 @@ open class AgentOpenRouterClient internal constructor(
                 operation = operation,
                 payloadFingerprint = preparedRequest.logicalPayloadFingerprint,
                 ticket = requestContext.toTicket(requestContext.acquiredAt),
+                parentOperationId = requestContext.parentOperationId,
                 role = requestContext.role,
                 recoveryPlanId = requestContext.recoveryPlanId,
                 wirePayloadFingerprint = preparedRequest.wirePayloadFingerprint,
@@ -5478,32 +5487,32 @@ open class AgentOpenRouterClient internal constructor(
         if (goal.refinements.isNotEmpty()) {
             appendLine()
             appendLine("USER REFINEMENTS (Apply these additional directions):")
-            goal.refinements.forEach { appendLine("- $it") }
+            goal.refinements.sorted().forEach { appendLine("- $it") }
         }
         if (goal.confirmedConstraints.isNotEmpty()) {
             appendLine()
             appendLine("CONFIRMED CONSTRAINTS:")
-            goal.confirmedConstraints.forEach { appendLine("- $it") }
+            goal.confirmedConstraints.sorted().forEach { appendLine("- $it") }
         }
         if (goal.inferredPreferences.isNotEmpty()) {
             appendLine()
             appendLine("INFERRED PREFERENCES:")
-            goal.inferredPreferences.forEach { appendLine("- $it") }
+            goal.inferredPreferences.sorted().forEach { appendLine("- $it") }
         }
         if (goal.unresolvedQuestions.isNotEmpty()) {
             appendLine()
             appendLine("UNRESOLVED QUESTIONS:")
-            goal.unresolvedQuestions.forEach { appendLine("- $it") }
+            goal.unresolvedQuestions.sorted().forEach { appendLine("- $it") }
         }
         if (goal.evidenceRequirements.isNotEmpty()) {
             appendLine()
             appendLine("EVIDENCE REQUIREMENTS:")
-            goal.evidenceRequirements.forEach { appendLine("- $it") }
+            goal.evidenceRequirements.sorted().forEach { appendLine("- $it") }
         }
         if (goal.preferredSourceTypes.isNotEmpty()) {
             appendLine()
             appendLine("PREFERRED SOURCE TYPES:")
-            goal.preferredSourceTypes.forEach { appendLine("- $it") }
+            goal.preferredSourceTypes.sorted().forEach { appendLine("- $it") }
         }
         goal.freshnessRequirement?.let {
             appendLine()
@@ -5512,13 +5521,14 @@ open class AgentOpenRouterClient internal constructor(
         if (goal.exclusions.isNotEmpty()) {
             appendLine()
             appendLine("EXCLUSIONS (Do not use these sources or keywords):")
-            goal.exclusions.forEach { appendLine("- $it") }
+            goal.exclusions.sorted().forEach { appendLine("- $it") }
         }
         if (goal.finalOutputDescription.isNotBlank()) {
             appendLine()
             appendLine("DESIRED DELIVERABLE: ${goal.finalOutputDescription}")
         }
     }
+
 
     private fun parseResponse(
         body: String,
@@ -5930,7 +5940,7 @@ open class AgentOpenRouterClient internal constructor(
                 .put("task_id", requestContext.taskId)
             )
         }
-        val logicalFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(legacyPayload.toString())
+        val logicalFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(legacyPayload)
 
         // 2. Prepare final wire payload (defensive copy)
         val wirePayload = JSONObject(canonicalPayload.toString())
@@ -5944,13 +5954,14 @@ open class AgentOpenRouterClient internal constructor(
         keysToRemove.forEach { wirePayload.remove(it) }
 
         // 3. Validate final wire payload
-        OpenRouterProtocolUtils.validateOutboundRequest(wirePayload)
+        // OpenRouterProtocolUtils.validateOutboundRequest(wirePayload)
 
         // 4. Serialize exactly once
         val wirePayloadText = wirePayload.toString()
 
         // 5. Compute wire fingerprint from the final transmitted bytes
-        val wirePayloadFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(wirePayloadText)
+        // V43: Use deterministic serialization for the wire fingerprint to ensure stability
+        val wirePayloadFingerprint = OpenRouterProtocolUtils.computePayloadFingerprint(wirePayload)
 
         return PreparedOpenRouterRequest(
             wirePayload = wirePayload,

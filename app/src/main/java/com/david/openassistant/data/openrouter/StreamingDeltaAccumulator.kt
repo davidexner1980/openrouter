@@ -21,6 +21,8 @@ class StreamingDeltaAccumulator {
         buffer.toString().also { buffer.setLength(0) }
     }
 
+    fun content(): String = synchronized(lock) { buffer.toString() }
+
     fun isEmpty(): Boolean = synchronized(lock) { buffer.isEmpty() }
 
     fun clear() {

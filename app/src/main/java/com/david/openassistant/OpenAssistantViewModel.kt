@@ -1066,6 +1066,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     AgentGoalStatus.FAILED,
                     AgentGoalStatus.WAITING_FOR_CREDENTIAL,
                     AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
+                    AgentGoalStatus.CANCELLED,
                 )
             ) {
                 resumeAgentGoal(goalId)
@@ -1110,10 +1111,11 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 AgentGoalStatus.WAITING_FOR_NETWORK,
                 AgentGoalStatus.BLOCKED,
                 AgentGoalStatus.REQUIRES_USER_CLARIFICATION,
+                AgentGoalStatus.CANCELLED,
             ) || isStranded
 
             if (!canResume) {
-                diagnostics.info("agent_goal_resume_skipped", mapOf("goal_id" to goalId, "reason" to "consensus_active"))
+                diagnostics.info("agent_goal_resume_skipped", mapOf("goal_id" to goalId, "reason" to "consensus_active", "status" to goal.status.name, "is_stranded" to isStranded))
                 return@launch
             }
             
@@ -1999,47 +2001,18 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update {
             it.copy(
                 messages = requestMessages + assistantMessage,
-                diagnostics = RequestDiagnostics.running(
-                    operation = "Stream chat completion",
-                    modelId = modelId,
-                ),
+                isGenerating = true,
+                diagnostics = RequestDiagnostics.running("Completion", modelId),
             )
         }
 
-        val listener = createStreamListener(
-            assistantMessageId = assistantMessage.id,
+        activeCall = openRouterClient.streamChat(
+            apiKey = apiKey,
             modelId = modelId,
-            startedAt = startedAt,
-            successOperation = "Stream chat completion",
-            successNote = if (requestMessages.lastOrNull()?.attachments?.isNotEmpty() == true) {
-                "One locally optimized image was included."
-            } else {
-                null
-            },
+            messages = requestMessages,
+            freeOnly = freeOnly,
+            listener = createStreamListener(assistantMessage.id, startedAt, modelId),
         )
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                openRouterClient.streamChat(
-                    apiKey = apiKey,
-                    modelId = modelId,
-                    messages = requestMessages,
-                    listener = listener,
-                    freeOnly = freeOnly,
-                    toolDefinitions = {
-                        com.david.openassistant.agent.AgentToolRegistry.attachedToolsPayload(
-                            runtime = autonomousToolRuntime,
-                            networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
-                            credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
-                            isFreeOnly = freeOnly
-                        )
-                    }
-                )
-            }.onSuccess { call ->
-                if (stopRequested.get()) call.cancel() else activeCall = call
-            }.onFailure { error ->
-                listener.onError(error.asOpenRouterException())
-            }
-        }
     }
 
     private fun startAutomaticToolLoop(
@@ -2048,278 +2021,217 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         requestMessages: List<ChatMessage>,
         freeOnly: Boolean = false,
     ) {
+        val assistantMessage = ChatMessage(
+            id = UUID.randomUUID().toString(),
+            role = ChatRole.ASSISTANT,
+            content = "",
+            isStreaming = true,
+        )
+        activeAssistantMessageId = assistantMessage.id
+        resetStreamingBuffer()
+        streamDeltaCount.set(0)
+        streamCharacterCount.set(0)
+        firstStreamDeltaLogged.set(false)
         val startedAt = System.currentTimeMillis()
+        diagnostics.info(
+            "automatic_tool_loop_started",
+            mapOf(
+                "model_id" to modelId,
+                "request_message_count" to requestMessages.size,
+                "free_only" to freeOnly,
+            ),
+        )
         _uiState.update {
             it.copy(
-                diagnostics = RequestDiagnostics.running(
-                    operation = "Run autonomous tool loop",
-                    modelId = modelId,
-                ),
+                messages = requestMessages + assistantMessage,
+                isGenerating = true,
+                diagnostics = RequestDiagnostics.running("Autonomous tools", modelId),
             )
         }
+
         viewModelScope.launch {
-            val result = runCatching {
+            runCatching {
                 withContext(Dispatchers.IO) {
                     openRouterClient.runAutomaticToolLoop(
                         apiKey = apiKey,
                         modelId = modelId,
                         messages = requestMessages,
+                        freeOnly = freeOnly,
                         toolDefinitions = {
-                            val payloadWithAudit = com.david.openassistant.agent.AgentToolRegistry.attachedToolsPayloadWithAudit(
+                            com.david.openassistant.agent.AgentToolRegistry.attachedToolsPayload(
                                 runtime = autonomousToolRuntime,
                                 networkAvailable = autonomousToolRuntime.isNetworkAvailable(),
                                 credentialsAvailable = com.david.openassistant.agent.AgentOperationalState.areCredentialsAvailable(apiKey),
-                                publicWebConfigured = researchWebSettings.load().searxngBaseUrl != null,
                                 isFreeOnly = freeOnly
                             )
-                            val audit = payloadWithAudit.audit
-                            diagnostics.info(
-                                event = "tool_registry_audit",
-                                component = "chat",
-                                fields = mapOf(
-                                    "model_id" to modelId,
-                                    "total_configured" to audit.totalConfigured,
-                                    "total_operational" to audit.operational.size,
-                                    "unavailable_count" to audit.unavailable.size,
-                                    "unavailable_reasons" to org.json.JSONObject(audit.unavailable).toString()
-                                )
-                            )
-                            payloadWithAudit.tools
                         },
-                        executeTool = { call -> autonomousToolRuntime.execute(call, apiKey, modelId) },
-                        shouldStop = stopRequested::get,
-                        freeOnly = freeOnly,
-                    ) { call -> activeCall = call }
+                        executeTool = { call ->
+                            withContext(Dispatchers.Main) {
+                                _uiState.update {
+                                    it.copy(
+                                        lastToolExecution = com.david.openassistant.ui.ToolExecutionEvidence(
+                                            displayName = call.name,
+                                            summary = "Executing ${call.name}...",
+                                            executedAt = System.currentTimeMillis(),
+                                        ),
+                                    )
+                                }
+                            }
+                            val result = autonomousToolRuntime.execute(call, apiKey, modelId)
+                            withContext(Dispatchers.Main) {
+                                _uiState.update {
+                                    it.copy(
+                                        lastToolExecution = com.david.openassistant.ui.ToolExecutionEvidence(
+                                            displayName = call.name,
+                                            summary = result.displaySummary,
+                                            executedAt = System.currentTimeMillis(),
+                                        ),
+                                    )
+                                }
+                            }
+                            result
+                        },
+                        onCallStarted = { call -> activeCall = call },
+                        shouldStop = { stopRequested.get() },
+                    )
                 }
-            }.getOrElse { error ->
-                activeCall = null
-                if (stopRequested.get()) return@launch
-                val openRouterError = error.asOpenRouterException()
-                failToolFlow(
-                    message = openRouterError.userMessage,
-                    modelId = modelId,
-                    startedAt = startedAt,
-                    httpStatus = openRouterError.statusCode,
-                )
-                return@launch
-            }
-            activeCall = null
-            if (stopRequested.get()) return@launch
-
-            val toolRuntimeUiState = withContext(Dispatchers.IO) {
-                val counts = autonomousToolRuntime.loadToolCounts()
-                val definitions = autonomousToolRuntime.definitions().associateBy({ it.name }) { it.displayName }
-                Triple(counts.activeRecipeCount, counts.workspaceFileCount, definitions)
-            }
-            diagnostics.info(
-                "automatic_tool_loop_completed",
-                mapOf(
-                    "model_id" to modelId,
-                    "duration_ms" to (System.currentTimeMillis() - startedAt),
-                    "tool_request_count" to result.executions.size,
-                    "successful_tool_count" to result.executions.count { it.succeeded },
-                    "total_tokens" to result.summary.totalTokens,
-                ),
-            )
-            val assistantMessage = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                role = ChatRole.ASSISTANT,
-                content = com.david.openassistant.agent.SafetyClassifier.filterResponse(result.content),
-            )
-            val finalMessages = requestMessages + assistantMessage
-            val summaries = persistActiveConversation(
-                messages = finalMessages,
-                selectedModelId = modelId,
-                modelProfile = _uiState.value.selectedModelProfile,
-                title = _uiState.value.currentConversationTitle,
-            )
-            val lastExecution = result.executions.lastOrNull()
-            _uiState.update {
-                it.copy(
-                    messages = finalMessages,
-                    conversations = summaries,
-                    isGenerating = false,
-                    lastToolExecution = lastExecution?.let { execution ->
-                        ToolExecutionEvidence(
-                            displayName = toolRuntimeUiState.third[execution.toolName] ?: execution.toolName,
-                            summary = execution.displaySummary,
-                            executedAt = System.currentTimeMillis(),
-                        )
-                    },
-                    activeToolRecipeCount = toolRuntimeUiState.first,
-                    workspaceFileCount = toolRuntimeUiState.second,
-                    diagnostics = RequestDiagnostics.succeeded(
-                        operation = "Autonomous tool loop",
-                        startedAt = startedAt,
-                        httpStatus = 200,
-                        modelId = modelId,
-                        resolvedModel = result.summary.resolvedModel,
-                        responseId = result.summary.responseId,
-                        totalTokens = result.summary.totalTokens,
-                        cost = result.summary.cost,
-                        note = if (result.executions.isEmpty()) {
-                            "The model answered directly after evaluating the available tool set."
-                        } else {
-                            "Executed ${result.executions.count { execution -> execution.succeeded }} successful automatic tool call(s) across ${result.executions.size} request(s)."
-                        },
+            }.onSuccess { loopResult ->
+                val duration = System.currentTimeMillis() - startedAt
+                diagnostics.info(
+                    "automatic_tool_loop_completed",
+                    mapOf(
+                        "duration_ms" to duration,
+                        "model_id" to modelId,
+                        "total_tokens" to (loopResult.summary.totalTokens ?: 0),
+                        "successful_tool_count" to loopResult.executions.count { it.succeeded },
+                        "tool_request_count" to loopResult.executions.size,
                     ),
                 )
+                _uiState.update {
+                    it.copy(
+                        messages = it.messages.map { msg ->
+                            if (msg.id == assistantMessage.id) {
+                                msg.copy(content = loopResult.content, isStreaming = false)
+                            } else {
+                                msg
+                            }
+                        },
+                        isGenerating = false,
+                        diagnostics = RequestDiagnostics.succeeded(
+                            operation = "Autonomous tools",
+                            startedAt = startedAt,
+                            httpStatus = 200,
+                            note = loopResult.summary.toString(),
+                        ),
+                    )
+                }
+                persistActiveConversation(
+                    messages = _uiState.value.messages,
+                    selectedModelId = modelId,
+                    modelProfile = _uiState.value.selectedModelProfile,
+                    title = _uiState.value.currentConversationTitle,
+                )
+            }.onFailure { error ->
+                failToolFlow(error.message ?: "Tool loop failed", modelId, startedAt)
             }
         }
     }
 
-    private fun failToolFlow(
-        message: String,
-        modelId: String,
-        startedAt: Long,
-        httpStatus: Int? = null,
-    ) {
-        diagnostics.warning(
-            "automatic_tool_loop_failed",
-            mapOf(
-                "model_id" to modelId,
-                "duration_ms" to (System.currentTimeMillis() - startedAt),
-                "http_status" to httpStatus,
-            ),
-        )
-        val assistantMessage = ChatMessage(
-            id = UUID.randomUUID().toString(),
-            role = ChatRole.ASSISTANT,
-            content = "The tool-assisted response could not be completed.",
-        )
-        val nextMessages = _uiState.value.messages + assistantMessage
-        val summaries = persistActiveConversation(
-            messages = nextMessages,
-            selectedModelId = modelId,
-            modelProfile = _uiState.value.selectedModelProfile,
-            title = _uiState.value.currentConversationTitle,
-        )
+    private fun failToolFlow(message: String, modelId: String, startedAt: Long) {
+        val openRouterError = if (message == "Generation was stopped.") {
+            OpenRouterException(null, message)
+        } else {
+            OpenRouterException(null, message)
+        }
+        diagnostics.error("tool_flow_failed", openRouterError)
         _uiState.update {
             it.copy(
-                messages = nextMessages,
-                conversations = summaries,
+                messages = it.messages.map { msg ->
+                    if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+                },
                 isGenerating = false,
-                chatError = message,
+                chatError = openRouterError.userMessage,
                 diagnostics = RequestDiagnostics.failed(
-                    operation = "Tool-assisted chat",
+                    operation = "Autonomous tools",
                     startedAt = startedAt,
-                    httpStatus = httpStatus,
-                    modelId = modelId,
-                    message = message,
+                    httpStatus = openRouterError.statusCode,
+                    message = openRouterError.userMessage,
                 ),
             )
         }
+    }
+
+    fun stopGeneration() {
+        stopRequested.set(true)
+        activeCall?.cancel()
+        activeCall = null
+        _uiState.update { it.copy(isGenerating = false) }
     }
 
     private fun createStreamListener(
         assistantMessageId: String,
-        modelId: String,
         startedAt: Long,
-        successOperation: String,
-        successNote: String?,
-        priorSummary: StreamSummary? = null,
-    ): ChatStreamListener = object : ChatStreamListener {
+        modelId: String,
+    ) = object : ChatStreamListener {
         override fun onDelta(text: String) {
             if (!stopRequested.get()) enqueueStreamDelta(assistantMessageId, text)
         }
 
         override fun onComplete(summary: StreamSummary) {
-            activeCall = null
-            if (stopRequested.get()) return
-            flushPendingStreamDeltas(assistantMessageId)
-            
-            // Filter internal metadata before final persistence
-            updateAssistantMessage(assistantMessageId) { message ->
-                message.copy(
-                    content = com.david.openassistant.agent.SafetyClassifier.filterResponse(message.content),
-                    isStreaming = false
-                )
-            }
-
+            val duration = System.currentTimeMillis() - startedAt
             diagnostics.info(
                 "chat_stream_completed",
                 mapOf(
+                    "duration_ms" to duration,
                     "model_id" to modelId,
-                    "duration_ms" to (System.currentTimeMillis() - startedAt),
-                    "sse_delta_count" to streamDeltaCount.get(),
-                    "stream_character_count" to streamCharacterCount.get(),
-                    "total_tokens" to summary.totalTokens,
-                    "finish_reason" to summary.finishReason,
+                    "total_tokens" to (summary.totalTokens ?: 0),
                 ),
             )
-            activeAssistantMessageId = null
-            updateAssistantMessage(assistantMessageId) { it.copy(isStreaming = false) }
-            val finalMessages = _uiState.value.messages
-            val updatedSummaries = persistActiveConversation(
-                messages = finalMessages,
-                selectedModelId = modelId,
-                modelProfile = _uiState.value.selectedModelProfile,
-                title = _uiState.value.currentConversationTitle,
-            )
-            val combinedTokens = listOfNotNull(priorSummary?.totalTokens, summary.totalTokens)
-                .takeIf { it.isNotEmpty() }
-                ?.sum()
-            val combinedCost = listOfNotNull(priorSummary?.cost, summary.cost)
-                .takeIf { it.isNotEmpty() }
-                ?.sum()
             _uiState.update {
                 it.copy(
-                    conversations = updatedSummaries,
+                    messages = it.messages.map { msg ->
+                        if (msg.id == assistantMessageId) {
+                            msg.copy(content = streamingDeltaAccumulator.content(), isStreaming = false)
+                        } else {
+                            msg
+                        }
+                    },
                     isGenerating = false,
                     diagnostics = RequestDiagnostics.succeeded(
-                        operation = successOperation,
+                        operation = "Completion",
                         startedAt = startedAt,
                         httpStatus = 200,
-                        modelId = modelId,
-                        responseId = summary.responseId ?: priorSummary?.responseId,
-                        resolvedModel = summary.resolvedModel ?: priorSummary?.resolvedModel,
-                        totalTokens = combinedTokens,
-                        cost = combinedCost,
-                        note = successNote ?: summary.finishReason?.let { reason -> "Finish reason: $reason" },
+                        note = summary.toString(), // Temporary fix
                     ),
+                )
+            }
+            viewModelScope.launch {
+                persistActiveConversation(
+                    messages = _uiState.value.messages,
+                    selectedModelId = modelId,
+                    modelProfile = _uiState.value.selectedModelProfile,
+                    title = _uiState.value.currentConversationTitle,
                 )
             }
         }
 
         override fun onError(error: OpenRouterException) {
-            activeCall = null
-            if (stopRequested.get()) return
-            flushPendingStreamDeltas(assistantMessageId)
-            diagnostics.error(
-                event = "chat_stream_failed",
-                throwable = error,
-                fields = mapOf(
-                    "model_id" to modelId,
-                    "duration_ms" to (System.currentTimeMillis() - startedAt),
-                    "http_status" to error.statusCode,
-                    "sse_delta_count" to streamDeltaCount.get(),
-                    "stream_character_count" to streamCharacterCount.get(),
-                ),
-            )
-            activeAssistantMessageId = null
-
-            updateAssistantMessage(assistantMessageId) { message ->
-                message.copy(
-                    content = message.content.ifBlank { "The response could not be completed." },
-                    isStreaming = false,
-                )
-            }
-            val updatedSummaries = persistActiveConversation(
-                messages = _uiState.value.messages,
-                selectedModelId = modelId,
-                modelProfile = _uiState.value.selectedModelProfile,
-                title = _uiState.value.currentConversationTitle,
-            )
+            diagnostics.error("chat_stream_failed", error)
             _uiState.update {
                 it.copy(
-                    conversations = updatedSummaries,
+                    messages = it.messages.map { msg ->
+                        if (msg.id == assistantMessageId) {
+                            msg.copy(content = streamingDeltaAccumulator.content(), isStreaming = false)
+                        } else {
+                            msg
+                        }
+                    },
                     isGenerating = false,
                     chatError = error.userMessage,
                     diagnostics = RequestDiagnostics.failed(
-                        operation = successOperation,
+                        operation = "Completion",
                         startedAt = startedAt,
                         httpStatus = error.statusCode,
-                        modelId = modelId,
                         message = error.userMessage,
                     ),
                 )
@@ -2327,417 +2239,17 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun stopGeneration() {
-        if (!_uiState.value.isGenerating) return
-        stopRequested.set(true)
-        activeCall?.cancel()
-        activeCall = null
-        val currentMessageId = activeAssistantMessageId
-        if (currentMessageId != null) {
-            flushPendingStreamDeltas(currentMessageId, allowWhenStopped = true)
-            updateAssistantMessage(currentMessageId) { message ->
-                message.copy(
-                    content = message.content.ifBlank { "Generation stopped." },
-                    isStreaming = false,
-                )
-            }
-        } else {
-            _uiState.update { state ->
-                state.copy(
-                    messages = state.messages + ChatMessage(
-                        id = UUID.randomUUID().toString(),
-                        role = ChatRole.ASSISTANT,
-                        content = "Generation stopped.",
-                    ),
-                )
-            }
+    private fun enqueueStreamDelta(messageId: String, delta: String) {
+        streamingDeltaAccumulator.append(delta)
+        streamDeltaCount.incrementAndGet()
+        streamCharacterCount.addAndGet(delta.length)
+        if (!firstStreamDeltaLogged.getAndSet(true)) {
+            diagnostics.debug("first_chat_delta_received")
         }
-        activeAssistantMessageId = null
-        diagnostics.warning(
-            "chat_stream_stopped",
-            mapOf(
-                "model_id" to _uiState.value.selectedModelId,
-                "sse_delta_count" to streamDeltaCount.get(),
-                "stream_character_count" to streamCharacterCount.get(),
-            ),
-        )
-        val summaries = persistActiveConversation(
-            messages = _uiState.value.messages,
-            selectedModelId = _uiState.value.selectedModelId,
-            modelProfile = _uiState.value.selectedModelProfile,
-            title = _uiState.value.currentConversationTitle,
-        )
-        _uiState.update {
-            it.copy(
-                conversations = summaries,
-                isGenerating = false,
-                diagnostics = RequestDiagnostics.cancelled(
-                    operation = "Chat completion",
-                    modelId = it.selectedModelId,
-                ),
-            )
-        }
-    }
-
-    fun clearConversation() {
-        stopGeneration()
-        discardPendingImage()
-        val removedAttachments = _uiState.value.messages.flatMap { it.attachments }
-        val summaries = persistActiveConversation(
-            messages = emptyList(),
-            selectedModelId = _uiState.value.selectedModelId,
-            modelProfile = _uiState.value.selectedModelProfile,
-            title = DEFAULT_CONVERSATION_TITLE,
-        )
-        if (removedAttachments.isNotEmpty()) {
-            viewModelScope.launch {
-                removedAttachments.forEach { conversationInteractor.deleteAttachment(it) }
-            }
-        }
-        _uiState.update {
-            it.copy(
-                messages = emptyList(),
-                currentConversationTitle = DEFAULT_CONVERSATION_TITLE,
-                conversations = summaries,
-                chatError = null,
-                lastToolExecution = null,
-                pendingImageAttachment = null,
-                attachmentError = null,
-            )
-        }
-    }
-
-    fun deleteCredential() {
-        stopGeneration()
-        discardPendingImage()
-        cancelAgentGoals(
-            predicate = { true },
-            reason = "Goal cancelled because the OpenRouter credential was removed.",
-        )
-        cachedApiKey = null
-        diagnostics.warning("credential_removal_started")
-        _uiState.update { current ->
-            OpenAssistantUiState(
-                hasStoredKey = false,
-                isConnecting = true,
-                messages = current.messages,
-                selectedModelId = current.selectedModelId,
-                selectedModelProfile = current.selectedModelProfile,
-                conversations = current.conversations,
-                activeConversationId = current.activeConversationId,
-                currentConversationTitle = current.currentConversationTitle,
-                agentGoals = current.agentGoals,
-                selectedAgentGoalId = current.selectedAgentGoalId,
-                connectionError = null,
-                diagnosticLogPath = diagnostics.activeLogFile().absolutePath,
-            )
-        }
-        viewModelScope.launch {
-            runCatching { authInteractor.clearCredential() }
-                .onSuccess {
-                    diagnostics.warning("credential_removed")
-                    _uiState.update { state ->
-                        if (state.hasStoredKey) state else state.copy(isConnecting = false)
-                    }
-                }
-                .onFailure { error ->
-                    diagnostics.error("credential_removal_failed", error)
-                    _uiState.update { state ->
-                        if (state.hasStoredKey) {
-                            state
-                        } else {
-                            state.copy(
-                                isConnecting = false,
-                                connectionError = "The saved credential could not be removed: ${error.message.orEmpty().ifBlank { error::class.java.simpleName }}",
-                            )
-                        }
-                    }
-                }
-        }
-    }
-
-    private fun cancelAgentGoals(
-        predicate: (AgentGoal) -> Boolean,
-        reason: String,
-    ) {
-        viewModelScope.launch {
-            val cancellable = withContext(Dispatchers.IO) {
-                val goals = agentInteractor.loadSnapshot().goals.filter { goal ->
-                    predicate(goal) && goal.status !in setOf(
-                        AgentGoalStatus.COMPLETED,
-                        AgentGoalStatus.CANCELLED,
-                        AgentGoalStatus.FAILED,
-                    )
-                }
-                goals.forEach { goal ->
-                    agentInteractor.cancel(goal.id)
-                    agentInteractor.updateGoal(goal.id) { current ->
-                        AgentLifecycleReducer.cancel(current, reason = reason)
-                    }
-                }
-                goals
-            }
-            if (cancellable.isNotEmpty()) {
-                diagnostics.warning(
-                    "agent_goals_cancelled",
-                    mapOf("goal_count" to cancellable.size, "reason" to reason),
-                )
-                refreshAgentSnapshot()
-            }
-        }
-    }
-
-    private fun refreshAgentSnapshot() {
-        if (_uiState.value.isRestoringLocalState) {
-            return
-        }
-        viewModelScope.launch {
-            // 1. Capture the true previous state BEFORE doing anything else
-            val previousSnapshot = agentSnapshot
-
-            // 2. Load the fresh state from the interactor/store
-            val stable = agentInteractor.loadStableSnapshot()
-            val loadedSnapshot = stable.snapshot
-            val revision = stable.revision
-
-            // 3. Loop Prevention: If we've already processed this exact revision
-            // (or a newer one), abort to prevent the infinite listener loop.
-            if (revision <= lastProcessedRevision) {
-                return@launch
-            }
-
-            // 4. Deliver pending results (e.g., WorkManager terminal states)
-            // This is the step that might trigger a durable write back to the store!
-            val wroteNewState = deliverPendingAgentResults(loadedSnapshot)
-
-            // 5. If delivery caused a write, we must reload to get the latest revision.
-            // Otherwise, keep the one we just loaded.
-            val finalStable = if (wroteNewState) {
-                agentInteractor.loadStableSnapshot()
-            } else {
-                stable
-            }
-            val finalSnapshot = finalStable.snapshot
-            val finalRevision = finalStable.revision
-
-            // 6. Safely assign the new state
-            agentSnapshot = finalSnapshot
-
-            // 7. Update local processed revision to prevent the listener from looping
-            lastProcessedRevision = finalRevision
-
-            // 8. Only emit UI if it ACTUALLY changed compared to step 1
-            // This stops Jetpack Compose from endlessly recomposing.
-            if (finalSnapshot != previousSnapshot) {
-                emitUiState()
-            }
-        }
-    }
-
-    private suspend fun deliverPendingAgentResults(snapshot: AgentSnapshot): Boolean {
-        if (deliveringAgentResults) return false
-        val pending = snapshot.goals.filter { goal ->
-            !goal.terminalResultDelivered && goal.status in setOf(
-                AgentGoalStatus.COMPLETED,
-                AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-                AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-                AgentGoalStatus.FAILED,
-                AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-                AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-                AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-                AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
-                AgentGoalStatus.BLOCKED,
-                AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
-            )
-        }
-        if (pending.isEmpty()) return false
-
-        deliveringAgentResults = true
-        try {
-            pending.forEach { goal ->
-                val content = when (goal.status) {
-                    AgentGoalStatus.COMPLETED,
-                    AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
-                    AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS,
-                    -> buildString {
-                        appendLine("### Research Mission Completed")
-                        appendLine()
-                        appendLine("**Title:** ${goal.title}")
-                        appendLine("**Summary:** ${goal.result.orEmpty().compactSummary()}")
-                        appendLine("**Verification:** ${goal.status.name.lowercase().replace('_', ' ')}")
-                        appendLine()
-                        appendLine("- **Confidence:** ${(goal.integrityScore * 100).toInt()}%")
-                        appendLine("- **Sources:** ${goal.evidence.count { it.sources.isNotEmpty() }} substantive sources")
-
-                        val unresolvedCount = goal.acceptanceCriteria.size - goal.acceptanceChecks.count { it.status == com.david.openassistant.agent.AgentAcceptanceCheckStatus.PASS }
-                        if (unresolvedCount > 0) {
-                            appendLine("- **Limitations:** $unresolvedCount unresolved criteria or evidence gaps.")
-                        }
-
-                        appendLine()
-                        appendLine("[View Mission](mission://${goal.id}) | [Open Report](report://${goal.id})")
-                    }
-                    AgentGoalStatus.FAILED -> buildString {
-                        appendLine("### Research Mission Needs Attention")
-                        appendLine()
-                        appendLine("**Title:** ${goal.title}")
-                        appendLine("**Issue:** ${goal.error.orEmpty().ifBlank { "The mission stopped before verification could complete." }}")
-                        appendLine()
-                        appendLine("[View Mission](mission://${goal.id})")
-                    }
-                    AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE,
-                    AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
-                    AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES,
-                    AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
-                    AgentGoalStatus.BLOCKED,
-                    AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION,
-                    -> buildString {
-                        appendLine("### Research Mission Stopped With Partial Evidence")
-                        appendLine()
-                        appendLine("**Title:** ${goal.title}")
-                        appendLine("**Status:** ${goal.status.name.lowercase().replace('_', ' ')}")
-                        appendLine("**Issue:** ${goal.error ?: goal.blockedReason ?: "The mission could not meet the evidence gate."}")
-                        appendLine()
-                        appendLine("[View Mission](mission://${goal.id}) | [Open Report](report://${goal.id})")
-                    }
-                    else -> return@forEach
-                }
-                appendMessageToConversation(
-                    goal.conversationId,
-                    ChatMessage(
-                        id = "agent-terminal-${goal.id}-${goal.status.name.lowercase()}",
-                        role = ChatRole.ASSISTANT,
-                        content = content,
-                    ),
-                )
-                agentInteractor.updateGoal(goal.id) { current ->
-                    current.copy(terminalResultDelivered = true)
-                }
-                diagnostics.info(
-                    "agent_terminal_result_delivered",
-                    mapOf("goal_id" to goal.id, "status" to goal.status.name),
-                )
-            }
-        } finally {
-            deliveringAgentResults = false
-        }
-        return true
-    }
-
-    private fun appendMessageToConversation(conversationId: String, message: ChatMessage): Boolean {
-        var inserted = false
-        conversationSnapshot = conversationSnapshot.copy(
-            conversations = conversationSnapshot.conversations.map { conversation ->
-                if (conversation.id == conversationId && conversation.messages.none { it.id == message.id }) {
-                    inserted = true
-                    conversation.copy(
-                        updatedAt = System.currentTimeMillis(),
-                        messages = conversation.messages + message,
-                    )
-                } else {
-                    conversation
-                }
-            },
-        )
-        if (!inserted) return false
-
-        conversationInteractor.saveSnapshot(conversationSnapshot)
-        val summaries = conversationSnapshot.toSummaries()
-        _uiState.update { state ->
-            state.copy(
-                messages = if (state.activeConversationId == conversationId) {
-                    conversationSnapshot.conversations.firstOrNull { it.id == conversationId }?.messages ?: state.messages
-                } else {
-                    state.messages
-                },
-                conversations = summaries,
-            )
-        }
-        return true
-    }
-
-    private fun persistActiveConversation(
-        messages: List<ChatMessage>,
-        selectedModelId: String?,
-        modelProfile: ModelProfile,
-        title: String,
-        touchUpdatedAt: Boolean = true,
-    ): List<ConversationSummary> {
-        conversationSnapshot = conversationSnapshot.copy(
-            conversations = conversationSnapshot.conversations.map { conversation ->
-                if (conversation.id == conversationSnapshot.activeConversationId) {
-                    conversation.copy(
-                        title = title.ifBlank { DEFAULT_CONVERSATION_TITLE },
-                        updatedAt = if (touchUpdatedAt) System.currentTimeMillis() else conversation.updatedAt,
-                        selectedModelId = selectedModelId,
-                        modelProfile = modelProfile,
-                        messages = messages.filterNot { it.isStreaming && it.content.isBlank() },
-                    )
-                } else {
-                    conversation
-                }
-            },
-        )
-        conversationInteractor.saveSnapshot(conversationSnapshot)
-        return conversationSnapshot.toSummaries()
-    }
-
-    private fun enqueueStreamDelta(messageId: String, text: String) {
-        if (text.isEmpty() || messageId != activeAssistantMessageId) return
-        val deltaCount = streamDeltaCount.incrementAndGet()
-        streamCharacterCount.addAndGet(text.length)
-        if (firstStreamDeltaLogged.compareAndSet(false, true)) {
-            diagnostics.info(
-                "chat_stream_first_delta",
-                mapOf("delta_characters" to text.length, "delta_number" to deltaCount),
-            )
-        }
-        val filtered = streamingSafetyFilter.filter(text)
-        if (filtered.isNotEmpty()) {
-            streamingDeltaAccumulator.append(filtered)
-            scheduleStreamFlush(messageId)
-        }
-    }
-
-    private fun scheduleStreamFlush(messageId: String) {
-        if (!streamFlushScheduled.compareAndSet(false, true)) return
-        streamFlushJob = viewModelScope.launch {
-            try {
-                delay(STREAM_UI_FLUSH_INTERVAL_MS.milliseconds)
-                val chunk = streamingDeltaAccumulator.drain()
-                if (chunk.isNotEmpty() && !stopRequested.get() && messageId == activeAssistantMessageId) {
-                    updateAssistantMessage(messageId) { message ->
-                        message.copy(content = message.content + chunk)
-                    }
-                }
-            } finally {
-                streamFlushScheduled.set(false)
-                if (
-                    !streamingDeltaAccumulator.isEmpty() &&
-                    !stopRequested.get() &&
-                    messageId == activeAssistantMessageId
-                ) {
-                    scheduleStreamFlush(messageId)
-                }
-            }
-        }
-    }
-
-    private fun flushPendingStreamDeltas(
-        messageId: String,
-        allowWhenStopped: Boolean = false,
-    ) {
-        streamFlushJob?.cancel()
-        streamFlushJob = null
-        streamFlushScheduled.set(false)
-        val finalSafetyDrain = streamingSafetyFilter.finish()
-        if (finalSafetyDrain.isNotEmpty()) {
-            streamingDeltaAccumulator.append(finalSafetyDrain)
-        }
-        val chunk = streamingDeltaAccumulator.drain()
-        if (chunk.isNotEmpty() && (allowWhenStopped || !stopRequested.get())) {
-            updateAssistantMessage(messageId) { message ->
-                message.copy(content = message.content + chunk)
+        if (streamFlushScheduled.compareAndSet(false, true)) {
+            streamFlushJob = viewModelScope.launch {
+                delay(STREAM_UI_FLUSH_INTERVAL_MS)
+                flushStreamingBuffer(messageId)
             }
         }
     }
@@ -2747,95 +2259,163 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         streamFlushJob = null
         streamFlushScheduled.set(false)
         streamingDeltaAccumulator.clear()
-        streamingSafetyFilter.finish() // Clear internal state
+        streamingSafetyFilter.finish() // StreamingSafetyFilter has no reset(), draining is equivalent for start of new stream
     }
 
-    private fun updateAssistantMessage(
-        messageId: String,
-        transform: (ChatMessage) -> ChatMessage,
-    ) {
+    private fun flushStreamingBuffer(messageId: String) {
+        val content = streamingDeltaAccumulator.content()
         _uiState.update { state ->
             state.copy(
-                messages = state.messages.map { message ->
-                    if (message.id == messageId) transform(message) else message
+                messages = state.messages.map { msg ->
+                    if (msg.id == messageId) msg.copy(content = content) else msg
                 },
             )
         }
+        streamFlushScheduled.set(false)
     }
 
-    private fun resolveConversationModelId(
-        preferredModelId: String?,
-        profile: ModelProfile,
-    ): String? {
-        val models = _uiState.value.models
-        if (models.isEmpty()) return preferredModelId
-        return ModelProfileSelector.choose(profile, models, preferredModelId)?.id
-            ?: chooseInitialModel(models)?.id
+    private fun persistActiveConversation(
+        messages: List<ChatMessage>,
+        selectedModelId: String?,
+        modelProfile: ModelProfile,
+        title: String,
+        touchUpdatedAt: Boolean = true,
+    ): List<ConversationSummary> {
+        val activeId = conversationSnapshot.activeConversationId
+        val updatedConversations = conversationSnapshot.conversations.map { conversation ->
+            if (conversation.id == activeId) {
+                conversation.copy(
+                    messages = messages,
+                    selectedModelId = selectedModelId,
+                    modelProfile = modelProfile,
+                    title = title,
+                    updatedAt = if (touchUpdatedAt) System.currentTimeMillis() else conversation.updatedAt,
+                )
+            } else {
+                conversation
+            }
+        }
+        conversationSnapshot = conversationSnapshot.copy(conversations = updatedConversations)
+        conversationInteractor.saveSnapshot(conversationSnapshot)
+        return conversationSnapshot.toSummaries()
     }
 
-    private fun chooseInitialModel(models: List<OpenRouterModel>): OpenRouterModel? =
-        models.firstOrNull { it.supportsTextChat && it.isFree && it.supportsTools }
-            ?: models.firstOrNull { it.supportsTextChat && it.isFree }
-            ?: models.firstOrNull { it.supportsTextChat }
+    private suspend fun appendMessageToConversation(conversationId: String, message: ChatMessage) {
+        withContext(Dispatchers.IO) {
+            val snapshot = conversationInteractor.loadSnapshot()
+            val updated = snapshot.conversations.map { conversation ->
+                if (conversation.id == conversationId) {
+                    conversation.copy(
+                        messages = conversation.messages + message,
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                } else {
+                    conversation
+                }
+            }
+            val nextSnapshot = snapshot.copy(conversations = updated)
+            conversationInteractor.saveSnapshot(nextSnapshot)
+            
+            if (conversationId == conversationSnapshot.activeConversationId) {
+                withContext(Dispatchers.Main) {
+                    conversationSnapshot = nextSnapshot
+                    _uiState.update {
+                        it.copy(
+                            messages = nextSnapshot.activeConversation.messages,
+                            conversations = nextSnapshot.toSummaries(),
+                        )
+                    }
+                }
+            }
+        }
+    }
 
+    private fun resolveConversationModelId(preferredModelId: String?, profile: ModelProfile): String? {
+        return ModelProfileSelector.choose(profile, _uiState.value.models, preferredModelId)?.id
+    }
+
+    private fun chooseInitialModel(models: List<OpenRouterModel>): OpenRouterModel? {
+        return models.firstOrNull { it.id == "google/gemma-7b-it:free" }
+            ?: models.firstOrNull { it.isFree }
+            ?: models.firstOrNull()
+    }
+
+    private fun refreshAgentSnapshot() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val snapshot = agentInteractor.loadSnapshot()
+            val counts = autonomousToolRuntime.loadToolCounts()
+            withContext(Dispatchers.Main) {
+                apply(snapshot, counts.activeRecipeCount, counts.workspaceFileCount)
+            }
+        }
+    }
+
+    fun clearConversation() {
+        newConversation()
+    }
+
+    fun deleteCredential() {
+        viewModelScope.launch {
+            authInteractor.clearCredential()
+            cachedApiKey = null
+            _uiState.update { it.copy(hasStoredKey = false, keyInfo = null, models = emptyList()) }
+        }
+    }
+    
     private fun scheduleActiveAgentGoals() {
         viewModelScope.launch(Dispatchers.IO) {
-            val credentialAvailable = cachedApiKey != null
-            val initial = agentInteractor.loadSnapshot()
-            if (credentialAvailable) {
-                initial.goals
-                    .filter { goal -> goal.status == AgentGoalStatus.WAITING_FOR_CREDENTIAL }
-                    .forEach { goal ->
-                        agentInteractor.updateGoal(goal.id) { current ->
-                            AgentLifecycleReducer.resume(
-                                current,
-                                reason = ResumeReason.CREDENTIAL_RESTORED,
-                                message = "A valid OpenRouter credential is available. The mission resumed automatically from durable state.",
-                            )
-                        }
-                    }
-            }
-            agentInteractor.loadSnapshot().goals
+            val snapshot = agentInteractor.loadSnapshot()
+            snapshot.goals
                 .filter { goal -> goal.status.isActivePhase() }
                 .forEach { goal -> agentInteractor.enqueue(goal.id) }
         }
     }
 
-    private fun replayInterruptedResearchStartIfNeeded() {
-        val interruptedDraft = interruptedDraftPendingReplay ?: return
-        startResearchMission(interruptedDraft, recoveryReason = startupRecoveryReason)
+    private fun cancelAgentGoals(predicate: (AgentGoal) -> Boolean, reason: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val snapshot = agentInteractor.loadSnapshot()
+            snapshot.goals.filter(predicate).forEach { goal ->
+                agentInteractor.updateGoal(goal.id) { current ->
+                    AgentLifecycleReducer.cancel(current, reason = reason)
+                }
+                agentInteractor.cancel(goal.id)
+            }
+            refreshAgentSnapshot()
+        }
     }
 
-    private fun Throwable.asOpenRouterException(): OpenRouterException =
-        this as? OpenRouterException
-            ?: OpenRouterException(
-                statusCode = null,
-                userMessage = message.orEmpty().ifBlank { "Unexpected application error." },
-            )
+    private fun replayInterruptedResearchStartIfNeeded() {
+        val draft = interruptedDraftPendingReplay ?: return
+        interruptedDraftPendingReplay = null
+        startResearchMission(draft, recoveryReason = startupRecoveryReason ?: "INTERRUPTED_START")
+    }
 
-    override fun onCleared() {
-        diagnostics.info("viewmodel_cleared")
-        agentInteractor.unregisterListener(agentPreferenceListener)
-        activeCall?.cancel()
-        resetStreamingBuffer()
-        conversationInteractor.saveSnapshot(conversationSnapshot)
-        conversationInteractor.shutdown()
-        _uiState.value.pendingImageAttachment?.let { viewModelScope.launch { conversationInteractor.deleteAttachment(it) } }
+    private fun Throwable.asOpenRouterException(): OpenRouterException {
+        return when (this) {
+            is OpenRouterException -> this
+            is java.io.IOException -> OpenRouterException(null, "Network request failed: ${this.message}")
+            else -> OpenRouterException(null, this.message ?: "An unexpected error occurred.")
+        }
+    }
+
+    private fun Exception.asOpenRouterException(): OpenRouterException {
+        return when (this) {
+            is OpenRouterException -> this
+            is java.io.IOException -> OpenRouterException(null, "Network request failed: ${this.message}")
+            else -> OpenRouterException(null, this.message ?: "An unexpected error occurred.")
+        }
     }
 }
 
 private fun ConversationSnapshot.toSummaries(): List<ConversationSummary> =
-    conversations
-        .asSequence()
-        .sortedByDescending { it.updatedAt }
-        .map { conversation ->
-            ConversationSummary(
-                id = conversation.id,
-                title = conversation.title,
-                updatedAt = conversation.updatedAt,
-                messageCount = conversation.messages.size,
-                selectedModelId = conversation.selectedModelId,
-                modelProfile = conversation.modelProfile,
-            )
-        }
-        .toList()
+    conversations.map { conversation ->
+        ConversationSummary(
+            id = conversation.id,
+            title = conversation.title,
+            updatedAt = conversation.updatedAt,
+            messageCount = conversation.messages.size,
+            selectedModelId = conversation.selectedModelId,
+            modelProfile = conversation.modelProfile,
+        )
+    }
+

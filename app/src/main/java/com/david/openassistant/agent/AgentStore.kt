@@ -993,6 +993,7 @@ open class AgentStore private constructor(
         operation: MissionOperation,
         payloadFingerprint: String,
         ticket: AgentOwnershipTicket,
+        parentOperationId: String? = null,
         role: AgentTaskRole? = null,
         recoveryPlanId: String? = null,
         wirePayloadFingerprint: String? = null,
@@ -1179,7 +1180,7 @@ open class AgentStore private constructor(
             exchangeId = exchangeId,
             logicalRequestId = logicalRequestId,
             wireAttemptOrdinal = 1,
-            parentOperationId = logicalRequestId, // Using logicalRequestId as parent for reconciliation stability
+            parentOperationId = parentOperationId ?: logicalRequestId,
             goalId = goalId,
             taskId = if (operation.taskBound) ticket.taskId else null,
             executionGeneration = ticket.generation,
