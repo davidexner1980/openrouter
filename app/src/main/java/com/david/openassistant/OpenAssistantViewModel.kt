@@ -2165,7 +2165,14 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         stopRequested.set(true)
         activeCall?.cancel()
         activeCall = null
-        _uiState.update { it.copy(isGenerating = false) }
+        _uiState.update { state ->
+            state.copy(
+                isGenerating = false,
+                messages = state.messages.map { 
+                    if (it.isStreaming) it.copy(isStreaming = false) else it 
+                }
+            )
+        }
     }
 
     private fun createStreamListener(

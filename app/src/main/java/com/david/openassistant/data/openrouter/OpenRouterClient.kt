@@ -123,9 +123,17 @@ class OpenRouterClient(
         var totalCost = 0.0
         var round = 0
 
+        val loopStartedAt = System.currentTimeMillis()
         val availableNames = mutableSetOf<String>()
-        while (true) {
+        while (round < MAX_TOOL_ROUNDS) {
             if (shouldStop()) throw OpenRouterException(null, "Generation was stopped.")
+            if (System.currentTimeMillis() - loopStartedAt > MAX_TOOL_LOOP_DURATION_MS) {
+                throw OpenRouterException(null, "Tool execution loop exceeded the maximum duration of ${MAX_TOOL_LOOP_DURATION_MS / 1000} seconds.")
+            }
+            if (executions.size >= MAX_TOOL_EXECUTIONS) {
+                throw OpenRouterException(null, "Tool execution loop exceeded the maximum of $MAX_TOOL_EXECUTIONS tool calls.")
+            }
+
             val toolArray = toolDefinitions()
             if (toolArray.length() == 0) throw OpenRouterException(null, "No autonomous tools are available.")
             
@@ -196,7 +204,17 @@ class OpenRouterClient(
                     for (index in 0 until calls.length()) {
                         val rawCall = calls.optJSONObject(index) ?: continue
                         val function = rawCall.optJSONObject("function") ?: continue
-                        add("${function.optString("name")}:${function.optString("arguments").trim()}")
+                        val name = function.optString("name")
+                        val args = function.optString("arguments")
+                        
+                        // V43: Normalize arguments for stable comparison
+                        val normalizedArgs = runCatching {
+                            val json = JSONObject(args)
+                            val sortedKeys = json.keys().asSequence().sorted().toList()
+                            sortedKeys.joinToString(",") { key -> "$key:${json.get(key)}" }
+                        }.getOrDefault(args.trim())
+                        
+                        add("$name:$normalizedArgs")
                     }
                 }
                 repeatedNoProgressCycles = if (currentToolCallSignatures == previousToolCallSignatures) {
@@ -282,6 +300,7 @@ class OpenRouterClient(
                 executions = executions.toList(),
             )
         }
+        throw OpenRouterException(null, "Tool execution loop exceeded the maximum of $MAX_TOOL_ROUNDS rounds.")
     }
 
     private fun enqueueStream(
@@ -837,7 +856,7 @@ class OpenRouterClient(
         val body: String,
     )
 
-    private companion object {
+    internal companion object {
         const val KEY_URL = "https://openrouter.ai/api/v1/key"
         const val MODELS_URL = "https://openrouter.ai/api/v1/models"
         const val CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -847,6 +866,9 @@ class OpenRouterClient(
                 "When tools are available, select and call as many bounded local tools as materially improve correctness. " +
                 "Low-risk local tools run automatically; returned tool results are authoritative evidence of what ran. " +
                 "When an image is attached, inspect only what is actually visible and state uncertainty when details are unclear."
+        const val MAX_TOOL_ROUNDS = 10
+        const val MAX_TOOL_EXECUTIONS = 20
+        const val MAX_TOOL_LOOP_DURATION_MS = 300_000L
         const val MAX_AUTOMATIC_TOOL_OUTPUT_CHARS = 64_000
         const val MAX_CAPTURED_STREAM_CHARS = 4_000_000
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()

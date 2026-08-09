@@ -1,7 +1,8 @@
 package com.david.openassistant.data.local
 
 import android.content.Context
-import android.util.AtomicFile
+import android.content.SharedPreferences
+import androidx.core.util.AtomicFile
 import androidx.core.content.edit
 import com.david.openassistant.data.openrouter.ChatAttachment
 import com.david.openassistant.data.openrouter.ChatAttachmentKind
@@ -22,10 +23,14 @@ import java.util.UUID
  * SharedPreferences now carries only the active conversation selection and a
  * revision signal observed by the UI.
  */
-class ConversationStore(context: Context) {
-    private val appContext = context.applicationContext
-    private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-    private val conversationsDirectory = File(appContext.filesDir, CONVERSATIONS_DIRECTORY_NAME)
+class ConversationStore(
+    context: Context? = null,
+    baseDir: File? = null,
+    prefs: SharedPreferences? = null
+) {
+    private val appContext = context?.applicationContext
+    private val preferences = prefs ?: appContext!!.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val conversationsDirectory = baseDir ?: File(appContext!!.filesDir, CONVERSATIONS_DIRECTORY_NAME)
 
     fun loadSnapshot(): ConversationSnapshot = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
@@ -89,17 +94,16 @@ class ConversationStore(context: Context) {
 
     private fun writeConversationLocked(conversation: StoredConversation) {
         conversationsDirectory.mkdirs()
-        val atomicFile = AtomicFile(conversationFileLocked(conversation.id))
-        var output: FileOutputStream? = null
-        try {
-            val stream = atomicFile.startWrite()
-            output = stream
-            stream.write(encodeConversation(conversation).toString().toByteArray(StandardCharsets.UTF_8))
-            atomicFile.finishWrite(stream)
-        } catch (error: Throwable) {
-            output?.let(atomicFile::failWrite)
-            throw error
+        val target = conversationFileLocked(conversation.id)
+        val text = encodeConversation(conversation).toString()
+        
+        FileOutputStream(target).use { stream ->
+            stream.write(text.toByteArray(StandardCharsets.UTF_8))
+            stream.flush()
+            try { stream.fd.sync() } catch (_: Exception) {}
         }
+        // Re-write signal to notify UI
+        writeSelectionAndSignalLocked(preferences.getString(KEY_ACTIVE_CONVERSATION_ID, null))
     }
 
     private fun readConversationLocked(file: File): StoredConversation {

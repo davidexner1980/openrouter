@@ -137,9 +137,9 @@ object AgentLifecycleReducer {
                         },
                         lastError = null,
                     )
-                    AgentTaskStatus.RUNNING -> task.copy(
+                    AgentTaskStatus.RUNNING, AgentTaskStatus.CANCELLED -> task.copy(
                         status = AgentTaskStatus.QUEUED,
-                        attemptCount = (task.attemptCount - 1).coerceAtLeast(0),
+                        attemptCount = if (task.status == AgentTaskStatus.RUNNING) (task.attemptCount - 1).coerceAtLeast(0) else task.attemptCount,
                     )
                     else -> task
                 }

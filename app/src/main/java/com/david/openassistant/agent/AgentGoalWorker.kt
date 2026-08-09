@@ -24,6 +24,7 @@ class AgentGoalWorker(
 ) : CoroutineWorker(appContext, workerParams) {
     private val workerId = UUID.randomUUID().toString()
     private val store = AgentStore(appContext)
+    private val conversationStore = com.david.openassistant.data.local.ConversationStore(appContext)
     private val diagnostics = RuntimeDiagnostics(appContext)
     private val researchMonitor = ResearchMonitor(appContext)
     private val keyStore = ApiKeyStore(appContext)
@@ -550,6 +551,10 @@ class AgentGoalWorker(
                                         notifier.updateNotification(goalId, leasedGoal.title, "Verifying")
                                         verifier.verifyAndFinish(apiKey, leasedGoal, ticket, models)
                                     }
+                                    leasedGoal.status == AgentGoalStatus.FINALIZING && ticket is PlanningTicket -> {
+                                        notifier.updateNotification(goalId, leasedGoal.title, "Finalizing")
+                                        WorkerOutcome.DONE
+                                    }
                                     else -> {
                                         repairBlockedWorkflow(leasedGoal, ticket)
                                     }
@@ -641,6 +646,9 @@ class AgentGoalWorker(
                         )
                         finalizeMonitorForTerminalGoal(goalId)
                         
+                        // V43: Transactional exactly-once delivery of terminal results to conversation history
+                        deliverTerminalResultIfPending(goalId)
+                        
                         // V43: Transition FINALIZING missions to their terminal state after report generation
                         val snapshotAfterFinalize = findGoal(goalId)
                         if (snapshotAfterFinalize?.status == AgentGoalStatus.FINALIZING) {
@@ -649,6 +657,8 @@ class AgentGoalWorker(
                                     current.copy(status = AgentGoalStatus.CANCELLED)
                                 } else current
                             }
+                            // Deliver again if it just became terminal (CANCELLED)
+                            deliverTerminalResultIfPending(goalId)
                         }
                         
                         workerResult
@@ -1229,6 +1239,10 @@ class AgentGoalWorker(
             }
         }
         diagnostics.warning("agent_waiting_for_credential", mapOf("goal_id" to goalId))
+    }
+
+    private fun deliverTerminalResultIfPending(goalId: String) {
+        AgentResultDeliveryLogic.deliverTerminalResultIfPending(goalId, store, conversationStore, diagnostics)
     }
 
     private fun findGoal(goalId: String): AgentGoal? = store.loadSnapshot().goals.firstOrNull { it.id == goalId }

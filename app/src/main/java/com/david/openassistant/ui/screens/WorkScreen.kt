@@ -433,7 +433,7 @@ private fun AgentGoalDetailCard(
                     Button(onClick = { onResumeGoal(goal.id) }) {
                         Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Resume")
+                        Text(if (goal.status == AgentGoalStatus.CANCELLED) "Restart" else "Resume")
                     }
                 }
                 if (actions.contains(MissionUiAction.STOP)) {

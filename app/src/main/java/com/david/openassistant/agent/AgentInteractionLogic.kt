@@ -1,5 +1,7 @@
 package com.david.openassistant.agent
 
+import java.util.UUID
+
 fun AgentGoalStatus.isFinalTerminalStatus(): Boolean = this in setOf(
     AgentGoalStatus.COMPLETED,
     AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
@@ -170,6 +172,53 @@ object MissionUiLogic {
             if (isTerminal || goal.status == AgentGoalStatus.FAILED) {
                 add(MissionUiAction.DELETE)
             }
+        }
+    }
+}
+
+object AgentResultDeliveryLogic {
+    fun deliverTerminalResultIfPending(
+        goalId: String,
+        agentStore: AgentStore,
+        conversationStore: com.david.openassistant.data.local.ConversationStore,
+        diagnostics: com.david.openassistant.data.diagnostics.RuntimeDiagnostics? = null
+    ) {
+        val goal = agentStore.loadSnapshot().goals.firstOrNull { it.id == goalId } ?: return
+        if ((goal.status.isFinalTerminalStatus() || goal.status == AgentGoalStatus.CANCELLED) && !goal.terminalResultDelivered) {
+            val resultText = goal.result ?: "The mission ended without producing a final result summary."
+            val content = "### Research Mission Final Status: ${goal.status.name}\n\n**${goal.title}**\n\n$resultText\n\n[Open Report](mission://${goal.id})"
+            
+            val message = com.david.openassistant.data.openrouter.ChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = com.david.openassistant.data.openrouter.ChatRole.ASSISTANT,
+                content = content
+            )
+            
+            // Phase 1: Append to conversation (Commit Side Effect)
+            val snapshot = conversationStore.loadSnapshot()
+            
+            // Robustness: Check if this mission's link is already in the target conversation
+            val targetConv = snapshot.conversations.firstOrNull { it.id == goal.conversationId }
+            val alreadyDelivered = targetConv?.messages?.any { it.content.contains("mission://${goal.id}") } ?: false
+            
+            if (!alreadyDelivered) {
+                val updatedConversations = snapshot.conversations.map { conversation ->
+                    if (conversation.id == goal.conversationId) {
+                        conversation.copy(
+                            messages = conversation.messages + message,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    } else conversation
+                }
+                conversationStore.saveSnapshot(snapshot.copy(conversations = updatedConversations))
+            }
+            
+            // Phase 2: Mark as delivered in agent store (Commit Durable Intent)
+            agentStore.updateGoal(goal.id) { current ->
+                current.copy(terminalResultDelivered = true)
+            }
+            
+            diagnostics?.info("mission_result_delivered", mapOf("goal_id" to goalId, "conversation_id" to goal.conversationId, "status" to goal.status.name))
         }
     }
 }

@@ -61,6 +61,18 @@ class MissionRecoveryWorker(
             // REQUIRED CHANGE 7: Watchdog must respect durable intent
             val isRecoverableStatus = when {
                 goal.status.isActivePhase() -> true
+                goal.status == AgentGoalStatus.CANCELLING -> {
+                    // CANCELLING is transitioning to CANCELLED; if stale, finish it
+                    if (lease == null || isStale) {
+                        diagnostics.info("watchdog_terminalizing_stale_cancelling_goal", mapOf("goal_id" to goal.id))
+                        store.updateGoal(goal.id) { current ->
+                            if (current.status == AgentGoalStatus.CANCELLING) {
+                                AgentLifecycleReducer.cancel(current, now, "Watchdog terminalized stale CANCELLING goal.")
+                            } else current
+                        }
+                    }
+                    false
+                }
                 goal.status == AgentGoalStatus.WAITING_FOR_NETWORK -> goal.nextRetryAt == null || now >= goal.nextRetryAt
                 else -> {
                     if (goal.status == AgentGoalStatus.PAUSED && (lease == null || isStale)) {

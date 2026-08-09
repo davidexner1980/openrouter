@@ -1050,6 +1050,9 @@ open class AgentStore private constructor(
                     latestAttempt.wirePayloadFingerprint != wirePayloadFingerprint) {
                     val actualFp = "L:${latestAttempt.payloadFingerprint} W:${latestAttempt.wirePayloadFingerprint}"
                     val requestedFp = "L:$payloadFingerprint W:$wirePayloadFingerprint"
+                    println("RECONCILIATION_CONFLICT goal=$goalId id=$logicalRequestId")
+                    println("  Actual: $actualFp")
+                    println("  Requested: $requestedFp")
                     return@synchronized ReconciliationResult.LogicalIdentityConflict(actualFp, requestedFp)
                 }
             } else {
