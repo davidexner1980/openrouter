@@ -251,7 +251,7 @@ open class AgentStore private constructor(
         goalId: String,
         workerId: String,
         attemptId: String,
-        generation: Int,
+        leaseGeneration: Int,
         taskId: String?,
     ): RefreshLeaseResult = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
@@ -260,7 +260,7 @@ open class AgentStore private constructor(
         val lease = goal.executionLease ?: return@synchronized RefreshLeaseResult.LeaseLost
 
         val currentSessionId = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
-        if (lease.workerId != workerId || lease.attemptId != attemptId || lease.generation != generation || 
+        if (lease.workerId != workerId || lease.attemptId != attemptId || lease.generation != leaseGeneration || 
             lease.taskId != (taskId ?: "none") || lease.ownerProcessSessionId != currentSessionId
         ) {
             return@synchronized RefreshLeaseResult.LeaseLost
@@ -363,7 +363,7 @@ open class AgentStore private constructor(
 
         // Validate ticket if provided
         if (ticket != null) {
-            if (ticket.generation != goal.leaseGeneration) return TerminalRecoveryRepairResult.OwnershipRejected
+            if (ticket.leaseGeneration != goal.leaseGeneration) return TerminalRecoveryRepairResult.OwnershipRejected
             if (lease == null || lease.workerId != ticket.workerId) return TerminalRecoveryRepairResult.OwnershipRejected
         } else {
             // Watchdog path: ensure no fresh owner exists
@@ -474,7 +474,7 @@ open class AgentStore private constructor(
         val goal = snapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return SourceFetchClaimResult.GoalTerminal
         
         if (goal.status.isFinalTerminalStatus()) return SourceFetchClaimResult.GoalTerminal
-        if (goal.leaseGeneration != ticket.generation || goal.executionLease?.workerId != ticket.workerId) return SourceFetchClaimResult.StaleOwnership
+        if (goal.leaseGeneration != ticket.leaseGeneration || goal.executionLease?.workerId != ticket.workerId) return SourceFetchClaimResult.StaleOwnership
         
         if (!goal.tasks.any { it.id == taskId }) return SourceFetchClaimResult.TaskMismatch
         
@@ -528,7 +528,7 @@ open class AgentStore private constructor(
         val goal = snapshot.goals.firstOrNull { it.id == ticket.goalId } ?: return RecordSourceReadResult.GoalTerminal
         
         if (goal.status.isFinalTerminalStatus()) return RecordSourceReadResult.GoalTerminal
-        if (goal.leaseGeneration != ticket.generation || goal.executionLease?.workerId != ticket.workerId) return RecordSourceReadResult.StaleOwnership
+        if (goal.leaseGeneration != ticket.leaseGeneration || goal.executionLease?.workerId != ticket.workerId) return RecordSourceReadResult.StaleOwnership
         
         val attempt = goal.fetchAttempts.firstOrNull { it.id == fetchClaimId } ?: return RecordSourceReadResult.FetchClaimMissing
         if (attempt.taskId != ticket.taskId) return RecordSourceReadResult.TaskMismatch
@@ -793,7 +793,8 @@ open class AgentStore private constructor(
                         taskIdentity = reloadedLease.taskId,
                         workerId = reloadedLease.workerId,
                         ownerProcessSessionId = reloadedLease.ownerProcessSessionId,
-                        generation = reloadedLease.generation,
+                        leaseGeneration = reloadedLease.generation,
+                        executionGeneration = reloaded.executionGeneration,
                         attemptId = reloadedLease.attemptId,
                         acquiredAt = reloadedLease.acquiredAt
                     )
@@ -802,7 +803,8 @@ open class AgentStore private constructor(
                         goalId = goalId,
                         workerId = reloadedLease.workerId,
                         ownerProcessSessionId = reloadedLease.ownerProcessSessionId,
-                        generation = reloadedLease.generation,
+                        leaseGeneration = reloadedLease.generation,
+                        executionGeneration = reloaded.executionGeneration,
                         attemptId = reloadedLease.attemptId,
                         acquiredAt = reloadedLease.acquiredAt
                     )
@@ -859,8 +861,10 @@ open class AgentStore private constructor(
                 TicketValidationResult.Mismatch("WORKER_MISMATCH", "workerId", lease.workerId, ticket.workerId)
             lease.ownerProcessSessionId != ticket.ownerProcessSessionId ->
                 TicketValidationResult.Mismatch("PROCESS_SESSION_MISMATCH", "ownerProcessSessionId", lease.ownerProcessSessionId, ticket.ownerProcessSessionId)
-            lease.generation != ticket.generation ->
-                TicketValidationResult.Mismatch("GENERATION_MISMATCH", "generation", lease.generation.toString(), ticket.generation.toString())
+            lease.generation != ticket.leaseGeneration ->
+                TicketValidationResult.Mismatch("LEASE_GENERATION_MISMATCH", "leaseGeneration", lease.generation.toString(), ticket.leaseGeneration.toString())
+            goal.executionGeneration != ticket.executionGeneration ->
+                TicketValidationResult.Mismatch("EXECUTION_GENERATION_MISMATCH", "executionGeneration", goal.executionGeneration.toString(), ticket.executionGeneration.toString())
             lease.attemptId != ticket.attemptId ->
                 TicketValidationResult.Mismatch("ATTEMPT_MISMATCH", "attemptId", lease.attemptId, ticket.attemptId)
             lease.taskId != (ticket.taskId ?: "none") ->
@@ -939,8 +943,13 @@ open class AgentStore private constructor(
             return@synchronized CreateAttemptResult.InvalidLeaseOrGoalState
         }
 
-        if (context.executionGeneration != lease.generation || attempt.executionGeneration != lease.generation) {
-            return@synchronized CreateAttemptResult.InvalidGeneration(expected = lease.generation, actual = attempt.executionGeneration)
+        if (context.executionGeneration != goal.executionGeneration) {
+            return@synchronized CreateAttemptResult.InvalidGeneration(expected = goal.executionGeneration, actual = context.executionGeneration)
+        }
+        
+        if (attempt.executionGeneration != lease.generation) {
+             // ProviderRequestAttempt.executionGeneration still carries lease generation for historical reasons
+             return@synchronized CreateAttemptResult.InvalidGeneration(expected = lease.generation, actual = attempt.executionGeneration)
         }
 
         if (context.workerId != lease.workerId) {
@@ -1009,8 +1018,12 @@ open class AgentStore private constructor(
         val validation = validateTicketInternalLocked(ticket)
         if (validation !is TicketValidationResult.Valid) {
             return@synchronized when (validation) {
-                is TicketValidationResult.Mismatch -> ReconciliationResult.OwnershipMismatch
-                is TicketValidationResult.LeaseExpired -> ReconciliationResult.StaleOwnership(goal.leaseGeneration, ticket.generation)
+                is TicketValidationResult.Mismatch -> when (validation.field) {
+                    "leaseGeneration" -> ReconciliationResult.StaleOwnership(goal.leaseGeneration, ticket.leaseGeneration)
+                    "executionGeneration" -> ReconciliationResult.StaleOwnership(goal.executionGeneration, ticket.executionGeneration)
+                    else -> ReconciliationResult.OwnershipMismatch
+                }
+                is TicketValidationResult.LeaseExpired -> ReconciliationResult.StaleOwnership(goal.leaseGeneration, ticket.leaseGeneration)
                 else -> ReconciliationResult.OwnershipMismatch
             }
         }
@@ -1074,20 +1087,19 @@ open class AgentStore private constructor(
             return when (latestAttempt.exchangeOutcome) {
                 ExchangeOutcome.ACTIVE -> {
                     if (latestAttempt.reconciliationClaimOwner == ticket.workerId && 
-                        latestAttempt.executionGeneration == ticket.generation) {
+                        latestAttempt.executionGeneration == ticket.leaseGeneration) {
                         // Resume locally owned
                         when {
                             latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED -> ReconciliationResult.NewDispatchClaimed(latestAttempt) // Treat as new dispatch if not sent
                             else -> ReconciliationResult.ExistingInFlight(latestAttempt)
                         }
-                    } else if (latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED && ticket.generation > latestAttempt.executionGeneration) {
-                        // Takeover non-dispatched from previous generation
+                    } else if (latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED && ticket.leaseGeneration > latestAttempt.executionGeneration) {
                         val exchangeId = "openrouter-${UUID.randomUUID()}"
                         val newAttempt = latestAttempt.copy(
                             exchangeId = exchangeId,
                             wireAttemptOrdinal = latestAttempt.wireAttemptOrdinal + 1,
                             previousExchangeId = latestAttempt.exchangeId,
-                            executionGeneration = ticket.generation,
+                            executionGeneration = ticket.leaseGeneration,
                             payloadFingerprint = payloadFingerprint,
                             wirePayloadFingerprint = wirePayloadFingerprint,
                             fingerprintSchemaVersion = fingerprintSchemaVersion,
@@ -1132,7 +1144,7 @@ open class AgentStore private constructor(
                     val auth = goal.retryAuthorizations.firstOrNull { 
                         it.logicalRequestId == logicalRequestId && 
                         it.attemptOrdinal == latestAttempt.wireAttemptOrdinal + 1 &&
-                        it.executionGeneration == ticket.generation &&
+                        it.executionGeneration == ticket.leaseGeneration &&
                         (it.fingerprintSchemaVersion == 1 || (
                             it.wirePayloadFingerprint == wirePayloadFingerprint &&
                             it.wireVariantKind == wireVariantKind &&
@@ -1148,7 +1160,7 @@ open class AgentStore private constructor(
                             previousExchangeId = latestAttempt.exchangeId,
                             transportStage = ProviderTransportStage.NOT_DISPATCHED,
                             deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
-                            executionGeneration = ticket.generation,
+                            executionGeneration = ticket.leaseGeneration,
                             payloadFingerprint = payloadFingerprint,
                             wirePayloadFingerprint = wirePayloadFingerprint,
                             fingerprintSchemaVersion = fingerprintSchemaVersion,
@@ -1195,7 +1207,7 @@ open class AgentStore private constructor(
             parentOperationId = parentOperationId ?: logicalRequestId,
             goalId = goalId,
             taskId = if (operation.taskBound) ticket.taskId else null,
-            executionGeneration = ticket.generation,
+            executionGeneration = ticket.leaseGeneration,
             requestedModel = "unknown", // To be filled by client
             role = role,
             payloadFingerprint = payloadFingerprint,
@@ -1402,7 +1414,7 @@ open class AgentStore private constructor(
     fun claimContinuationAtomic(
         goalId: String,
         fingerprint: String,
-        generation: Int,
+        claimantLeaseGeneration: Int,
         workName: String
     ): ContinuationSchedulingClaim? = synchronized(STORE_LOCK) {
         val currentSnapshot = loadSnapshotFromFilesLocked()
@@ -1413,7 +1425,7 @@ open class AgentStore private constructor(
             if (existing.continuationFingerprint == fingerprint && existing.state == ContinuationSchedulingState.CONFIRMED_ACTIVE) {
                 return@synchronized existing // Already covers it
             }
-            if (existing.state == ContinuationSchedulingState.PENDING && existing.claimantGeneration == generation) {
+            if (existing.state == ContinuationSchedulingState.PENDING && existing.claimantGeneration == claimantLeaseGeneration) {
                 return@synchronized existing // Resume pending for same generation
             }
         }
@@ -1421,7 +1433,7 @@ open class AgentStore private constructor(
         val newClaim = ContinuationSchedulingClaim(
             goalId = goalId,
             continuationFingerprint = fingerprint,
-            claimantGeneration = generation,
+            claimantGeneration = claimantLeaseGeneration,
             workName = workName,
             state = ContinuationSchedulingState.PENDING
         )
@@ -1498,9 +1510,11 @@ open class AgentStore private constructor(
         val validation = validateTicketInternalLocked(context.toTicket(context.acquiredAt))
         if (validation !is TicketValidationResult.Valid) {
             return@synchronized when (validation) {
-                is TicketValidationResult.Mismatch -> if (validation.field == "generation") {
-                    TransitionOutcomeResult.InvalidGeneration(expected = validation.expected?.toIntOrNull() ?: 0, actual = validation.actual?.toIntOrNull() ?: 0)
-                } else TransitionOutcomeResult.InvalidLeaseOrGoalState
+                is TicketValidationResult.Mismatch -> when (validation.field) {
+                    "leaseGeneration" -> TransitionOutcomeResult.InvalidGeneration(expected = validation.expected?.toIntOrNull() ?: 0, actual = validation.actual?.toIntOrNull() ?: 0)
+                    "executionGeneration" -> TransitionOutcomeResult.InvalidGeneration(expected = validation.expected?.toIntOrNull() ?: 0, actual = validation.actual?.toIntOrNull() ?: 0)
+                    else -> TransitionOutcomeResult.InvalidLeaseOrGoalState
+                }
                 else -> TransitionOutcomeResult.InvalidLeaseOrGoalState
             }
         }
@@ -1797,7 +1811,6 @@ open class AgentStore private constructor(
         val atomicFile = AtomicFile(target)
         val encoded = encodeGoal(goal)
         val text = encoded.toString(2)
-        val backup = File(target.path + ATOMIC_BACKUP_SUFFIX)
         
         var stream: FileOutputStream? = null
         try {
@@ -1815,31 +1828,13 @@ open class AgentStore private constructor(
                 fields = mapOf("goal_id" to goal.id)
             )
             throw e
-        } finally {
-            // Windows Robustness: Ensure backup is gone so openRead() doesn't revert.
-            // AtomicFile.finishWrite() can fail silently on delete() if the file is busy.
-            if (backup.exists()) {
-                backup.delete()
-            }
         }
 
-        // Verification & Fallback (Windows FS sync defense)
-        if (!target.exists() || target.readText() != text) {
-            try {
-                target.writeText(text)
-                if (backup.exists()) backup.delete()
-            } catch (e: Exception) {
-                diagnostics?.error(event = "goal_write_fallback_failed", component = "storage", throwable = e)
-            }
-        }
-
-        // Update cache immediately with the object we just wrote to avoid stale read-back
-        // from file system with millisecond resolution issues.
-        val readBack = decodeGoal(requireOpenRouterObject(text, "Written autonomous goal"))
+        // Authoritative read-back for cache update
+        val finalRaw = atomicFile.openRead().use { it.bufferedReader(StandardCharsets.UTF_8).readText() }
+        val readBack = decodeGoal(requireOpenRouterObject(finalRaw, "Written autonomous goal"))
         
         // Re-stat the file to get authoritative on-disk metadata for the cache.
-        // If lastModified is 0 (can happen on some systems immediately after rename), 
-        // we use current time as a safe fallback to ensure cache invalidation works.
         val finalTimestamp = target.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
         goalCache[target.name] = CachedGoal(readBack, finalTimestamp, target.length())
         
@@ -1858,12 +1853,8 @@ open class AgentStore private constructor(
             return cached.goal
         }
 
-        val raw = try {
-            AtomicFile(file).openRead().use { it.bufferedReader().readText() }
-        } catch (e: Exception) {
-            // Fallback for non-existent or corrupted files where AtomicFile might throw
-            if (file.exists()) file.readText() else throw e
-        }
+        val atomicFile = AtomicFile(file)
+        val raw = atomicFile.openRead().use { it.bufferedReader(StandardCharsets.UTF_8).readText() }
         val goal = decodeGoal(requireOpenRouterObject(raw, "Stored autonomous goal"))
         
         goalCache[file.name] = CachedGoal(goal, file.lastModified(), file.length())
@@ -2213,7 +2204,7 @@ open class AgentStore private constructor(
             operationFingerprints = json.optJSONArray("operation_fingerprints").toStringList(),
             classifiedFailures = json.optJSONArray("classified_failures").toStringList(),
             leaseGeneration = json.optInt("lease_generation", 0),
-            executionGeneration = json.optInt("execution_generation", 0),
+            executionGeneration = json.optInt("execution_generation", 1),
             lastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() },
             recoveryPlans = json.optJSONArray("recovery_plans").decodeList(::decodeRecoveryPlan),
             activeRecoveryPlanId = json.optNullableString("active_recovery_plan_id"),
@@ -2341,38 +2332,68 @@ open class AgentStore private constructor(
         // REQUIRED CHANGE 3: EXACT REPAIR FOR THE REPRODUCED STATE
         // Implement a deterministic, idempotent migration for missions created by the defective build.
         val hasNullCycleTasks = goal.tasks.any { it.cycleId == null }
+        val hasLegacyRecoveryPlans = goal.recoveryPlans.any { it.version < 2 || it.inputObjectiveFingerprint.isEmpty() }
         
         val repairKey = "v42-plan-cycle-binding:${goal.id}"
         val broadRepairKey = "v43-null-cycle-task-repair:${goal.id}"
+        val recoveryMigrationKey = "v43-recovery-migration:${goal.id}"
         val alreadyRepaired = goal.idempotencyRecords.any { it.key == repairKey || it.key == broadRepairKey }
+        val alreadyMigratedRecovery = goal.idempotencyRecords.any { it.key == recoveryMigrationKey }
 
-        if (hasNullCycleTasks && !alreadyRepaired) {
+        if ((hasNullCycleTasks && !alreadyRepaired) || (hasLegacyRecoveryPlans && !alreadyMigratedRecovery)) {
+            val rootFp = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
             val repairedTasks = goal.tasks.map { it.copy(cycleId = it.cycleId ?: activeCycleId) }
             val repairedEvidence = goal.evidence.map { if (it.cycleId == null) it.copy(cycleId = activeCycleId) else it }
-            val migrationRecord = IdempotencyRecord(
-                key = broadRepairKey,
-                effectType = IdempotencyEffectType.SYSTEM_REPAIR,
-                state = IdempotencyState.COMMITTED,
-                claimOwner = "migration_v43",
-                committedAt = System.currentTimeMillis()
-            )
+            
+            val migratedPlans = goal.recoveryPlans.map { plan ->
+                if (plan.version < 2 || plan.inputObjectiveFingerprint.isEmpty()) {
+                    plan.copy(
+                        version = 2,
+                        inputObjectiveFingerprint = rootFp,
+                        triggerExecutionFingerprint = plan.inputExecutionFingerprint
+                    )
+                } else plan
+            }
+
+            val recordsToAdd = mutableListOf<IdempotencyRecord>()
+            if (hasNullCycleTasks && !alreadyRepaired) {
+                recordsToAdd += IdempotencyRecord(
+                    key = broadRepairKey,
+                    effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                    state = IdempotencyState.COMMITTED,
+                    claimOwner = "migration_v43",
+                    committedAt = System.currentTimeMillis()
+                )
+            }
+            if (hasLegacyRecoveryPlans && !alreadyMigratedRecovery) {
+                recordsToAdd += IdempotencyRecord(
+                    key = recoveryMigrationKey,
+                    effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                    state = IdempotencyState.COMMITTED,
+                    claimOwner = "migration_v43_recovery",
+                    committedAt = System.currentTimeMillis()
+                )
+            }
+
             diagnostics?.info(
-                event = "task_cycle_binding_repaired",
+                event = "task_and_recovery_migration_applied",
                 component = "storage",
                 fields = mapOf(
                     "goal_id" to goal.id,
                     "cycle_id" to activeCycleId,
-                    "task_count" to repairedTasks.size
+                    "task_count" to repairedTasks.size,
+                    "plan_count" to migratedPlans.size
                 )
             )
             return goal.copy(
                 status = if (goal.status == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION) AgentGoalStatus.QUEUED else goal.status,
                 tasks = repairedTasks,
                 evidence = repairedEvidence,
+                recoveryPlans = migratedPlans,
                 isCorrupt = false,
                 error = if (goal.status == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION) null else goal.error,
-                idempotencyRecords = goal.idempotencyRecords + migrationRecord,
-                events = goal.events + AgentEvent(message = "System automatically bound orphaned tasks to active research cycle.")
+                idempotencyRecords = goal.idempotencyRecords + recordsToAdd,
+                events = goal.events + AgentEvent(message = "System automatically updated tasks and recovery plans to latest schema.")
             )
         }
 

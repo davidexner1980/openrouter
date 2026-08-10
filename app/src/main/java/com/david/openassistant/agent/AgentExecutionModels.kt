@@ -182,7 +182,8 @@ data class AgentExecutionLease(
 data class ExecutionOwnership(
     val workerId: String,
     val leaseAttemptId: String,
-    val executionGeneration: Int,
+    val leaseGeneration: Int,
+    val missionExecutionGeneration: Int,
     val taskId: String,
 )
 

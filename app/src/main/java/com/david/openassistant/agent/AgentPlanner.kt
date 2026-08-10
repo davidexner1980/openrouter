@@ -81,7 +81,8 @@ class AgentPlanner(
             workerId = ticket.workerId,
             taskId = null,
             attemptId = ticket.attemptId,
-            executionGeneration = ticket.generation,
+            executionGeneration = goal.executionGeneration,
+            leaseGeneration = ticket.leaseGeneration,
             acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.CREATE_PLAN,
@@ -361,7 +362,8 @@ class AgentPlanner(
             workerId = ticket.workerId,
             taskId = null, // Goal-bound
             attemptId = ticket.attemptId,
-            executionGeneration = ticket.generation,
+            executionGeneration = currentGoal.executionGeneration,
+            leaseGeneration = ticket.leaseGeneration,
             acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = if (planToUse.selectedTactic == EscalationTactic.CYCLE_ADVANCE) MissionOperation.CYCLE_ADVANCE else MissionOperation.RECOVERY_PROPOSAL,
@@ -415,7 +417,7 @@ class AgentPlanner(
             
             when (proposalResult) {
                 is RecoveryProposalGenerationResult.AlternateStrategyRequired -> {
-                    val descriptor = proposalResult.kind?.let { FailureClassifier.classifyReconciliation(it, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.generation) }
+                    val descriptor = proposalResult.kind?.let { FailureClassifier.classifyReconciliation(it, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.leaseGeneration) }
                     val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = planToUse.id,
@@ -433,7 +435,7 @@ class AgentPlanner(
                     }
                 }
                 is RecoveryProposalGenerationResult.NeedsUserAction -> {
-                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.generation)
+                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.leaseGeneration)
                     val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = planToUse.id,
@@ -451,7 +453,7 @@ class AgentPlanner(
                     }
                 }
                 is RecoveryProposalGenerationResult.ReconciliationRequired -> {
-                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.generation)
+                    val descriptor = FailureClassifier.classifyReconciliation(proposalResult.kind, currentGoal.id, planToUse.taskId, logicalRequestId, ticket.workerId, ticket.leaseGeneration)
                     val transition = store.transitionRecoveryPlanAtomic(
                         ticket = ticket,
                         planId = planToUse.id,
@@ -819,7 +821,7 @@ class AgentPlanner(
             goalId = goalId,
             operationId = "recovery_generation",
             ownerId = ticket.workerId,
-            generation = ticket.generation,
+            generation = ticket.leaseGeneration,
             startTime = latest.createdAt,
             attemptCount = latest.attempts.size,
         )
@@ -868,7 +870,7 @@ class AgentPlanner(
             goalId = goalId,
             operationId = "plan_generation",
             ownerId = ticket.workerId,
-            generation = ticket.generation,
+            generation = ticket.leaseGeneration,
             startTime = latest.createdAt,
             attemptCount = latest.attempts.size,
         )

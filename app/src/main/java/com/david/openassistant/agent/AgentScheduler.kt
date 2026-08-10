@@ -29,13 +29,13 @@ sealed interface SchedulingResult {
 }
 
 interface IAgentScheduler {
-    fun enqueue(goalId: String, replace: Boolean = false, generation: Int = 0)
-    fun enqueueAndWait(goalId: String, replace: Boolean = false, generation: Int = 0, activeLease: AgentExecutionLease? = null): SchedulingResult
-    fun enqueueContinuation(goalId: String, generation: Int = 0, fingerprint: String? = null): SchedulingResult
-    fun cancel(goalId: String, generation: Int = 0)
-    fun cancelAndWait(goalId: String, generation: Int = 0)
+    fun enqueue(goalId: String, replace: Boolean = false, executionGeneration: Int = 1)
+    fun enqueueAndWait(goalId: String, replace: Boolean = false, executionGeneration: Int = 1, activeLease: AgentExecutionLease? = null): SchedulingResult
+    fun enqueueContinuation(goalId: String, executionGeneration: Int = 1, claimantLeaseGeneration: Int = 0, fingerprint: String? = null): SchedulingResult
+    fun cancel(goalId: String, executionGeneration: Int = 1)
+    fun cancelAndWait(goalId: String, executionGeneration: Int = 1)
     fun cancelAllForGoal(goalId: String)
-    fun isWorkRunning(goalId: String, generation: Int = 0): Boolean
+    fun isWorkRunning(goalId: String, executionGeneration: Int = 1): Boolean
     fun schedulePeriodicRecovery()
 }
 
@@ -44,10 +44,10 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
     private val store = AgentStore(context.applicationContext)
     private val diagnostics = com.david.openassistant.data.diagnostics.RuntimeDiagnostics(context.applicationContext)
 
-    override fun enqueue(goalId: String, replace: Boolean, generation: Int) {
+    override fun enqueue(goalId: String, replace: Boolean, executionGeneration: Int) {
         val request = createRequest(goalId)
         workManager?.enqueueUniqueWork(
-            uniqueWorkName(goalId, generation),
+            uniqueWorkName(goalId, executionGeneration),
             if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
             request,
         )
@@ -60,13 +60,13 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
     override fun enqueueAndWait(
         goalId: String,
         replace: Boolean,
-        generation: Int,
+        executionGeneration: Int,
         activeLease: AgentExecutionLease?
     ): SchedulingResult {
         diagnostics.info(
             event = "mission_schedule_requested",
             component = "scheduler",
-            fields = mapOf("goal_id" to goalId, "generation" to generation, "replace" to replace)
+            fields = mapOf("goal_id" to goalId, "ex_gen" to executionGeneration, "replace" to replace)
         )
         // 1. Pre-enqueue lease check
         val now = System.currentTimeMillis()
@@ -78,7 +78,7 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
 
         // 2. Pre-enqueue WorkManager state check
         val existingWork = runCatching {
-            wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get(3, TimeUnit.SECONDS)
+            wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, executionGeneration)).get(3, TimeUnit.SECONDS)
         }.getOrNull()?.firstOrNull { info ->
             info.state == WorkInfo.State.ENQUEUED ||
                 info.state == WorkInfo.State.RUNNING ||
@@ -93,7 +93,7 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
 
         val enqueueResult = runCatching {
             val operation = wm.enqueueUniqueWork(
-                uniqueWorkName(goalId, generation),
+                uniqueWorkName(goalId, executionGeneration),
                 if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                 request,
             )
@@ -106,7 +106,7 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
         }
 
         val workInfosResult = runCatching {
-            wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get(3, TimeUnit.SECONDS)
+            wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, executionGeneration)).get(3, TimeUnit.SECONDS)
         }
 
         if (workInfosResult.isFailure) {
@@ -155,19 +155,20 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
             fields = mapOf(
                 "goal_id" to goalId,
                 "result" to finalResult.javaClass.simpleName,
-                "work_id" to request.id.toString()
+                "work_id" to request.id.toString(),
+                "ex_gen" to executionGeneration
             )
         )
         return finalResult
     }
 
-    override fun enqueueContinuation(goalId: String, generation: Int, fingerprint: String?): SchedulingResult {
+    override fun enqueueContinuation(goalId: String, executionGeneration: Int, claimantLeaseGeneration: Int, fingerprint: String?): SchedulingResult {
         val wm = workManager ?: return SchedulingResult.EnqueueFailed(IllegalStateException("WorkManager not available"))
         val f = fingerprint ?: "none"
-        val workName = uniqueWorkName(goalId, generation)
+        val workName = uniqueWorkName(goalId, executionGeneration)
         
-        // 1. Atomically claim the continuation fingerprint
-        val claim = store.claimContinuationAtomic(goalId, f, generation, workName)
+        // 1. Atomically claim the continuation fingerprint with lease generation for fencing
+        val claim = store.claimContinuationAtomic(goalId, f, claimantLeaseGeneration, workName)
             ?: return SchedulingResult.EnqueueFailed(IllegalStateException("Failed to claim continuation in store"))
         
         if (claim.state == ContinuationSchedulingState.CONFIRMED_ACTIVE || 
@@ -212,15 +213,15 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
         }
     }
 
-    override fun cancel(goalId: String, generation: Int) {
+    override fun cancel(goalId: String, executionGeneration: Int) {
         AgentCallCancellationRegistry.cancel(goalId)
-        workManager?.cancelUniqueWork(uniqueWorkName(goalId, generation))
+        workManager?.cancelUniqueWork(uniqueWorkName(goalId, executionGeneration))
     }
 
-    override fun cancelAndWait(goalId: String, generation: Int) {
+    override fun cancelAndWait(goalId: String, executionGeneration: Int) {
         AgentCallCancellationRegistry.cancel(goalId)
         try {
-            workManager?.cancelUniqueWork(uniqueWorkName(goalId, generation))
+            workManager?.cancelUniqueWork(uniqueWorkName(goalId, executionGeneration))
                 ?.result
                 ?.get(CANCELLATION_WAIT_SECONDS, TimeUnit.SECONDS)
         } catch (error: Throwable) {
@@ -236,10 +237,10 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
         workManager?.cancelAllWorkByTag(goalTag(goalId))
     }
 
-    override fun isWorkRunning(goalId: String, generation: Int): Boolean {
+    override fun isWorkRunning(goalId: String, executionGeneration: Int): Boolean {
         val wm = workManager ?: return false
         return try {
-            val infos = wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, generation)).get()
+            val infos = wm.getWorkInfosForUniqueWork(uniqueWorkName(goalId, executionGeneration)).get()
             infos.any { it.state == androidx.work.WorkInfo.State.RUNNING }
         } catch (e: Exception) {
             false
@@ -281,8 +282,8 @@ open class AgentScheduler(context: Context) : IAgentScheduler {
         private const val CANCELLATION_WAIT_SECONDS = 20L
         private const val OPERATION_WAIT_SECONDS = 10L
 
-        fun uniqueWorkName(goalId: String, @Suppress("UNUSED_PARAMETER") generation: Int = 0): String {
-            return "openassistant_agent_goal_$goalId"
+        fun uniqueWorkName(goalId: String, executionGeneration: Int): String {
+            return "openassistant_agent_goal_${goalId}_exgen_$executionGeneration"
         }
         fun goalTag(goalId: String) = "openassistant_agent_tag_$goalId"
     }

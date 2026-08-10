@@ -352,7 +352,7 @@ internal fun canCommitMilestoneResult(
     val activeLeaseMatch = lease.workerId == ticket.workerId &&
         lease.ownerProcessSessionId == ticket.ownerProcessSessionId &&
         lease.attemptId == ticket.attemptId &&
-        lease.generation == ticket.generation &&
+        lease.generation == ticket.leaseGeneration &&
         lease.taskId == (ticket.taskId ?: "none")
     
     val statusMatch = if (ticket is TaskExecutionTicket) {

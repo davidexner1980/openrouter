@@ -8,7 +8,8 @@ sealed interface AgentOwnershipTicket {
     val taskId: String?
     val workerId: String
     val ownerProcessSessionId: String
-    val generation: Int
+    val leaseGeneration: Int // Transient fencing
+    val executionGeneration: Int // Stable mission epoch
     val attemptId: String
     val acquiredAt: Long
 }
@@ -20,7 +21,8 @@ data class PlanningTicket(
     override val goalId: String,
     override val workerId: String,
     override val ownerProcessSessionId: String,
-    override val generation: Int,
+    override val leaseGeneration: Int,
+    override val executionGeneration: Int,
     override val attemptId: String,
     override val acquiredAt: Long,
 ) : AgentOwnershipTicket {
@@ -36,7 +38,8 @@ data class TaskExecutionTicket(
     val taskIdentity: String, // Explicit non-null task ID
     override val workerId: String,
     override val ownerProcessSessionId: String,
-    override val generation: Int,
+    override val leaseGeneration: Int,
+    override val executionGeneration: Int,
     override val attemptId: String,
     override val acquiredAt: Long,
 ) : AgentOwnershipTicket {

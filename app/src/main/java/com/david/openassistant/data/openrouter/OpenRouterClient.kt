@@ -19,7 +19,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
@@ -106,223 +109,240 @@ class OpenRouterClient(
         budgetPolicy: com.david.openassistant.agent.ToolBudgetPolicy = com.david.openassistant.agent.ToolBudgetPolicy.CHAT,
     ): AutomaticToolLoopResult = coroutineScope {
         val budget = com.david.openassistant.agent.ToolBudget.forPolicy(budgetPolicy)
-        val payload = createBaseChatPayload(modelId, messages).apply { put("stream", false) }
-        com.david.openassistant.agent.AgentRoutingPolicy.guardPayload(freeOnly, payload)
-        val messageArray = payload.getJSONArray("messages")
-        val executions = mutableListOf<AutomaticToolExecution>()
-        val priorOutputsBySignature = linkedMapOf<String, String>()
-        var previousToolCallSignatures: List<String>? = null
-        var repeatedNoProgressCycles = 0
-        var responseId: String? = null
-        var resolvedModel: String? = null
-        var finishReason: String? = null
-        var promptTokens = 0
-        var completionTokens = 0
-        var totalTokens = 0
-        var totalCost = 0.0
-        var round = 0
-
         val loopStartedAt = System.currentTimeMillis()
         val deadline = loopStartedAt + budget.maxDurationMs
-        val availableNames = mutableSetOf<String>()
         
-        var currentCall: Call? = null
-        
+        val currentCallRef = java.util.concurrent.atomic.AtomicReference<Call?>()
+
+        // V43: Independent watchdog for hard wall-clock deadline
+        val watchdog = launch {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining > 0) {
+                delay(remaining)
+            }
+            if (isActive) {
+                currentCallRef.get()?.cancel()
+            }
+        }
+
         try {
-            while (round < budget.maxRounds) {
-                ensureActive()
-                val now = System.currentTimeMillis()
-                if (shouldStop() || now > deadline) {
-                    currentCall?.cancel()
-                    throw OpenRouterException(null, if (now > deadline) "Tool execution loop exceeded the maximum duration of ${budget.maxDurationMs / 1000} seconds." else "Generation was stopped.")
-                }
-                if (executions.size >= budget.maxExecutions) {
-                    throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxExecutions} tool calls.")
-                }
+            kotlinx.coroutines.withTimeout(budget.maxDurationMs) {
+                val payload = createBaseChatPayload(modelId, messages).apply { put("stream", false) }
+                com.david.openassistant.agent.AgentRoutingPolicy.guardPayload(freeOnly, payload)
+                val messageArray = payload.getJSONArray("messages")
+                val executions = mutableListOf<AutomaticToolExecution>()
+                val priorOutputsBySignature = linkedMapOf<String, String>()
+                var previousToolCallSignatures: List<String>? = null
+                var repeatedNoProgressCycles = 0
+                var responseId: String? = null
+                var resolvedModel: String? = null
+                var finishReason: String? = null
+                var promptTokens = 0
+                var completionTokens = 0
+                var totalTokens = 0
+                var totalCost = 0.0
+                var round = 0
 
-                val toolArray = toolDefinitions()
-                if (toolArray.length() == 0) throw OpenRouterException(null, "No autonomous tools are available.")
+                val availableNames = mutableSetOf<String>()
                 
-                availableNames.clear()
-                for (i in 0 until toolArray.length()) {
-                    val toolObj = toolArray.optJSONObject(i) ?: continue
-                    val type = toolObj.optString("type")
-                    if (type == "function") {
-                        toolObj.optJSONObject("function")?.optString("name")?.let { availableNames.add(it) }
-                    } else if (type.startsWith("openrouter:")) {
-                        availableNames.add(type)
-                    }
-                }
-
-                payload.put("tool_choice", "auto")
-                payload.put("parallel_tool_calls", true)
-                payload.put("tools", toolArray)
-                
-                OpenRouterProtocolUtils.validateOutboundRequest(payload)
-
-                val wirePayloadText = payload.toString()
-                val request = baseRequest(CHAT_URL, apiKey)
-                    .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
-                val call = client.newCall(request)
-                currentCall = call
-                onCallStarted(call)
-                val captured = executeCapturedCall(
-                    request = request,
-                    operation = "automatic_tool_loop_round_$round",
-                    requestBody = wirePayloadText,
-                    prebuiltCall = call,
-                    apiKey = apiKey,
-                )
-                if (!captured.successful) throw openRouterException(captured.code, captured.body, apiKey)
-                val root = requireOpenRouterObject(captured.body, "OpenRouter automatic tool response")
-                root.optJSONObject("error")?.let { error ->
-                    throw OpenRouterException(
-                        error.optInt("code").takeIf { it > 0 },
-                        SecretRedactor.redact(error.optString("message", "OpenRouter returned an error."), apiKey),
-                    )
-                }
-                responseId = root.optString("id").takeIf { it.isNotBlank() && it != "null" } ?: responseId
-                resolvedModel = root.optString("model").takeIf { it.isNotBlank() && it != "null" } ?: resolvedModel
-                root.optJSONObject("usage")?.let { usage ->
-                    promptTokens += usage.optIntOrNull("prompt_tokens") ?: usage.optIntOrNull("input_tokens") ?: 0
-                    completionTokens += usage.optIntOrNull("completion_tokens") ?: usage.optIntOrNull("output_tokens") ?: 0
-                    totalTokens += usage.optIntOrNull("total_tokens") ?: 0
-                    totalCost += usage.optDoubleOrNull("cost") ?: 0.0
-                }
-                val choice = root.optJSONArray("choices")?.optJSONObject(0)
-                    ?: throw OpenRouterException(null, "The selected model returned no response choice.")
-                val choiceError = choice.optJSONObject("error")
-                if (choiceError != null || choice.optString("finish_reason") == "error") {
-                    val code = choiceError?.optInt("code")?.takeIf { it > 0 } ?: 429
-                    val message = choiceError?.optString("message")
-                        ?: "The selected model returned a choice-level error."
-                    throw OpenRouterException(
-                        statusCode = code,
-                        userMessage = SecretRedactor.redact(message, apiKey),
-                    )
-                }
-                finishReason = choice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" } ?: finishReason
-                val message = choice.optJSONObject("message")
-                    ?: throw OpenRouterException(null, "The selected model returned an invalid response message.")
-                val calls = message.optJSONArray("tool_calls")
-                if (calls != null && calls.length() > 0) {
-                    val currentToolCallSignatures = buildList {
-                        for (index in 0 until calls.length()) {
-                            val rawCall = calls.optJSONObject(index) ?: continue
-                            val function = rawCall.optJSONObject("function") ?: continue
-                            val name = function.optString("name")
-                            val args = function.optString("arguments")
-                            
-                            val normalizedArgs = runCatching {
-                                val json = JSONObject(args)
-                                OpenRouterProtocolUtils.toSortedString(json)
-                            }.getOrDefault(args.trim())
-                            
-                            add("$name:$normalizedArgs")
+                try {
+                    while (round < budget.maxRounds) {
+                        ensureActive()
+                        if (shouldStop()) {
+                            currentCallRef.get()?.cancel()
+                            throw OpenRouterException(null, "Generation was stopped.")
                         }
-                    }
-                    repeatedNoProgressCycles = if (currentToolCallSignatures == previousToolCallSignatures) {
-                        repeatedNoProgressCycles + 1
-                    } else {
-                        0
-                    }
-                    previousToolCallSignatures = currentToolCallSignatures
-                    if (repeatedNoProgressCycles >= 2) {
-                        throw OpenRouterException(
-                            null,
-                            "The selected model repeated the same tool requests without making progress. Retry with another model or a more specific request.",
-                        )
-                    }
-                    messageArray.put(JSONObject(message.toString()).put("role", "assistant"))
-                    for (index in 0 until calls.length()) {
                         if (executions.size >= budget.maxExecutions) {
                             throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxExecutions} tool calls.")
                         }
-                        if (System.currentTimeMillis() > deadline) {
-                            throw OpenRouterException(null, "Tool execution loop exceeded the maximum duration.")
-                        }
 
-                        val rawCall = calls.optJSONObject(index)
-                            ?: throw OpenRouterException(null, "The selected model returned an invalid tool request.")
-                        val function = rawCall.optJSONObject("function")
-                            ?: throw OpenRouterException(null, "The selected model returned a tool request without a function.")
-                        val toolCall = OpenRouterToolCall(
-                            id = rawCall.optString("id").ifBlank { "automatic_tool_${round}_$index" },
-                            name = function.optString("name"),
-                            argumentsJson = function.optString("arguments").ifBlank { "{}" },
-                        )
+                        val toolArray = toolDefinitions()
+                        if (toolArray.length() == 0) throw OpenRouterException(null, "No autonomous tools are available.")
                         
-                        val normalizedArgsForSignature = runCatching {
-                            val json = JSONObject(toolCall.argumentsJson)
-                            OpenRouterProtocolUtils.toSortedString(json)
-                        }.getOrDefault(toolCall.argumentsJson.trim())
-                        
-                        val signature = "${toolCall.name}:$normalizedArgsForSignature"
-                        
-                        val output = priorOutputsBySignature[signature]?.let { prior ->
-                            val summary = "Reused the prior result for an identical tool request."
-                            executions += AutomaticToolExecution(toolCall.name, summary, succeeded = true)
-                            JSONObject()
-                                .put("status", "ok")
-                                .put("reused", true)
-                                .put("result", prior)
-                                .toString()
-                        } ?: if (toolCall.name !in availableNames) {
-                            val error = "The requested local tool is not registered: ${toolCall.name}."
-                            executions += AutomaticToolExecution(toolCall.name, error, false)
-                            JSONObject().put("status", "error").put("error", error).toString()
-                        } else {
-                            try {
-                                val result = executeTool(toolCall)
-                                promptTokens += result.promptTokens
-                                completionTokens += result.completionTokens
-                                totalTokens += result.totalTokens
-                                totalCost += result.costUsd
-                                executions += AutomaticToolExecution(toolCall.name, result.displaySummary.take(600), succeeded = true)
-                                result.outputJson.take(budget.maxOutputChars).also {
-                                    priorOutputsBySignature[signature] = it
-                                }
-                            } catch (ce: kotlinx.coroutines.CancellationException) {
-                                throw ce
-                            } catch (error: Exception) {
-                                val messageText = error.message.orEmpty().ifBlank { "Local tool execution failed." }.take(1_000)
-                                executions += AutomaticToolExecution(toolCall.name, messageText, succeeded = false)
-                                JSONObject().put("status", "error").put("tool_name", toolCall.name).put("error", messageText).toString()
+                        availableNames.clear()
+                        for (i in 0 until toolArray.length()) {
+                            val toolObj = toolArray.optJSONObject(i) ?: continue
+                            val type = toolObj.optString("type")
+                            if (type == "function") {
+                                toolObj.optJSONObject("function")?.optString("name")?.let { availableNames.add(it) }
+                            } else if (type.startsWith("openrouter:")) {
+                                availableNames.add(type)
                             }
                         }
-                        messageArray.put(
-                            JSONObject()
-                                .put("role", "tool")
-                                .put("tool_call_id", toolCall.id)
-                                .put("name", toolCall.name)
-                                .put("content", output),
+
+                        payload.put("tool_choice", "auto")
+                        payload.put("parallel_tool_calls", true)
+                        payload.put("tools", toolArray)
+                        
+                        OpenRouterProtocolUtils.validateOutboundRequest(payload)
+
+                        val wirePayloadText = payload.toString()
+                        val request = baseRequest(CHAT_URL, apiKey)
+                            .post(wirePayloadText.toRequestBody(JSON_MEDIA_TYPE))
+                            .build()
+                        val call = client.newCall(request)
+                        currentCallRef.set(call)
+                        onCallStarted(call)
+                        val captured = executeCapturedCall(
+                            request = request,
+                            operation = "automatic_tool_loop_round_$round",
+                            requestBody = wirePayloadText,
+                            prebuiltCall = call,
+                            apiKey = apiKey,
+                        )
+                        if (!captured.successful) throw openRouterException(captured.code, captured.body, apiKey)
+                        val root = requireOpenRouterObject(captured.body, "OpenRouter automatic tool response")
+                        root.optJSONObject("error")?.let { error ->
+                            throw OpenRouterException(
+                                error.optInt("code").takeIf { it > 0 },
+                                SecretRedactor.redact(error.optString("message", "OpenRouter returned an error."), apiKey),
+                            )
+                        }
+                        responseId = root.optString("id").takeIf { it.isNotBlank() && it != "null" } ?: responseId
+                        resolvedModel = root.optString("model").takeIf { it.isNotBlank() && it != "null" } ?: resolvedModel
+                        root.optJSONObject("usage")?.let { usage ->
+                            promptTokens += usage.optIntOrNull("prompt_tokens") ?: usage.optIntOrNull("input_tokens") ?: 0
+                            completionTokens += usage.optIntOrNull("completion_tokens") ?: usage.optIntOrNull("output_tokens") ?: 0
+                            totalTokens += usage.optIntOrNull("total_tokens") ?: 0
+                            totalCost += usage.optDoubleOrNull("cost") ?: 0.0
+                        }
+                        val choice = root.optJSONArray("choices")?.optJSONObject(0)
+                            ?: throw OpenRouterException(null, "The selected model returned no response choice.")
+                        val choiceError = choice.optJSONObject("error")
+                        if (choiceError != null || choice.optString("finish_reason") == "error") {
+                            val code = choiceError?.optInt("code")?.takeIf { it > 0 } ?: 429
+                            val message = choiceError?.optString("message")
+                                ?: "The selected model returned a choice-level error."
+                            throw OpenRouterException(
+                                statusCode = code,
+                                userMessage = SecretRedactor.redact(message, apiKey),
+                            )
+                        }
+                        finishReason = choice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" } ?: finishReason
+                        val message = choice.optJSONObject("message")
+                            ?: throw OpenRouterException(null, "The selected model returned an invalid response message.")
+                        val calls = message.optJSONArray("tool_calls")
+                        if (calls != null && calls.length() > 0) {
+                            val currentToolCallSignatures = buildList {
+                                for (index in 0 until calls.length()) {
+                                    val rawCall = calls.optJSONObject(index) ?: continue
+                                    val function = rawCall.optJSONObject("function") ?: continue
+                                    val name = function.optString("name")
+                                    val args = function.optString("arguments")
+                                    
+                                    val normalizedArgs = runCatching {
+                                        val json = JSONObject(args)
+                                        OpenRouterProtocolUtils.toSortedString(json)
+                                    }.getOrDefault(args.trim())
+                                    
+                                    add("$name:$normalizedArgs")
+                                }
+                            }
+                            repeatedNoProgressCycles = if (currentToolCallSignatures == previousToolCallSignatures) {
+                                repeatedNoProgressCycles + 1
+                            } else {
+                                0
+                            }
+                            previousToolCallSignatures = currentToolCallSignatures
+                            if (repeatedNoProgressCycles >= 2) {
+                                throw OpenRouterException(
+                                    null,
+                                    "The selected model repeated the same tool requests without making progress. Retry with another model or a more specific request.",
+                                )
+                            }
+                            messageArray.put(JSONObject(message.toString()).put("role", "assistant"))
+                            for (index in 0 until calls.length()) {
+                                ensureActive()
+                                if (executions.size >= budget.maxExecutions) {
+                                    throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxExecutions} tool calls.")
+                                }
+
+                                val rawCall = calls.optJSONObject(index)
+                                    ?: throw OpenRouterException(null, "The selected model returned an invalid tool request.")
+                                val function = rawCall.optJSONObject("function")
+                                    ?: throw OpenRouterException(null, "The selected model returned a tool request without a function.")
+                                val toolCall = OpenRouterToolCall(
+                                    id = rawCall.optString("id").ifBlank { "automatic_tool_${round}_$index" },
+                                    name = function.optString("name"),
+                                    argumentsJson = function.optString("arguments").ifBlank { "{}" },
+                                )
+                                
+                                val normalizedArgsForSignature = runCatching {
+                                    val json = JSONObject(toolCall.argumentsJson)
+                                    OpenRouterProtocolUtils.toSortedString(json)
+                                }.getOrDefault(toolCall.argumentsJson.trim())
+                                
+                                val signature = "${toolCall.name}:$normalizedArgsForSignature"
+                                
+                                val output = priorOutputsBySignature[signature]?.let { prior ->
+                                    val summary = "Reused the prior result for an identical tool request."
+                                    executions += AutomaticToolExecution(toolCall.name, summary, succeeded = true)
+                                    JSONObject()
+                                        .put("status", "ok")
+                                        .put("reused", true)
+                                        .put("result", prior)
+                                        .toString()
+                                } ?: if (toolCall.name !in availableNames) {
+                                    val error = "The requested local tool is not registered: ${toolCall.name}."
+                                    executions += AutomaticToolExecution(toolCall.name, error, false)
+                                    JSONObject().put("status", "error").put("error", error).toString()
+                                } else {
+                                    try {
+                                        val result = executeTool(toolCall)
+                                        promptTokens += result.promptTokens
+                                        completionTokens += result.completionTokens
+                                        totalTokens += result.totalTokens
+                                        totalCost += result.costUsd
+                                        executions += AutomaticToolExecution(toolCall.name, result.displaySummary.take(600), succeeded = true)
+                                        result.outputJson.take(budget.maxOutputChars).also {
+                                            priorOutputsBySignature[signature] = it
+                                        }
+                                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                                        throw ce
+                                    } catch (error: Exception) {
+                                        val messageText = error.message.orEmpty().ifBlank { "Local tool execution failed." }.take(1_000)
+                                        executions += AutomaticToolExecution(toolCall.name, messageText, succeeded = false)
+                                        JSONObject().put("status", "error").put("tool_name", toolCall.name).put("error", messageText).toString()
+                                    }
+                                }
+                                messageArray.put(
+                                    JSONObject()
+                                        .put("role", "tool")
+                                        .put("tool_call_id", toolCall.id)
+                                        .put("name", toolCall.name)
+                                        .put("content", output),
+                                )
+                            }
+                            payload.put("messages", messageArray)
+                            round += 1
+                            continue
+                        }
+
+                        val content = message.optString("content").takeIf { it.isNotBlank() && it != "null" }
+                            ?: throw OpenRouterException(null, "The selected model returned neither text nor a tool request.")
+                        return@withTimeout AutomaticToolLoopResult(
+                            content = content,
+                            summary = StreamSummary(
+                                responseId = responseId,
+                                resolvedModel = resolvedModel,
+                                finishReason = finishReason,
+                                promptTokens = promptTokens.takeIf { it > 0 },
+                                completionTokens = completionTokens.takeIf { it > 0 },
+                                totalTokens = totalTokens.takeIf { it > 0 },
+                                cost = totalCost.takeIf { it > 0.0 },
+                            ),
+                            executions = executions.toList(),
                         )
                     }
-                    payload.put("messages", messageArray)
-                    round += 1
-                    continue
+                    throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxRounds} rounds.")
+                } finally {
+                    currentCallRef.get()?.cancel()
                 }
-
-                val content = message.optString("content").takeIf { it.isNotBlank() && it != "null" }
-                    ?: throw OpenRouterException(null, "The selected model returned neither text nor a tool request.")
-                return@coroutineScope AutomaticToolLoopResult(
-                    content = content,
-                    summary = StreamSummary(
-                        responseId = responseId,
-                        resolvedModel = resolvedModel,
-                        finishReason = finishReason,
-                        promptTokens = promptTokens.takeIf { it > 0 },
-                        completionTokens = completionTokens.takeIf { it > 0 },
-                        totalTokens = totalTokens.takeIf { it > 0 },
-                        cost = totalCost.takeIf { it > 0.0 },
-                    ),
-                    executions = executions.toList(),
-                )
             }
-            throw OpenRouterException(null, "Tool execution loop exceeded the maximum of ${budget.maxRounds} rounds.")
+        } catch (te: kotlinx.coroutines.TimeoutCancellationException) {
+            throw OpenRouterException(null, "Tool execution loop exceeded the maximum duration of ${budget.maxDurationMs / 1000} seconds.")
         } finally {
-            currentCall?.cancel()
+            watchdog.cancel()
         }
     }
 

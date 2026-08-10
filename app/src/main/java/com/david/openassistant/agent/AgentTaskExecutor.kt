@@ -96,6 +96,9 @@ class AgentTaskExecutor internal constructor(
                     goalId = freshGoal.id,
                     taskId = freshTask.id,
                     inputExecutionFingerprint = currentFingerprint,
+                    inputObjectiveFingerprint = FingerprintUtils.calculateRootObjectiveFingerprint(freshGoal),
+                    triggerExecutionFingerprint = currentFingerprint,
+                    version = 2,
                     diagnosis = diagnosis,
                     selectedTactic = tactic,
                     status = RecoveryPlanStatus.PREPARED,
@@ -130,7 +133,8 @@ class AgentTaskExecutor internal constructor(
         }
 
         val leaseAttemptId = ticket.attemptId
-        val generation = ticket.generation
+        val leaseGeneration = ticket.leaseGeneration
+        val executionGeneration = ticket.executionGeneration
         val allocationProfile = AgentResearchAllocator.profileForGoal(freshGoal, autonomyPolicy)
         val budget = AgentResearchAllocator.budgetForTask(freshGoal, freshTask, allocationProfile)
         
@@ -155,7 +159,8 @@ class AgentTaskExecutor internal constructor(
                 "task_id" to freshTask.id,
                 "worker_id" to ticket.workerId,
                 "attempt_id" to leaseAttemptId,
-                "generation" to generation,
+                "lease_gen" to leaseGeneration,
+                "ex_gen" to executionGeneration,
                 "task_order" to freshTask.order,
                 "execution_profile" to executionStrategy.profile.name,
                 "allocation_profile" to allocationProfile.complexity.name,
@@ -230,7 +235,8 @@ class AgentTaskExecutor internal constructor(
             workerId = lease.workerId,
             taskId = freshTask.id,
             attemptId = leaseAttemptId,
-            executionGeneration = lease.generation,
+            executionGeneration = freshGoal.executionGeneration,
+            leaseGeneration = lease.generation,
             acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.EXECUTE_TASK,
@@ -543,7 +549,7 @@ class AgentTaskExecutor internal constructor(
         ticket: TaskExecutionTicket,
         diagnostics: RuntimeDiagnostics,
     ): WorkerOutcome {
-        beforeCommitHook?.beforeCommit(startedGoal.id, task.id, ExecutionOwnership(ticket.workerId, ticket.attemptId, ticket.generation, ticket.taskId))
+        beforeCommitHook?.beforeCommit(startedGoal.id, task.id, ExecutionOwnership(ticket.workerId, ticket.attemptId, ticket.leaseGeneration, ticket.executionGeneration, ticket.taskId))
         val currentFingerprint = FingerprintUtils.calculateExecutionFingerprint(startedGoal, task)
         val result = recoverResearchAssessment(
             task = task,
@@ -651,7 +657,7 @@ class AgentTaskExecutor internal constructor(
         models: List<OpenRouterModel> = emptyList(),
         taskDiagnostics: RuntimeDiagnostics,
     ): WorkerOutcome {
-        beforeCommitHook?.beforeCommit(goalId, taskId, ExecutionOwnership(ticket.workerId, ticket.attemptId, ticket.generation, ticket.taskId))
+        beforeCommitHook?.beforeCommit(goalId, taskId, ExecutionOwnership(ticket.workerId, ticket.attemptId, ticket.leaseGeneration, ticket.executionGeneration, ticket.taskId))
         val message = error.toAgentFailureMessage("The agent milestone failed.").take(1_000)
         val latest = store.loadSnapshot().goals.firstOrNull { it.id == goalId } ?: return WorkerOutcome.FAIL
         val currentTask = latest.tasks.firstOrNull { it.id == taskId } ?: return WorkerOutcome.FAIL
@@ -664,7 +670,7 @@ class AgentTaskExecutor internal constructor(
             taskId = taskId,
             operationId = "task_execution",
             ownerId = ticket.workerId,
-            generation = ticket.generation,
+            generation = ticket.leaseGeneration,
             startTime = latest.createdAt,
             lastProgressTime = latest.lastMeaningfulProgressAt,
             attemptCount = latest.attempts.size,
@@ -1079,6 +1085,9 @@ class AgentTaskExecutor internal constructor(
                     goalId = current.id,
                     taskId = currentTask.id,
                     inputExecutionFingerprint = currentFingerprint,
+                    inputObjectiveFingerprint = FingerprintUtils.calculateRootObjectiveFingerprint(current),
+                    triggerExecutionFingerprint = currentFingerprint,
+                    version = 2,
                     diagnosis = stallDiagnosis,
                     selectedTactic = tactic,
                     status = RecoveryPlanStatus.PREPARED,

@@ -42,11 +42,12 @@ class RejectedLifecycleConsistencyTest {
             status = AgentGoalStatus.REJECTED,
             plannerModelId = "m",
             executionModelId = "m",
-            tasks = emptyList()
+            tasks = emptyList(),
+            executionGeneration = 1
         )
         
         val restarted = AgentLifecycleReducer.restart(goal)
         assertEquals(AgentGoalStatus.REJECTED, restarted.status)
-        assertEquals(0, restarted.executionGeneration)
+        assertEquals(1, restarted.executionGeneration)
     }
 }

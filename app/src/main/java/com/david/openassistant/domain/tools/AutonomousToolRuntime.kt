@@ -7,6 +7,7 @@ import com.david.openassistant.agent.ToolCountSource
 import com.david.openassistant.agent.ToolCounts
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import com.david.openassistant.data.diagnostics.ResearchMonitor
 import com.david.openassistant.data.network.ResearchWebSettings
 import org.json.JSONArray
@@ -94,7 +95,7 @@ open class AutonomousToolRuntime internal constructor(
         modelId: String?,
         goal: com.david.openassistant.agent.AgentGoal? = null,
         taskId: String? = null,
-    ): ToolExecutionResult {
+    ): ToolExecutionResult = kotlinx.coroutines.coroutineScope {
         val correlationId = call.id.ifBlank { "tool-${UUID.randomUUID()}" }
         val startedAt = System.currentTimeMillis()
         ProviderRequestLedger.start(correlationId)
@@ -113,8 +114,10 @@ open class AutonomousToolRuntime internal constructor(
                 "openrouter_credential_available" to !apiKey.isNullOrBlank(),
             ),
         )
-        return try {
+        try {
+            ensureActive()
             executeInternal(call, apiKey, modelId, goal, taskId).let { result ->
+                ensureActive()
                 val durationMs = System.currentTimeMillis() - startedAt
                 if (ProviderRequestLedger.terminalize(correlationId, RequestState.COMPLETED)) {
                     researchMonitor.record(

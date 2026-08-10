@@ -156,24 +156,24 @@ class AgentInteractor internal constructor(
         agentStore!!.loadPendingDraft()
     }
 
-    fun enqueue(goalId: String, replace: Boolean = false, generation: Int = 0) {
-        agentScheduler!!.enqueue(goalId, replace, generation)
+    fun enqueue(goalId: String, replace: Boolean = false, executionGeneration: Int = 1) {
+        agentScheduler!!.enqueue(goalId, replace, executionGeneration)
     }
 
-    suspend fun enqueueAndConfirm(goalId: String, replace: Boolean = false, generation: Int = 0, activeLease: com.david.openassistant.agent.AgentExecutionLease? = null): SchedulingResult = withContext(Dispatchers.IO) {
-        agentScheduler!!.enqueueAndWait(goalId, replace, generation, activeLease)
+    suspend fun enqueueAndConfirm(goalId: String, replace: Boolean = false, executionGeneration: Int = 1, activeLease: com.david.openassistant.agent.AgentExecutionLease? = null): SchedulingResult = withContext(Dispatchers.IO) {
+        agentScheduler!!.enqueueAndWait(goalId, replace, executionGeneration, activeLease)
     }
 
-    fun cancel(goalId: String, generation: Int = 0) {
-        agentScheduler!!.cancel(goalId, generation)
+    fun cancel(goalId: String, executionGeneration: Int = 1) {
+        agentScheduler!!.cancel(goalId, executionGeneration)
     }
 
-    fun isWorkRunning(goalId: String, generation: Int = 0): Boolean {
-        return agentScheduler?.isWorkRunning(goalId, generation) ?: false
+    fun isWorkRunning(goalId: String, executionGeneration: Int = 1): Boolean {
+        return agentScheduler?.isWorkRunning(goalId, executionGeneration) ?: false
     }
 
-    suspend fun cancelAndWait(goalId: String, generation: Int = 0) = withContext(Dispatchers.IO) {
-        agentScheduler!!.cancelAndWait(goalId, generation)
+    suspend fun cancelAndWait(goalId: String, executionGeneration: Int = 1) = withContext(Dispatchers.IO) {
+        agentScheduler!!.cancelAndWait(goalId, executionGeneration)
     }
 
     suspend fun restartAgentGoal(goalId: String): SchedulingResult = withContext(Dispatchers.IO) {
@@ -191,18 +191,32 @@ class AgentInteractor internal constructor(
         val restartedGoal = agentStore.loadSnapshot().goals.firstOrNull { it.id == goalId }
             ?: return@withContext SchedulingResult.EnqueueFailed(IllegalStateException("Goal $goalId lost after restart update"))
 
-        agentScheduler!!.enqueueAndWait(goalId, replace = true, generation = restartedGoal.leaseGeneration)
+        val schedResult = agentScheduler!!.enqueueAndWait(goalId, replace = true, executionGeneration = restartedGoal.executionGeneration)
+        
+        // V43: Truthful Restart - treat all non-success outcomes as durable failures
+        if (schedResult !is SchedulingResult.NewlyEnqueued && schedResult !is SchedulingResult.ReusedActive) {
+            agentStore.updateGoal(goalId) { current ->
+                if (current.executionGeneration == restartedGoal.executionGeneration) {
+                    current.copy(
+                        status = AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+                        error = "Restart scheduling failed: ${schedResult.javaClass.simpleName}. Check system health or WorkManager logs."
+                    )
+                } else current
+            }
+        }
+        
+        schedResult
     }
 
     suspend fun finalize(goalId: String) = withContext(Dispatchers.IO) {
         try {
-            var generation = 0
+            var executionGeneration = 1
             agentStore!!.updateGoal(goalId) { current ->
-                generation = current.leaseGeneration
+                executionGeneration = current.executionGeneration
                 AgentLifecycleReducer.finalize(current)
             }
             // Signal cancellation to active calls immediately
-            agentScheduler!!.cancel(goalId, generation)
+            agentScheduler!!.cancel(goalId, executionGeneration)
             
             // Wait for in-flight requests to settle
             ProviderRequestLedger.waitForSettlement(timeoutMs = 5000L)
@@ -215,7 +229,7 @@ class AgentInteractor internal constructor(
                     current
                 }
             }
-            agentScheduler.cancelAndWait(goalId, generation)
+            agentScheduler.cancelAndWait(goalId, executionGeneration)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
         }
@@ -303,8 +317,8 @@ class AgentInteractor internal constructor(
                     AgentGoalStatus.VERIFYING,
                 )
             ) {
-                val generation = existingGoal.leaseGeneration
-                when (val schedResult = agentScheduler!!.enqueueAndWait(existingGoal.id, replace = false, generation = generation, activeLease = existingGoal.executionLease)) {
+                val executionGeneration = existingGoal.executionGeneration
+                when (val schedResult = agentScheduler!!.enqueueAndWait(existingGoal.id, replace = false, executionGeneration = executionGeneration, activeLease = existingGoal.executionLease)) {
                     is SchedulingResult.NewlyEnqueued -> {
                         ResearchMissionStartTelemetry.workerEnqueued(
                             monitor = monitor,
@@ -538,7 +552,7 @@ class AgentInteractor internal constructor(
         }
 
         // 8. Enqueue WorkManager job and handle explicit SchedulingResult branching
-        when (val schedResult = agentScheduler!!.enqueueAndWait(createdGoal.id, replace = false, generation = createdGoal.leaseGeneration)) {
+        when (val schedResult = agentScheduler!!.enqueueAndWait(createdGoal.id, replace = false, executionGeneration = createdGoal.executionGeneration)) {
             is SchedulingResult.NewlyEnqueued -> {
                 ResearchMissionStartTelemetry.workerEnqueued(
                     monitor = monitor,

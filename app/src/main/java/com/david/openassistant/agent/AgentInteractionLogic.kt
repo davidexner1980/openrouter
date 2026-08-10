@@ -176,10 +176,9 @@ object AgentResultDeliveryLogic {
     ) {
         val goal = agentStore.loadSnapshot().goals.firstOrNull { it.id == goalId } ?: return
         val currentExecGen = goal.executionGeneration
-        val currentLeaseGen = goal.leaseGeneration
         val deliveryKind = "TERMINAL_RESULT"
         
-        // V43: Use executionGeneration for exactly-once delivery; skip if already marked for THIS execution
+        // V43: Exactly-once delivery based on stable mission execution epoch
         val alreadyMarked = goal.deliveryRecords.any { 
             !it.isLegacy && it.executionGeneration == currentExecGen && it.deliveryKind == deliveryKind 
         }
@@ -188,7 +187,7 @@ object AgentResultDeliveryLogic {
             val resultText = goal.result ?: "The mission ended without producing a final result summary."
             val content = "### Research Mission Final Status: ${goal.status.name}\n\n**${goal.title}**\n\n$resultText\n\n[Open Report](mission://${goal.id}?gen=$currentExecGen)"
             
-            // V43: Deterministic message identity
+            // V43: Deterministic message identity (goalId + executionGeneration + kind)
             val deterministicId = "mission-delivery-${goal.id}-${currentExecGen}-${deliveryKind}"
             
             val message = com.david.openassistant.data.openrouter.ChatMessage(
@@ -197,21 +196,16 @@ object AgentResultDeliveryLogic {
                 content = content
             )
             
-            // Phase 1: Append to conversation (Commit Side Effect)
-            val snapshot = conversationStore.loadSnapshot()
-            
-            // Robustness: Check if this mission's link or deterministic ID is already in the target conversation
-            val targetConv = snapshot.conversations.firstOrNull { it.id == goal.conversationId } ?: run {
-                diagnostics?.warning("mission_result_delivery_target_conversation_missing", mapOf("goal_id" to goalId, "conv_id" to goal.conversationId))
-                return // DO NOT mark delivered if conversation is missing
-            }
-            
-            val alreadyDelivered = targetConv.messages.any { 
-                it.id == deterministicId || it.content.contains("mission://${goal.id}?gen=$currentExecGen") 
-            }
-            
-            if (!alreadyDelivered) {
-                try {
+            // Phase 1: Write to conversation (Commit Side Effect)
+            try {
+                val snapshot = conversationStore.loadSnapshot()
+                val targetConv = snapshot.conversations.firstOrNull { it.id == goal.conversationId } ?: run {
+                    diagnostics?.warning("mission_result_delivery_target_conversation_missing", mapOf("goal_id" to goalId, "conv_id" to goal.conversationId))
+                    return 
+                }
+                
+                // Idempotency: skip if already present
+                if (targetConv.messages.none { it.id == deterministicId }) {
                     val updatedConversations = snapshot.conversations.map { conversation ->
                         if (conversation.id == goal.conversationId) {
                             conversation.copy(
@@ -220,46 +214,39 @@ object AgentResultDeliveryLogic {
                             )
                         } else conversation
                     }
-                    val nextSnapshot = snapshot.copy(conversations = updatedConversations)
-                    conversationStore.saveSnapshot(nextSnapshot)
+                    conversationStore.saveSnapshot(snapshot.copy(conversations = updatedConversations))
                     
-                    // V43: Reliability - Verify persistence with a retry/delay for slow file systems (like Windows in tests)
-                    var reloaded: com.david.openassistant.data.local.StoredConversation? = null
-                    repeat(3) { attempt ->
-                        val reloadedSnapshot = conversationStore.loadSnapshot()
-                        reloaded = reloadedSnapshot.conversations.firstOrNull { it.id == goal.conversationId }
-                        val found = reloaded
-                        if (found != null && found.messages.any { it.id == deterministicId }) {
-                            return@repeat
-                        }
-                        if (attempt < 2) Thread.sleep(100)
+                    // Verify durability before committing the marker
+                    val reloaded = conversationStore.loadSnapshot().conversations.firstOrNull { it.id == goal.conversationId }
+                    if (reloaded == null || reloaded.messages.none { it.id == deterministicId }) {
+                         diagnostics?.error("mission_result_delivery_persistence_verification_failed", IllegalStateException("Message not found after save"), mapOf("goal_id" to goalId))
+                         return
                     }
-
-                    val finalReloaded = reloaded
-                    if (finalReloaded == null || !finalReloaded.messages.any { it.id == deterministicId }) {
-                        diagnostics?.error("mission_result_delivery_persistence_verification_failed", IllegalStateException("Persistence verification failed after retries"), mapOf("goal_id" to goalId))
-                        return
-                    }
-                } catch (e: Exception) {
-                    diagnostics?.error("mission_result_delivery_store_failed", e, mapOf("goal_id" to goalId))
-                    return // DO NOT mark delivered if write fails
+                }
+            } catch (e: Exception) {
+                diagnostics?.error("mission_result_delivery_store_failed", e, mapOf("goal_id" to goalId))
+                return
+            }
+            
+            // Phase 2: Commit marker to agent store (Commit Durable Intent)
+            agentStore.updateGoal(goal.id) { current ->
+                // Ensure we don't duplicate markers if already present from a race
+                if (current.deliveryRecords.any { !it.isLegacy && it.executionGeneration == currentExecGen && it.deliveryKind == deliveryKind }) {
+                    current
+                } else {
+                    current.copy(
+                        deliveryRecords = current.deliveryRecords + DeliveryRecord(
+                            generation = current.leaseGeneration, // Provenance
+                            deliveryKind = deliveryKind,
+                            executionGeneration = currentExecGen, // Stable epoch
+                            isLegacy = false
+                        ),
+                        terminalResultDelivered = true
+                    )
                 }
             }
             
-            // Phase 2: Mark as delivered in agent store (Commit Durable Intent)
-            agentStore.updateGoal(goal.id) { current ->
-                current.copy(
-                    deliveryRecords = current.deliveryRecords + DeliveryRecord(
-                        generation = currentLeaseGen, 
-                        deliveryKind = deliveryKind,
-                        executionGeneration = currentExecGen,
-                        isLegacy = false
-                    ),
-                    terminalResultDelivered = true // Sync legacy flag
-                )
-            }
-            
-            diagnostics?.info("mission_result_delivered", mapOf("goal_id" to goalId, "conversation_id" to goal.conversationId, "exec_gen" to currentExecGen, "status" to goal.status.name))
+            diagnostics?.info("mission_result_delivered", mapOf("goal_id" to goalId, "conversation_id" to goal.conversationId, "ex_gen" to currentExecGen, "status" to goal.status.name))
         }
     }
 }

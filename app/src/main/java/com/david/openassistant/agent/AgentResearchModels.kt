@@ -161,7 +161,7 @@ data class ResearchRecoveryPlan(
     val inputExecutionFingerprint: String,
     val inputObjectiveFingerprint: String = "", // V43
     val triggerExecutionFingerprint: String = "", // V43
-    val version: Int = 1, // V43
+    val version: Int = 2, // V43 Stabilized
     val diagnosis: ExecutionStallDiagnosis,
     val selectedTactic: EscalationTactic,
     val status: RecoveryPlanStatus,

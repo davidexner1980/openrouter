@@ -131,7 +131,7 @@ data class AgentGoal(
     val operationFingerprints: List<String> = emptyList(),
     val classifiedFailures: List<String> = emptyList(),
     val leaseGeneration: Int = 0,
-    val executionGeneration: Int = 0,
+    val executionGeneration: Int = 1,
     val lastResumeReason: ResumeReason? = null,
     val objectiveContract: ObjectiveContract? = null,
     val recoveryPlans: List<ResearchRecoveryPlan> = emptyList(),

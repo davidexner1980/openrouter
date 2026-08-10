@@ -10,7 +10,8 @@ sealed class ProviderRequestContext {
         val workerId: String,
         val taskId: String? = null,
         val attemptId: String,
-        val executionGeneration: Int,
+        val executionGeneration: Int, // Stable mission epoch
+        val leaseGeneration: Int, // Transient worker fencing
         val acquiredAt: Long,
         val role: AgentTaskRole? = null,
         val operation: MissionOperation,
@@ -21,15 +22,14 @@ sealed class ProviderRequestContext {
         val lastProgressTime: Long = startTime,
         val deadline: Long? = null,
         val attemptCount: Int = 1,
-        val generation: Int = executionGeneration,
         val ownerId: String = workerId,
     ) : ProviderRequestContext() {
         fun toTicket(acquiredAt: Long): AgentOwnershipTicket {
             val session = com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID
             return if (taskId != null) {
-                TaskExecutionTicket(goalId, taskId, workerId, session, executionGeneration, attemptId, acquiredAt)
+                TaskExecutionTicket(goalId, taskId, workerId, session, leaseGeneration, executionGeneration, attemptId, acquiredAt)
             } else {
-                PlanningTicket(goalId, workerId, session, executionGeneration, attemptId, acquiredAt)
+                PlanningTicket(goalId, workerId, session, leaseGeneration, executionGeneration, attemptId, acquiredAt)
             }
         }
 

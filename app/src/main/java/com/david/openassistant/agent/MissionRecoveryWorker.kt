@@ -28,7 +28,7 @@ class MissionRecoveryWorker(
                     val isStaleClaim = now - claim.claimedAt > 60_000L
                     if (isStaleClaim) {
                         diagnostics.info("watchdog_reconciling_stale_continuation_claim", mapOf("goal_id" to goal.id, "claim_id" to claim.claimId))
-                        scheduler.enqueue(goal.id, generation = claim.claimantGeneration)
+                        scheduler.enqueue(goal.id, executionGeneration = goal.executionGeneration)
                         store.confirmContinuationAtomic(goal.id, claim.claimId, ContinuationSchedulingState.FAILED_RETRYABLE, failureClass = "WATCHDOG_RECONCILED_STALE")
                     }
                 }
@@ -126,7 +126,7 @@ class MissionRecoveryWorker(
                         }
                     }
                 }
-                scheduler.enqueue(goal.id, replace = false)
+                scheduler.enqueue(goal.id, replace = false, executionGeneration = goal.executionGeneration)
                 recoveredCount++
             }
         }

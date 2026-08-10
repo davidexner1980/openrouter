@@ -370,7 +370,7 @@ class AgentGoalWorker(
                             diagnostics.info(
                                 event = "execution_ticket_created",
                                 component = "lease",
-                                fields = mapOf("goal_id" to goalId, "task_id" to (acquisition.ticket.taskId ?: "none"), "gen" to acquisition.ticket.generation)
+                                fields = mapOf("goal_id" to goalId, "task_id" to (acquisition.ticket.taskId ?: "none"), "lease_gen" to acquisition.ticket.leaseGeneration, "ex_gen" to acquisition.ticket.executionGeneration)
                             )
                             acquisition.ticket to acquisition.goal
                         }
@@ -378,7 +378,7 @@ class AgentGoalWorker(
                             diagnostics.info(
                                 event = "execution_ticket_created",
                                 component = "lease",
-                                fields = mapOf("goal_id" to goalId, "task_id" to (acquisition.ticket.taskId ?: "none"), "gen" to acquisition.ticket.generation, "reclaimed" to true)
+                                fields = mapOf("goal_id" to goalId, "task_id" to (acquisition.ticket.taskId ?: "none"), "lease_gen" to acquisition.ticket.leaseGeneration, "ex_gen" to acquisition.ticket.executionGeneration, "reclaimed" to true)
                             )
                             acquisition.ticket to acquisition.goal
                         }
@@ -448,7 +448,7 @@ class AgentGoalWorker(
                                 goalId = goalId,
                                 workerId = workerId,
                                 attemptId = lease.attemptId,
-                                generation = lease.generation,
+                                leaseGeneration = lease.generation,
                                 taskId = lease.taskId
                             )
                             if (result != RefreshLeaseResult.Refreshed) {
@@ -864,27 +864,28 @@ class AgentGoalWorker(
     private fun enqueueContinuationIfActive(goalId: String, fingerprint: String? = null) {
         val latest = findGoal(goalId) ?: return
         if (latest.status.isActivePhase()) {
-            val generation = latest.leaseGeneration
+            val executionGeneration = latest.executionGeneration
+            val leaseGeneration = latest.leaseGeneration
             diagnostics.info(
                 event = "continuation_enqueue_started",
                 component = "scheduler",
-                fields = mapOf("goal_id" to goalId, "gen" to generation, "fingerprint" to (fingerprint ?: "none"))
+                fields = mapOf("goal_id" to goalId, "ex_gen" to executionGeneration, "lease_gen" to leaseGeneration, "fingerprint" to (fingerprint ?: "none"))
             )
             try {
-                val result = scheduler.enqueueContinuation(goalId, generation, fingerprint)
+                val result = scheduler.enqueueContinuation(goalId, executionGeneration, leaseGeneration, fingerprint)
                 when (result) {
                     is SchedulingResult.NewlyEnqueued -> {
                         diagnostics.info(
                             event = "continuation_enqueued",
                             component = "scheduler",
-                            fields = mapOf("goal_id" to goalId, "gen" to generation, "work_id" to result.workId.toString())
+                            fields = mapOf("goal_id" to goalId, "ex_gen" to executionGeneration, "work_id" to result.workId.toString())
                         )
                     }
                     is SchedulingResult.ReusedActive -> {
                         diagnostics.info(
                             event = "continuation_reused",
                             component = "scheduler",
-                            fields = mapOf("goal_id" to goalId, "gen" to generation)
+                            fields = mapOf("goal_id" to goalId, "ex_gen" to executionGeneration)
                         )
                     }
                     is SchedulingResult.RejectedNoProgress -> {
@@ -906,7 +907,7 @@ class AgentGoalWorker(
                             event = "continuation_enqueue_failed",
                             component = "scheduler",
                             throwable = result.error,
-                            fields = mapOf("goal_id" to goalId, "gen" to generation)
+                            fields = mapOf("goal_id" to goalId, "ex_gen" to executionGeneration)
                         )
                     }
                     else -> {
@@ -924,7 +925,7 @@ class AgentGoalWorker(
                     throwable = e,
                     fields = mapOf(
                         "goal_id" to goalId,
-                        "gen" to generation
+                        "ex_gen" to executionGeneration
                     )
                 )
             }
@@ -960,7 +961,7 @@ class AgentGoalWorker(
         val currentObjectiveFingerprint = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
 
         if (plan.version < 2 || plan.inputObjectiveFingerprint.isEmpty()) {
-            val migrationKey = "recovery_plan_migration_v43:${plan.id}"
+            val migrationKey = "recovery_plan_migration_v43_v2:${plan.id}"
             if (!goal.idempotencyRecords.any { it.key == migrationKey }) {
                 diagnostics.info("migrating_legacy_recovery_plan", mapOf("goal_id" to goal.id, "plan_id" to plan.id))
                 store.updateGoalAtomic(goal.id, ticket) { current ->
@@ -977,7 +978,8 @@ class AgentGoalWorker(
                             state = IdempotencyState.COMMITTED,
                             claimOwner = ticket.workerId,
                             committedAt = System.currentTimeMillis()
-                        )
+                        ),
+                        events = appendEvent(current.events, "Legacy recovery plan migrated to version 2 schema.")
                     )
                 }
                 return WorkerOutcome.CONTINUE
@@ -990,8 +992,11 @@ class AgentGoalWorker(
             return WorkerOutcome.CONTINUE
         }
 
-        // Increment budget for this activation
-        store.updateGoalAtomic(goal.id, ticket) { it.copy(recoveryNoProgressCount = it.recoveryNoProgressCount + 1) }
+        // V43: Tightened Budget Law - only increment if this is a genuine recovery attempt,
+        // and we aren't already waiting for external conditions (network/credentials).
+        if (goal.status == AgentGoalStatus.RECOVERING && goal.networkWaitReason == null) {
+            store.updateGoalAtomic(goal.id, ticket) { it.copy(recoveryNoProgressCount = it.recoveryNoProgressCount + 1) }
+        }
 
         return when (plan.status) {
             RecoveryPlanStatus.PREPARED,
@@ -1020,9 +1025,11 @@ class AgentGoalWorker(
                 planner.commitRecoveryEffect(goal, plan, ticket)
             }
             RecoveryPlanStatus.COMMITTED -> {
-                diagnostics.info("committed_recovery_status_repaired", mapOf("goal_id" to goal.id, "plan_id" to plan.id))
+                diagnostics.info("committed_recovery_status_processed", mapOf("goal_id" to goal.id, "plan_id" to plan.id))
                 store.updateGoalAtomic(goal.id, ticket) { current ->
-                    current.copy(status = AgentGoalStatus.QUEUED, activeRecoveryPlanId = null, recoveryNoProgressCount = 0)
+                    // Clear plan from active status, but do NOT reset budget here.
+                    // Reset only occurs on substantive evidence/task progress in the next activation.
+                    current.copy(status = AgentGoalStatus.QUEUED, activeRecoveryPlanId = null)
                 }
                 WorkerOutcome.CONTINUE
             }

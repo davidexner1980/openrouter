@@ -72,6 +72,7 @@ import com.david.openassistant.agent.isFinalTerminalStatus
 import com.david.openassistant.domain.BriefingInteractor
 import com.david.openassistant.agent.RuntimePacketExporter
 import com.david.openassistant.agent.isInactive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -198,7 +199,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             emptyMap()
         } else {
             activeGoals.associate { goal ->
-                goal.id to agentInteractor.isWorkRunning(goal.id, goal.executionLease?.generation ?: 0)
+                goal.id to agentInteractor.isWorkRunning(goal.id, goal.executionGeneration)
             }
         }
 
@@ -235,6 +236,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     private val streamCharacterCount = AtomicInteger(0)
     private val firstStreamDeltaLogged = AtomicBoolean(false)
 
+    private val conversationLock = Any()
     private var conversationSnapshot = createBootstrapConversationSnapshot()
     private val initialConversation = conversationSnapshot.activeConversation
     private val _uiState = MutableStateFlow(
@@ -374,9 +376,9 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                                     ?.let { lease -> !AgentLeasePolicy.isStale(lease, now) }
                                     ?: false
                                 if (hasFreshLease) {
-                                    agentInteractor.enqueue(goal.id, generation = goal.leaseGeneration)
+                                    agentInteractor.enqueue(goal.id, executionGeneration = goal.executionGeneration)
                                 } else {
-                                    val generation = goal.leaseGeneration
+                                    val executionGeneration = goal.executionGeneration
                                     agentInteractor.updateGoal(goal.id) { current ->
                                         AgentLifecycleReducer.resume(
                                             current,
@@ -384,7 +386,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                                             message = "The app reopened and automatically recovered a mission with no active worker lease.",
                                         )
                                     }
-                                    agentInteractor.enqueue(goal.id, replace = true, generation = generation)
+                                    agentInteractor.enqueue(goal.id, replace = true, executionGeneration = executionGeneration)
                                 }
                             }
                     }
@@ -1114,7 +1116,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             val now = System.currentTimeMillis()
             
             val isWorkRunning = withContext(Dispatchers.IO) { 
-                agentInteractor.isWorkRunning(goalId, goal.executionLease?.generation ?: 0) 
+                agentInteractor.isWorkRunning(goalId, goal.executionGeneration) 
             }
             val hasActiveLease = goal.executionLease?.let { !AgentLeasePolicy.isStale(it, now) } ?: false
             
@@ -1147,7 +1149,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 AgentLifecycleReducer.resume(current, reason = ResumeReason.USER_RESUME) 
             }.goals.firstOrNull { it.id == goalId }
             
-            agentInteractor.enqueue(goalId, replace = true, generation = updatedGoal?.leaseGeneration ?: 0)
+            agentInteractor.enqueue(goalId, replace = true, executionGeneration = updatedGoal?.executionGeneration ?: 1)
             diagnostics.info("agent_goal_resumed", mapOf("goal_id" to goalId, "is_stranded" to isStranded))
             refreshAgentSnapshot()
         }
@@ -1398,11 +1400,13 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             selectedModelId = state.selectedModelId,
             modelProfile = state.selectedModelProfile,
         )
-        conversationSnapshot = ConversationSnapshot(
-            conversations = listOf(conversation) + conversationSnapshot.conversations,
-            activeConversationId = conversation.id,
-        )
-        conversationInteractor.saveSnapshot(conversationSnapshot)
+        synchronized(conversationLock) {
+            conversationSnapshot = ConversationSnapshot(
+                conversations = listOf(conversation) + conversationSnapshot.conversations,
+                activeConversationId = conversation.id,
+            )
+            conversationInteractor.saveSnapshot(conversationSnapshot)
+        }
         _uiState.update {
             it.copy(
                 messages = emptyList(),
@@ -1418,24 +1422,28 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun openConversation(conversationId: String) {
-        val conversation = conversationSnapshot.conversations.firstOrNull { it.id == conversationId } ?: return
+        val conversation = synchronized(conversationLock) {
+             conversationSnapshot.conversations.firstOrNull { it.id == conversationId } 
+        } ?: return
         stopGeneration()
         discardPendingImage()
         val selectedModelId = resolveConversationModelId(
             preferredModelId = conversation.selectedModelId,
             profile = conversation.modelProfile,
         )
-        conversationSnapshot = conversationSnapshot.copy(
-            conversations = conversationSnapshot.conversations.map { stored ->
-                if (stored.id == conversation.id) {
-                    stored.copy(selectedModelId = selectedModelId)
-                } else {
-                    stored
-                }
-            },
-            activeConversationId = conversation.id,
-        )
-        conversationInteractor.saveSnapshot(conversationSnapshot)
+        synchronized(conversationLock) {
+            conversationSnapshot = conversationSnapshot.copy(
+                conversations = conversationSnapshot.conversations.map { stored ->
+                    if (stored.id == conversation.id) {
+                        stored.copy(selectedModelId = selectedModelId)
+                    } else {
+                        stored
+                    }
+                },
+                activeConversationId = conversation.id,
+            )
+            conversationInteractor.saveSnapshot(conversationSnapshot)
+        }
         _uiState.update {
             it.copy(
                 messages = conversation.messages,
@@ -1455,16 +1463,18 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
     fun renameConversation(conversationId: String, rawTitle: String) {
         val title = rawTitle.replace(Regex("\\s+"), " ").trim().take(80)
         if (title.isBlank()) return
-        conversationSnapshot = conversationSnapshot.copy(
-            conversations = conversationSnapshot.conversations.map { conversation ->
-                if (conversation.id == conversationId) {
-                    conversation.copy(title = title, updatedAt = System.currentTimeMillis())
-                } else {
-                    conversation
-                }
-            },
-        )
-        conversationInteractor.saveSnapshot(conversationSnapshot)
+        synchronized(conversationLock) {
+            conversationSnapshot = conversationSnapshot.copy(
+                conversations = conversationSnapshot.conversations.map { conversation ->
+                    if (conversation.id == conversationId) {
+                        conversation.copy(title = title, updatedAt = System.currentTimeMillis())
+                    } else {
+                        conversation
+                    }
+                },
+            )
+            conversationInteractor.saveSnapshot(conversationSnapshot)
+        }
         _uiState.update {
             it.copy(
                 currentConversationTitle = if (conversationId == conversationSnapshot.activeConversationId) {
@@ -1482,34 +1492,39 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             predicate = { it.conversationId == conversationId },
             reason = "Goal cancelled because its conversation was deleted.",
         )
-        val removedConversation = conversationSnapshot.conversations.firstOrNull { it.id == conversationId }
+        val removedConversation = synchronized(conversationLock) {
+             conversationSnapshot.conversations.firstOrNull { it.id == conversationId }
+        }
         if (conversationId == conversationSnapshot.activeConversationId) {
             stopGeneration()
             discardPendingImage()
         }
-        val remaining = conversationSnapshot.conversations.filterNot { it.id == conversationId }
-        val nextConversations = remaining.ifEmpty {
-            listOf(
-                StoredConversation.empty(
-                    selectedModelId = _uiState.value.selectedModelId,
-                    modelProfile = _uiState.value.selectedModelProfile,
-                ),
+        synchronized(conversationLock) {
+            val remaining = conversationSnapshot.conversations.filterNot { it.id == conversationId }
+            val nextConversations = remaining.ifEmpty {
+                listOf(
+                    StoredConversation.empty(
+                        selectedModelId = _uiState.value.selectedModelId,
+                        modelProfile = _uiState.value.selectedModelProfile,
+                    ),
+                )
+            }
+            val nextActiveId = if (conversationId == conversationSnapshot.activeConversationId) {
+                nextConversations.first().id
+            } else {
+                conversationSnapshot.activeConversationId
+            }
+            conversationSnapshot = ConversationSnapshot(nextConversations, nextActiveId)
+            val active = conversationSnapshot.activeConversation
+            val resolvedModelId = resolveConversationModelId(active.selectedModelId, active.modelProfile)
+            conversationSnapshot = conversationSnapshot.copy(
+                conversations = conversationSnapshot.conversations.map { stored ->
+                    if (stored.id == active.id) stored.copy(selectedModelId = resolvedModelId) else stored
+                },
             )
+            conversationInteractor.saveSnapshot(conversationSnapshot)
         }
-        val nextActiveId = if (conversationId == conversationSnapshot.activeConversationId) {
-            nextConversations.first().id
-        } else {
-            conversationSnapshot.activeConversationId
-        }
-        conversationSnapshot = ConversationSnapshot(nextConversations, nextActiveId)
         val active = conversationSnapshot.activeConversation
-        val selectedModelId = resolveConversationModelId(active.selectedModelId, active.modelProfile)
-        conversationSnapshot = conversationSnapshot.copy(
-            conversations = conversationSnapshot.conversations.map { stored ->
-                if (stored.id == active.id) stored.copy(selectedModelId = selectedModelId) else stored
-            },
-        )
-        conversationInteractor.saveSnapshot(conversationSnapshot)
         removedConversation?.messages
             ?.flatMap { it.attachments }
             ?.takeIf { it.isNotEmpty() }
@@ -1521,7 +1536,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update {
             it.copy(
                 messages = active.messages,
-                selectedModelId = selectedModelId,
+                selectedModelId = active.selectedModelId,
                 selectedModelProfile = active.modelProfile,
                 activeConversationId = active.id,
                 currentConversationTitle = active.title,
@@ -1719,10 +1734,14 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 diagnostics = RequestDiagnostics.running("Multimodal Stage 1: Vision Interpretation", modelId)
             )}
             
-            val visionResult = runCatching {
-                withContext(Dispatchers.IO) {
+            val visionResult = try {
+                Result.success(withContext(Dispatchers.IO) {
                     openRouterClient.visionChat(apiKey, modelId, requestMessages)
-                }
+                })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
             }
             
             if (currentChatOperation?.operationId != chatOperation.operationId) return@launch
@@ -1777,15 +1796,19 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 return@launch
             }
 
-            val result = runCatching {
+            val result = try {
                 // Stall-Proofing: Add a hard timeout to the briefing generation
-                kotlinx.coroutines.withTimeout(90_000L) {
+                Result.success(kotlinx.coroutines.withTimeout(90_000L) {
                     briefingInteractor.generateBrief(
                         conversationId = state.activeConversationId,
                         messages = effectiveMessages,
                         modelId = state.selectedModelId ?: com.david.openassistant.domain.model.AgentModelSelector.AUTO_BETA_ROUTER_MODEL_ID,
                     )
-                }
+                })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
             }
 
 
@@ -2106,8 +2129,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         }
 
         val job = viewModelScope.launch {
-            runCatching {
-                withContext(Dispatchers.IO) {
+            try {
+                val loopResult = withContext(Dispatchers.IO) {
                     openRouterClient.runAutomaticToolLoop(
                         apiKey = apiKey,
                         modelId = modelId,
@@ -2152,8 +2175,8 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         shouldStop = { stopRequested.get() || currentChatOperation?.operationId != chatOperation.operationId },
                     )
                 }
-            }.onSuccess { loopResult ->
-                if (currentChatOperation?.operationId != chatOperation.operationId) return@onSuccess
+                
+                if (currentChatOperation?.operationId != chatOperation.operationId) return@launch
                 val duration = System.currentTimeMillis() - startedAt
                 diagnostics.info(
                     "automatic_tool_loop_completed",
@@ -2194,8 +2217,10 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 if (currentChatOperation?.operationId == chatOperation.operationId) {
                     currentChatOperation = null
                 }
-            }.onFailure { error ->
-                if (currentChatOperation?.operationId != chatOperation.operationId) return@onFailure
+            } catch (e: CancellationException) {
+                throw e
+            } catch (error: Throwable) {
+                if (currentChatOperation?.operationId != chatOperation.operationId) return@launch
                 failToolFlow(chatOperation, error.message ?: "Tool loop failed", modelId, startedAt)
             }
         }
@@ -2455,7 +2480,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
         modelProfile: ModelProfile,
         title: String,
         touchUpdatedAt: Boolean = true,
-    ): List<ConversationSummary> {
+    ): List<ConversationSummary> = synchronized(conversationLock) {
         val updatedConversations = conversationSnapshot.conversations.map { conversation ->
             if (conversation.id == conversationId) {
                 conversation.copy(
@@ -2541,7 +2566,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             val snapshot = agentInteractor.loadSnapshot()
             snapshot.goals
                 .filter { goal -> goal.status.isActivePhase() }
-                .forEach { goal -> agentInteractor.enqueue(goal.id, generation = goal.leaseGeneration) }
+                .forEach { goal -> agentInteractor.enqueue(goal.id, executionGeneration = goal.executionGeneration) }
         }
     }
 
@@ -2552,7 +2577,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 agentInteractor.updateGoal(goal.id) { current ->
                     AgentLifecycleReducer.cancel(current, reason = reason)
                 }
-                agentInteractor.cancel(goal.id)
+                agentInteractor.cancel(goal.id, executionGeneration = goal.executionGeneration)
             }
             refreshAgentSnapshot()
         }

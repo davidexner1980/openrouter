@@ -93,11 +93,6 @@ class ConversationStore(
     private fun writeConversationLocked(conversation: StoredConversation, signal: Boolean = true) {
         conversationsDirectory.mkdirs()
         val target = conversationFileLocked(conversation.id)
-        val backup = File(target.path + ".bak")
-        
-        // Ensure clean state for AtomicFile on potential flaky file systems (like Windows tests)
-        if (backup.exists()) backup.delete()
-
         val atomicFile = AtomicFile(target)
         val text = encodeConversation(conversation).toString()
         
@@ -107,17 +102,8 @@ class ConversationStore(
             stream.write(text.toByteArray(StandardCharsets.UTF_8))
             stream.flush()
             atomicFile.finishWrite(stream)
-            
-            // Windows robustness: Ensure backup is deleted to prevent stale restore on next read.
-            if (backup.exists()) {
-                backup.delete()
-            }
         } catch (e: Exception) {
             atomicFile.failWrite(stream)
-            // Final sync defense for environments where AtomicFile rename fails (e.g. CI/Windows locks)
-            if (!target.exists() || target.readText(StandardCharsets.UTF_8) != text) {
-                runCatching { target.writeText(text, StandardCharsets.UTF_8) }
-            }
             android.util.Log.e("ConversationStore", "Failed to write conversation ${conversation.id}", e)
             throw e
         }
@@ -129,14 +115,8 @@ class ConversationStore(
     }
 
     private fun readConversationLocked(file: File): StoredConversation {
-        // Preference raw read if file exists, avoiding AtomicFile backup restore 
-        // which can incorrectly prefer stale data in rapid-write test environments.
-        val raw = if (file.exists()) {
-            file.readText(StandardCharsets.UTF_8)
-        } else {
-            val atomicFile = AtomicFile(file)
-            atomicFile.openRead().use { it.bufferedReader(StandardCharsets.UTF_8).readText() }
-        }
+        val atomicFile = AtomicFile(file)
+        val raw = atomicFile.openRead().use { it.bufferedReader(StandardCharsets.UTF_8).readText() }
         return decodeConversation(JSONObject(raw))
     }
 
