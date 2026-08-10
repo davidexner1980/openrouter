@@ -449,3 +449,21 @@ enum class MissionFailureClassification {
     RECOVERY_STARVATION,
     TOOL_RESTRICTED_PHASE_STALL
 }
+
+data class EvidenceRequirement(
+    val requiresExternalSources: Boolean = false,
+    val minimumSubstantiveSources: Int = 0,
+    val minimumPrimarySources: Int = 0,
+    val requiresPublicWebSearch: Boolean = false,
+    val requiresFullReads: Boolean = false,
+    val mayUseUserProvidedSources: Boolean = true,
+    val mayUseValidatedCachedSources: Boolean = true,
+)
+
+data class EvidenceCapability(
+    val publicWebSearchAvailable: Boolean = false,
+    val publicWebFetchAvailable: Boolean = false,
+    val userProvidedEvidenceAvailable: Boolean = false,
+    val validatedCachedEvidenceAvailable: Boolean = false,
+    val unavailableReason: ToolUnavailabilityReason = ToolUnavailabilityReason.NONE,
+)
