@@ -485,7 +485,7 @@ fun deriveEvidenceCapability(audit: AgentToolRegistry.ToolAvailabilityAudit): Ev
         publicWebSearchUnavailableReason = if (searchAvailable) ToolUnavailabilityReason.NONE else searchReqs.firstOrNull()?.unavailabilityReason ?: ToolUnavailabilityReason.NONE,
         publicWebFetchAvailable = fetchAvailable,
         publicWebFetchUnavailableReason = if (fetchAvailable) ToolUnavailabilityReason.NONE else fetchReqs.firstOrNull()?.unavailabilityReason ?: ToolUnavailabilityReason.NONE,
-        userProvidedEvidenceAvailable = true, // Policy: user provided is always "available" as a capability if it exists in the graph
-        validatedCachedEvidenceAvailable = true
+        userProvidedEvidenceAvailable = false, // V42-A.1: Truthful status requires caller context
+        validatedCachedEvidenceAvailable = false
     )
 }

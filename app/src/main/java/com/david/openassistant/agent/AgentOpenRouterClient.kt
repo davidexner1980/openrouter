@@ -4959,17 +4959,13 @@ open class AgentOpenRouterClient internal constructor(
                 if (result.outcome == resolution.outcome) {
                     diagnosticsRecord("exchange_already_terminal_idempotent", mapOf("exchangeId" to exchangeId, "outcome" to resolution.outcome.name))
                 } else {
-                    diagnosticsRecord("exchange_already_terminal_conflict", mapOf("exchangeId" to exchangeId, "existingOutcome" to result.outcome.name, "attemptedOutcome" to resolution.outcome.name))
-                    throw TerminalPersistenceException(
-                        goalId = requestContext.goalId,
-                        taskId = requestContext.taskId,
-                        exchangeId = exchangeId,
-                        parentOperationId = requestContext.parentOperationId,
-                        operation = requestContext.operation.operationName,
-                        intendedOutcome = resolution.outcome,
-                        storeFailure = "ConflictingAlreadyTerminal",
-                        safeReason = "existing=${result.outcome}, attempted=${resolution.outcome}",
-                    )
+                    // Protocol V4.2-A.1: Preserving the first terminal truth is authoritative. 
+                    // Log the conflict but do not throw or overwrite.
+                    diagnosticsRecord("exchange_already_terminal_conflict_preserved", mapOf(
+                        "exchangeId" to exchangeId, 
+                        "existingOutcome" to result.outcome.name, 
+                        "attemptedOutcome" to resolution.outcome.name
+                    ))
                 }
             }
             is TransitionOutcomeResult.StorageFailure -> {
