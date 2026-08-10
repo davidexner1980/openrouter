@@ -247,6 +247,44 @@ class AgentTaskExecutor internal constructor(
         val profile = AgentRoutingPolicy.profileForGoal(startedGoal)
         val councilModelId = AgentCouncilPolicy.selectModel(councilRole, profile, startedGoal.executionModelId)
 
+        // EVIDENCE CAPABILITY GATE: V42-A
+        if (freshTask.capability in AgentCapability.SOURCE_DEPENDENT_FACTUAL_CAPABILITIES) {
+            val gaps = AgentResearchAllocator.evaluateGaps(startedGoal, allocationProfile)
+            val hasUnmetRequirement = gaps.remainingSourceGap > 0 ||
+                gaps.remainingPrimarySourceGap ||
+                gaps.remainingDomainGap > 0 ||
+                gaps.remainingReadGap > 0
+                
+            if (hasUnmetRequirement) {
+                val capability = client.checkEvidenceCapabilities(councilModelId, freshTask, apiKey)
+                
+                // Determine what exactly is missing vs what is needed
+                val searchRequired = gaps.remainingSourceGap > 0 || gaps.remainingDomainGap > 0 || gaps.remainingPrimarySourceGap
+                val fetchRequired = gaps.remainingReadGap > 0 || gaps.remainingPrimarySourceGap
+                
+                val searchBlocked = searchRequired && !capability.publicWebSearchAvailable
+                val fetchBlocked = fetchRequired && !capability.publicWebFetchAvailable
+                
+                if (searchBlocked || fetchBlocked) {
+                    val reason = buildString {
+                        if (searchBlocked) append("Web Search required but unavailable (${capability.publicWebSearchUnavailableReason.name}). ")
+                        if (fetchBlocked) append("Web Fetch (full reading) required but unavailable (${capability.publicWebFetchUnavailableReason.name}).")
+                    }.trim()
+                    
+                    taskDiagnostics.warning("evidence_capability_gate_blocked", mapOf("reason" to reason))
+                    
+                    store.updateGoalAtomic(freshGoal.id, ticket) { current ->
+                        current.copy(
+                            status = AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+                            error = "Mission blocked: required evidence acquisition capability is unavailable. $reason",
+                            events = appendEvent(current.events, "Factual execution blocked: $reason")
+                        )
+                    }
+                    return WorkerOutcome.DONE
+                }
+            }
+        }
+
         val timer = taskDiagnostics.startTimer("agent_milestone_execution_duration")
         val result = try {
             val r = client.executeTask(
@@ -1357,8 +1395,7 @@ class AgentTaskExecutor internal constructor(
             sourceReads = mergeSourceReads(
                 routedCurrent.sourceReads,
                 result.sources.map { s ->
-                    val textLength = s.excerpt.orEmpty().length
-                    val provenance = if (textLength >= 600) { // MIN_PROVIDER_EXTRACT_CHARS = 600
+                    val provenance = if (isSubstantialProviderExtract(s.excerpt)) {
                         SourceReadProvenance.PROVIDER_EXTRACT
                     } else {
                         SourceReadProvenance.UNVERIFIED_CITATION

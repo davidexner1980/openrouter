@@ -322,14 +322,15 @@ object FailureClassifier {
             )
         }
 
-        // 5. Provider capacity (503 / overload)
-        if (statusCode == 503 || message.contains("capacity") || message.contains("resource exhausted") || message.contains("overloaded")) {
+        // 5. Provider capacity (503 / overload) or generic 5xx
+        if (statusCode != null && statusCode >= 500) {
+            val isCapacity = statusCode == 503 || message.contains("capacity") || message.contains("resource exhausted") || message.contains("overloaded")
             return baseDescriptor.copy(
                 domain = FailureDomain.PROVIDER,
-                failureClass = "PROVIDER_CAPACITY",
+                failureClass = if (isCapacity) "PROVIDER_CAPACITY" else "HTTP_5XX",
                 scope = FailureScope.UPSTREAM_PROVIDER,
                 retryPolicy = RetryPolicy.ON_DIFFERENT_COMPATIBLE_ROUTE,
-                safeDiagnosticSummary = "Provider report capacity exhaustion.",
+                safeDiagnosticSummary = if (isCapacity) "Provider reports capacity exhaustion." else "Provider returned HTTP $statusCode.",
             )
         }
 

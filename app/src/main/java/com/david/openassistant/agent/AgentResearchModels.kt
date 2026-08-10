@@ -39,6 +39,7 @@ data class ResearchAllocationGaps(
     val remainingPrimarySourceGap: Boolean,
     val remainingContradictionGap: Boolean,
     val remainingGapClosureGap: Boolean,
+    val remainingReadGap: Int,
     val estimatedEffortLabel: String,
 )
 
@@ -67,6 +68,7 @@ data class ResearchAllocationSnapshot(
     val remainingDomainGap: Int,
     val remainingPrimarySourceGap: Boolean,
     val remainingContradictionGap: Boolean,
+    val remainingReadGap: Int,
     val estimatedEffortLabel: String,
     val lastAllocationReason: String?,
 )

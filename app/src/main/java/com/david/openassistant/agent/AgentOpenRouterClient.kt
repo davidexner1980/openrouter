@@ -385,7 +385,7 @@ internal fun parseAdaptiveResearchStrategy(
     }
 
 open class AgentOpenRouterClient internal constructor(
-    private val toolRuntime: AutonomousToolRuntime? = null,
+    internal val toolRuntime: AutonomousToolRuntime? = null,
     private val autonomyPolicy: AutonomyPolicy = AutonomyPolicy.DEFAULT,
     private val client: OkHttpClient = sharedClient,
     private val researchMonitor: ResearchMonitor? = null,
@@ -5249,10 +5249,16 @@ open class AgentOpenRouterClient internal constructor(
                             rawBody = rawBody
                         )
                     } else {
+                        val (finalOutcome, finalFailureClass) = when {
+                            response.code == 429 -> ExchangeOutcome.RATE_LIMITED to ProviderAttemptFailureClass.HTTP_429.name
+                            response.code >= 500 -> ExchangeOutcome.PROVIDER_UNAVAILABLE to ProviderAttemptFailureClass.HTTP_5XX.name
+                            response.code == 401 || response.code == 403 -> ExchangeOutcome.AUTHENTICATION_FAILED to "HTTP_${response.code}"
+                            else -> ExchangeOutcome.RESPONSE_ERROR to (choiceError ?: "HTTP_${response.code}")
+                        }
                         ExchangeResolution(
-                            outcome = ExchangeOutcome.RESPONSE_ERROR,
+                            outcome = finalOutcome,
                             statusCode = response.code,
-                            failureClass = choiceError ?: "HTTP_${response.code}",
+                            failureClass = finalFailureClass,
                             providerResponseId = providerRespId
                         )
                     }
@@ -5286,13 +5292,16 @@ open class AgentOpenRouterClient internal constructor(
                 val isRealCancellation = isCancelled || error is CancellationException || isCancellationTimeout
 
                 if (!terminalTransitionHandled) {
+                    val (finalOutcome, finalFailureClass) = when {
+                        isCancellationTimeout -> ExchangeOutcome.CANCELLATION_TIMEOUT to ProviderAttemptFailureClass.CANCELLATION_TIMEOUT.name
+                        isRealCancellation -> ExchangeOutcome.CANCELLED to ProviderAttemptFailureClass.CANCELLED.name
+                        error is java.net.SocketTimeoutException -> ExchangeOutcome.TRANSPORT_FAILURE to ProviderAttemptFailureClass.CALL_TIMEOUT.name
+                        error is java.net.UnknownHostException -> ExchangeOutcome.TRANSPORT_FAILURE to ProviderAttemptFailureClass.DNS_FAILURE.name
+                        else -> ExchangeOutcome.TRANSPORT_FAILURE to ProviderAttemptFailureClass.UNKNOWN_TRANSPORT_FAILURE.name
+                    }
                     val resolution = ExchangeResolution(
-                        outcome = when {
-                            isCancellationTimeout -> ExchangeOutcome.CANCELLATION_TIMEOUT
-                            isRealCancellation -> ExchangeOutcome.CANCELLED
-                            else -> ExchangeOutcome.TRANSPORT_FAILURE
-                        },
-                        failureClass = error::class.java.simpleName,
+                        outcome = finalOutcome,
+                        failureClass = finalFailureClass,
                     )
                     handleTerminalTransition(requestContext, exchangeId, resolution)
                 }
@@ -5717,6 +5726,29 @@ open class AgentOpenRouterClient internal constructor(
             }
         }
         return "${call.name}:$normalizedArgs"
+    }
+
+    /**
+     * Authoritative evidence capability check for a specific model and task.
+     */
+    internal fun checkEvidenceCapabilities(
+        modelId: String,
+        task: AgentTask,
+        apiKey: String
+    ): EvidenceCapability {
+        val researchRole = if (task.capability in AgentCapability.RESEARCH_CAPABILITIES) researchPassRole(task) else ResearchPassRole.GENERAL
+        val includeAdvanced = researchRole in setOf(ResearchPassRole.CONTRADICTION, ResearchPassRole.GAP_CLOSURE)
+        
+        val audit = AgentToolRegistry.availableToolsForUserWork(
+            runtime = toolRuntime,
+            networkAvailable = toolRuntime?.isNetworkAvailable() ?: true,
+            credentialsAvailable = AgentOperationalState.areCredentialsAvailable(apiKey),
+            publicWebConfigured = toolRuntime?.isPublicWebConfigured() ?: true,
+            isFreeOnly = isFreeOnlyModel(modelId),
+            includeAdvancedResearchTools = includeAdvanced
+        )
+        
+        return deriveEvidenceCapability(audit)
     }
 
     private fun isFreeOnlyModel(modelId: String): Boolean =

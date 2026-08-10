@@ -159,9 +159,15 @@ object AgentResearchAllocator {
             (activeCycleId == null || it.cycleId == activeCycleId || it.id in carryForwardIds) &&
             it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH)
         }
+        
+        val publicationGradeUrls = goal.sourceReads
+            .filter { it.isPublicationGrade }
+            .map { it.canonicalUrl }
+            .toSet()
+
         val sourceUrls = researchEvidence
             .flatMap { it.sources.map { s -> ResearchQualityGate.canonicalSourceUrl(s.url) } }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && it in publicationGradeUrls }
             .distinct()
         
         val domains = sourceUrls.mapNotNull { url ->
@@ -170,6 +176,12 @@ object AgentResearchAllocator {
         
         val remainingSourceGap = (profile.targetDistinctSources - sourceUrls.size).coerceAtLeast(0)
         val remainingDomainGap = (profile.targetDomains - domains.size).coerceAtLeast(0)
+
+        // Read accounting gap - use cycle-aware researchEvidence to recover tool audit
+        val toolExecutions = recoverResearchToolAudit(researchEvidence)
+        val readAccounting = successfulResearchReadAccounting(toolExecutions)
+        val targetReads = profile.targetFullReadsPerPass * profile.targetResearchPasses
+        val remainingReadGap = (targetReads - readAccounting.equivalentReadUnits).coerceAtLeast(0)
         
         val researchTasks = goal.tasks.filter { 
             (activeCycleId == null || it.cycleId == activeCycleId) &&
@@ -204,6 +216,7 @@ object AgentResearchAllocator {
             remainingPrimarySourceGap = remainingPrimarySourceGap,
             remainingContradictionGap = remainingContradictionGap,
             remainingGapClosureGap = remainingGapClosureGap,
+            remainingReadGap = remainingReadGap,
             estimatedEffortLabel = effortLabel
         )
     }

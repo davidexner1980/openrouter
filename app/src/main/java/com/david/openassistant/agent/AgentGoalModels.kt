@@ -159,6 +159,7 @@ data class AgentGoal(
             remainingDomainGap = gaps.remainingDomainGap,
             remainingPrimarySourceGap = gaps.remainingPrimarySourceGap,
             remainingContradictionGap = gaps.remainingContradictionGap,
+            remainingReadGap = gaps.remainingReadGap,
             estimatedEffortLabel = gaps.estimatedEffortLabel,
             lastAllocationReason = lastAllocationReason
         )

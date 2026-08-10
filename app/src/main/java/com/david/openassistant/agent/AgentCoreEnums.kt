@@ -114,6 +114,7 @@ enum class AgentCapability(val wireName: String) {
 
         val RESEARCH_CAPABILITIES = setOf(WEB_RESEARCH, DEEP_RESEARCH)
         val STRUCTURED_RESULT_CAPABILITIES = setOf(REASON, SYNTHESIZE, CORRECT, VERIFY)
+        val SOURCE_DEPENDENT_FACTUAL_CAPABILITIES = setOf(WEB_RESEARCH, DEEP_RESEARCH, CORRECT, VERIFY, SYNTHESIZE)
     }
 }
 
@@ -462,8 +463,29 @@ data class EvidenceRequirement(
 
 data class EvidenceCapability(
     val publicWebSearchAvailable: Boolean = false,
+    val publicWebSearchUnavailableReason: ToolUnavailabilityReason = ToolUnavailabilityReason.NONE,
     val publicWebFetchAvailable: Boolean = false,
+    val publicWebFetchUnavailableReason: ToolUnavailabilityReason = ToolUnavailabilityReason.NONE,
     val userProvidedEvidenceAvailable: Boolean = false,
     val validatedCachedEvidenceAvailable: Boolean = false,
-    val unavailableReason: ToolUnavailabilityReason = ToolUnavailabilityReason.NONE,
 )
+
+/**
+ * Derives evidence capability from a tool availability audit.
+ */
+fun deriveEvidenceCapability(audit: AgentToolRegistry.ToolAvailabilityAudit): EvidenceCapability {
+    val searchReqs = audit.requirements.filter { it.toolName in setOf("public_web_search", "openrouter:web_search") }
+    val fetchReqs = audit.requirements.filter { it.toolName in setOf("public_web_fetch", "openrouter:web_fetch") }
+
+    val searchAvailable = searchReqs.any { it.operational }
+    val fetchAvailable = fetchReqs.any { it.operational }
+
+    return EvidenceCapability(
+        publicWebSearchAvailable = searchAvailable,
+        publicWebSearchUnavailableReason = if (searchAvailable) ToolUnavailabilityReason.NONE else searchReqs.firstOrNull()?.unavailabilityReason ?: ToolUnavailabilityReason.NONE,
+        publicWebFetchAvailable = fetchAvailable,
+        publicWebFetchUnavailableReason = if (fetchAvailable) ToolUnavailabilityReason.NONE else fetchReqs.firstOrNull()?.unavailabilityReason ?: ToolUnavailabilityReason.NONE,
+        userProvidedEvidenceAvailable = true, // Policy: user provided is always "available" as a capability if it exists in the graph
+        validatedCachedEvidenceAvailable = true
+    )
+}

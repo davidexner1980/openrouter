@@ -280,9 +280,15 @@ object ResearchQualityGate {
             1
         }
         val minimumContentChars = if (deep) MIN_DEEP_RESEARCH_CONTENT_CHARS else MIN_STANDARD_RESEARCH_CONTENT_CHARS
+        val publicationGradeUrls = (goal?.sourceReads.orEmpty() + result.sourceReads)
+            .filter { it.isPublicationGrade }
+            .map { it.canonicalUrl }
+            .toSet()
+
         val sources = result.sources
             .map { it.url.trim() }
-            .filter(String::isNotBlank)
+            .map(::canonicalSourceUrl)
+            .filter { it.isNotBlank() && it in publicationGradeUrls }
             .distinct()
         val domains = sources.mapNotNull(::domainOf).distinct()
         val role = researchPassRole(task)
@@ -471,10 +477,15 @@ object ResearchQualityGate {
         val researchEvidence = goal.evidence.filter {
             it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH)
         }
+        val publicationGradeUrls = goal.sourceReads
+            .filter { it.isPublicationGrade }
+            .map { it.canonicalUrl }
+            .toSet()
+
         val sourceUrls = researchEvidence
             .flatMap { evidence -> evidence.sources.map { it.url.trim() } }
             .map(::canonicalSourceUrl)
-            .filter(String::isNotBlank)
+            .filter { it.isNotBlank() && it in publicationGradeUrls }
             .distinct()
         val domains = sourceUrls.mapNotNull(::domainOf).distinct()
         val completedResearchTasks = researchTasks.count { it.status == AgentTaskStatus.COMPLETED }
