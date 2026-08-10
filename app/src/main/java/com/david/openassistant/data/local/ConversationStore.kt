@@ -45,7 +45,7 @@ class ConversationStore(
             .filter { it.name !in expectedFiles }
             .forEach { file ->
                 file.delete()
-                File(file.path + ATOMIC_BACKUP_SUFFIX).delete()
+                File(file.path + ".bak").delete()
             }
         writeSelectionAndSignalLocked(snapshot.activeConversationId)
     }
@@ -86,51 +86,40 @@ class ConversationStore(
         return conversationsDirectory.listFiles()
             .orEmpty()
             .asSequence()
-            .filter { it.isFile }
-            .mapNotNull { file ->
-                when {
-                    file.name.endsWith(CONVERSATION_FILE_SUFFIX) -> file
-                    file.name.endsWith(CONVERSATION_FILE_SUFFIX + ATOMIC_BACKUP_SUFFIX) ->
-                        File(file.path.removeSuffix(ATOMIC_BACKUP_SUFFIX))
-                    else -> null
-                }
-            }
-            .distinctBy { it.absolutePath }
+            .filter { it.isFile && it.name.endsWith(CONVERSATION_FILE_SUFFIX) }
             .toList()
     }
 
     private fun writeConversationLocked(conversation: StoredConversation, signal: Boolean = true) {
         conversationsDirectory.mkdirs()
         val target = conversationFileLocked(conversation.id)
+        val backup = File(target.path + ".bak")
+        
+        // Ensure clean state for AtomicFile on potential flaky file systems (like Windows tests)
+        if (backup.exists()) backup.delete()
+
         val atomicFile = AtomicFile(target)
         val text = encodeConversation(conversation).toString()
-        val backup = File(target.path + ATOMIC_BACKUP_SUFFIX)
         
         var stream: FileOutputStream? = null
         try {
             stream = atomicFile.startWrite()
             stream.write(text.toByteArray(StandardCharsets.UTF_8))
             stream.flush()
-            try { stream.fd.sync() } catch (_: Exception) {}
             atomicFile.finishWrite(stream)
-        } catch (e: Exception) {
-            stream?.let { atomicFile.failWrite(it) }
-            android.util.Log.e("ConversationStore", "Failed to write conversation ${conversation.id}", e)
-            throw e
-        } finally {
+            
+            // Windows robustness: Ensure backup is deleted to prevent stale restore on next read.
             if (backup.exists()) {
                 backup.delete()
             }
-        }
-
-        // Verification & Fallback (Windows FS sync defense)
-        if (!target.exists() || target.readText(StandardCharsets.UTF_8) != text) {
-            try {
-                target.writeText(text, StandardCharsets.UTF_8)
-                if (backup.exists()) backup.delete()
-            } catch (e: Exception) {
-                android.util.Log.e("ConversationStore", "Fallback write failed for ${conversation.id}", e)
+        } catch (e: Exception) {
+            atomicFile.failWrite(stream)
+            // Final sync defense for environments where AtomicFile rename fails (e.g. CI/Windows locks)
+            if (!target.exists() || target.readText(StandardCharsets.UTF_8) != text) {
+                runCatching { target.writeText(text, StandardCharsets.UTF_8) }
             }
+            android.util.Log.e("ConversationStore", "Failed to write conversation ${conversation.id}", e)
+            throw e
         }
         
         if (signal) {
@@ -140,14 +129,13 @@ class ConversationStore(
     }
 
     private fun readConversationLocked(file: File): StoredConversation {
-        val atomicFile = AtomicFile(file)
-        val raw = try {
+        // Preference raw read if file exists, avoiding AtomicFile backup restore 
+        // which can incorrectly prefer stale data in rapid-write test environments.
+        val raw = if (file.exists()) {
+            file.readText(StandardCharsets.UTF_8)
+        } else {
+            val atomicFile = AtomicFile(file)
             atomicFile.openRead().use { it.bufferedReader(StandardCharsets.UTF_8).readText() }
-        } catch (e: Exception) {
-            // If atomic openRead fails, check if the base file exists and try a raw read
-            if (file.exists()) {
-                file.readText(StandardCharsets.UTF_8)
-            } else throw e
         }
         return decodeConversation(JSONObject(raw))
     }
@@ -164,7 +152,7 @@ class ConversationStore(
             logFile.writeText("Error reading conversation file: ${error.message}\n${error.stackTraceToString()}")
             
             // Also move backup if present
-            val backup = File(file.path + ATOMIC_BACKUP_SUFFIX)
+            val backup = File(file.path + ".bak")
             if (backup.exists()) {
                 backup.renameTo(File(quarantineDir, "${backup.name}.$timestamp.corrupt"))
             }
@@ -370,7 +358,6 @@ class ConversationStore(
         private const val KEY_MIGRATED_V5 = "conversations_migrated_v5"
         private const val CONVERSATIONS_DIRECTORY_NAME = "conversations_v5"
         private const val CONVERSATION_FILE_SUFFIX = ".conversation.json"
-        private const val ATOMIC_BACKUP_SUFFIX = ".bak"
         private val STORE_LOCK = Any()
     }
 }

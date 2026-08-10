@@ -43,7 +43,9 @@ data class ContinuationSchedulingClaim(
 data class DeliveryRecord(
     val generation: Int,
     val deliveryKind: String,
-    val deliveredAt: Long = System.currentTimeMillis()
+    val deliveredAt: Long = System.currentTimeMillis(),
+    val executionGeneration: Int? = null, // V43
+    val isLegacy: Boolean = false, // V43
 )
 
 data class AgentGoal(
@@ -122,12 +124,14 @@ data class AgentGoal(
     val planRevision: Int = 0,
     val lastMeaningfulProgressAt: Long? = null,
     val noProgressCount: Int = 0,
+    val recoveryNoProgressCount: Int = 0, // V43
     val blockerRecoveryCondition: String? = null,
     val finalValidationResult: String? = null,
     val attemptedStrategies: List<String> = emptyList(),
     val operationFingerprints: List<String> = emptyList(),
     val classifiedFailures: List<String> = emptyList(),
     val leaseGeneration: Int = 0,
+    val executionGeneration: Int = 0,
     val lastResumeReason: ResumeReason? = null,
     val objectiveContract: ObjectiveContract? = null,
     val recoveryPlans: List<ResearchRecoveryPlan> = emptyList(),

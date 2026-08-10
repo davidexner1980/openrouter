@@ -129,6 +129,17 @@ private data class ChatOperation(
     val safetyFilter: com.david.openassistant.agent.StreamingSafetyFilter = com.david.openassistant.agent.StreamingSafetyFilter()
 )
 
+private data class ChatSettlement(
+    val operationId: String,
+    val originConversationId: String,
+    val assistantMessageId: String,
+    val settledMessages: List<com.david.openassistant.data.openrouter.ChatMessage>,
+    val originSelectedModelId: String?,
+    val originModelProfile: com.david.openassistant.domain.model.ModelProfile,
+    val originTitle: String,
+    val terminalReason: String
+)
+
 class OpenAssistantViewModel(application: Application) : AndroidViewModel(application), RefreshStateApplier {
     private val researchMonitor = ResearchMonitor(application)
     private val publicExportManager = PublicExportManager(application)
@@ -363,9 +374,9 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                                     ?.let { lease -> !AgentLeasePolicy.isStale(lease, now) }
                                     ?: false
                                 if (hasFreshLease) {
-                                    agentInteractor.enqueue(goal.id)
+                                    agentInteractor.enqueue(goal.id, generation = goal.leaseGeneration)
                                 } else {
-                                    val generation = goal.executionLease?.generation ?: 0
+                                    val generation = goal.leaseGeneration
                                     agentInteractor.updateGoal(goal.id) { current ->
                                         AgentLifecycleReducer.resume(
                                             current,
@@ -1132,10 +1143,11 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 return@launch
             }
             
-            agentInteractor.updateGoal(goalId) { current -> 
+            val updatedGoal = agentInteractor.updateGoal(goalId) { current -> 
                 AgentLifecycleReducer.resume(current, reason = ResumeReason.USER_RESUME) 
-            }
-            agentInteractor.enqueue(goalId, replace = true)
+            }.goals.firstOrNull { it.id == goalId }
+            
+            agentInteractor.enqueue(goalId, replace = true, generation = updatedGoal?.leaseGeneration ?: 0)
             diagnostics.info("agent_goal_resumed", mapOf("goal_id" to goalId, "is_stranded" to isStranded))
             refreshAgentSnapshot()
         }
@@ -2226,28 +2238,47 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             streamingDeltaAccumulator.content()
         }
 
+        // CAPTURE SETTLEMENT SYNCHRONOUSLY
+        val snapshot = _uiState.value
+        val settledMessages = snapshot.messages.map { 
+            if (it.id == op.assistantMessageId) {
+                it.copy(content = finalContent, isStreaming = false)
+            } else it 
+        }
+        
+        val settlement = ChatSettlement(
+            operationId = op.operationId,
+            originConversationId = op.originConversationId,
+            assistantMessageId = op.assistantMessageId,
+            settledMessages = settledMessages,
+            originSelectedModelId = snapshot.selectedModelId,
+            originModelProfile = snapshot.selectedModelProfile,
+            originTitle = snapshot.currentConversationTitle,
+            terminalReason = "STOP"
+        )
+
         _uiState.update { state ->
             state.copy(
                 isGenerating = false,
-                messages = state.messages.map { 
-                    if (it.id == op.assistantMessageId) {
-                        it.copy(content = finalContent, isStreaming = false)
-                    } else it 
-                }
+                messages = settledMessages
             )
         }
         
-        viewModelScope.launch {
-            persistConversation(
-                conversationId = op.originConversationId,
-                messages = _uiState.value.messages,
-                selectedModelId = _uiState.value.selectedModelId,
-                modelProfile = _uiState.value.selectedModelProfile,
-                title = _uiState.value.currentConversationTitle,
-            )
+        viewModelScope.launch(Dispatchers.IO) {
+            persistSettlement(settlement)
         }
         
         currentChatOperation = null
+    }
+
+    private fun persistSettlement(settlement: ChatSettlement) {
+        persistConversation(
+            conversationId = settlement.originConversationId,
+            messages = settlement.settledMessages,
+            selectedModelId = settlement.originSelectedModelId,
+            modelProfile = settlement.originModelProfile,
+            title = settlement.originTitle
+        )
     }
 
     private fun createStreamListener(
@@ -2281,15 +2312,31 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     "op_id" to chatOperation.operationId,
                 ),
             )
+
+            // CAPTURE SETTLEMENT SYNCHRONOUSLY
+            val snapshot = _uiState.value
+            val settledMessages = snapshot.messages.map { msg ->
+                if (msg.id == chatOperation.assistantMessageId) {
+                    msg.copy(content = finalContent, isStreaming = false)
+                } else {
+                    msg
+                }
+            }
+
+            val settlement = ChatSettlement(
+                operationId = chatOperation.operationId,
+                originConversationId = chatOperation.originConversationId,
+                assistantMessageId = chatOperation.assistantMessageId,
+                settledMessages = settledMessages,
+                originSelectedModelId = modelId,
+                originModelProfile = snapshot.selectedModelProfile,
+                originTitle = snapshot.currentConversationTitle,
+                terminalReason = "COMPLETE"
+            )
+
             _uiState.update {
                 it.copy(
-                    messages = it.messages.map { msg ->
-                        if (msg.id == chatOperation.assistantMessageId) {
-                            msg.copy(content = finalContent, isStreaming = false)
-                        } else {
-                            msg
-                        }
-                    },
+                    messages = settledMessages,
                     isGenerating = false,
                     diagnostics = RequestDiagnostics.succeeded(
                         operation = "Completion",
@@ -2299,17 +2346,11 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                     ),
                 )
             }
-            viewModelScope.launch {
-                persistConversation(
-                    conversationId = chatOperation.originConversationId,
-                    messages = _uiState.value.messages,
-                    selectedModelId = modelId,
-                    modelProfile = _uiState.value.selectedModelProfile,
-                    title = _uiState.value.currentConversationTitle,
-                )
-                if (currentChatOperation?.operationId == chatOperation.operationId) {
-                    currentChatOperation = null
-                }
+            viewModelScope.launch(Dispatchers.IO) {
+                persistSettlement(settlement)
+            }
+            if (currentChatOperation?.operationId == chatOperation.operationId) {
+                currentChatOperation = null
             }
         }
 
@@ -2324,15 +2365,30 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                 streamingDeltaAccumulator.content()
             }
 
+            // CAPTURE SETTLEMENT SYNCHRONOUSLY
+            val snapshot = _uiState.value
+            val settledMessages = snapshot.messages.map { msg ->
+                if (msg.id == chatOperation.assistantMessageId) {
+                    msg.copy(content = finalContent, isStreaming = false)
+                } else {
+                    msg
+                }
+            }
+
+            val settlement = ChatSettlement(
+                operationId = chatOperation.operationId,
+                originConversationId = chatOperation.originConversationId,
+                assistantMessageId = chatOperation.assistantMessageId,
+                settledMessages = settledMessages,
+                originSelectedModelId = modelId,
+                originModelProfile = snapshot.selectedModelProfile,
+                originTitle = snapshot.currentConversationTitle,
+                terminalReason = "ERROR"
+            )
+
             _uiState.update {
                 it.copy(
-                    messages = it.messages.map { msg ->
-                        if (msg.id == chatOperation.assistantMessageId) {
-                            msg.copy(content = finalContent, isStreaming = false)
-                        } else {
-                            msg
-                        }
-                    },
+                    messages = settledMessages,
                     isGenerating = false,
                     chatError = error.userMessage,
                     diagnostics = RequestDiagnostics.failed(
@@ -2342,6 +2398,9 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
                         message = error.userMessage,
                     ),
                 )
+            }
+            viewModelScope.launch(Dispatchers.IO) {
+                persistSettlement(settlement)
             }
             if (currentChatOperation?.operationId == chatOperation.operationId) {
                 currentChatOperation = null
@@ -2482,7 +2541,7 @@ class OpenAssistantViewModel(application: Application) : AndroidViewModel(applic
             val snapshot = agentInteractor.loadSnapshot()
             snapshot.goals
                 .filter { goal -> goal.status.isActivePhase() }
-                .forEach { goal -> agentInteractor.enqueue(goal.id) }
+                .forEach { goal -> agentInteractor.enqueue(goal.id, generation = goal.leaseGeneration) }
         }
     }
 

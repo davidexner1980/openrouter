@@ -705,6 +705,7 @@ open class AgentStore private constructor(
             failureClassification = MissionFailureClassification.NONE,
             tasks = repairedTasks,
             noProgressCount = 0,
+            recoveryNoProgressCount = 0,
             idempotencyRecords = goal.idempotencyRecords + migrationRecord,
             events = appendEvent(goal.events, "System applied authoritative structural repair for universal tool availability. Restricted execution profile removed; re-queuing with full operational tool registry."),
             error = null,
@@ -2024,12 +2025,14 @@ open class AgentStore private constructor(
         json.put("plan_revision", goal.planRevision)
         json.put("last_meaningful_progress_at", goal.lastMeaningfulProgressAt ?: JSONObject.NULL)
         json.put("no_progress_count", goal.noProgressCount)
+        json.put("recovery_no_progress_count", goal.recoveryNoProgressCount)
         json.put("blocker_recovery_condition", goal.blockerRecoveryCondition ?: JSONObject.NULL)
         json.put("final_validation_result", goal.finalValidationResult ?: JSONObject.NULL)
         json.put("attempted_strategies", JSONArray(goal.attemptedStrategies))
         json.put("operation_fingerprints", JSONArray(goal.operationFingerprints))
         json.put("classified_failures", JSONArray(goal.classifiedFailures))
         json.put("lease_generation", goal.leaseGeneration)
+        json.put("execution_generation", goal.executionGeneration)
         json.put("last_resume_reason", goal.lastResumeReason?.name ?: JSONObject.NULL)
         json.put("recovery_plans", JSONArray(goal.recoveryPlans.map(::encodeRecoveryPlan)))
         json.put("active_recovery_plan_id", goal.activeRecoveryPlanId ?: JSONObject.NULL)
@@ -2119,7 +2122,7 @@ open class AgentStore private constructor(
         val storedDeliveryRecords = json.optJSONArray("delivery_records").decodeList(::decodeDeliveryRecord)
         val legacyDelivered = json.optBoolean("terminal_result_delivered", false)
         val finalDeliveryRecords = if (legacyDelivered && storedDeliveryRecords.isEmpty()) {
-            listOf(DeliveryRecord(generation = json.optInt("lease_generation", 0), deliveryKind = "TERMINAL_RESULT"))
+            listOf(DeliveryRecord(generation = json.optInt("lease_generation", 0), deliveryKind = "TERMINAL_RESULT", isLegacy = true))
         } else {
             storedDeliveryRecords
         }
@@ -2203,12 +2206,14 @@ open class AgentStore private constructor(
             planRevision = json.optInt("plan_revision", 0),
             lastMeaningfulProgressAt = json.optLongOrNull("last_meaningful_progress_at"),
             noProgressCount = json.optInt("no_progress_count", 0),
+            recoveryNoProgressCount = json.optInt("recovery_no_progress_count", 0),
             blockerRecoveryCondition = json.optNullableString("blocker_recovery_condition"),
             finalValidationResult = json.optNullableString("final_validation_result"),
             attemptedStrategies = json.optJSONArray("attempted_strategies").toStringList(),
             operationFingerprints = json.optJSONArray("operation_fingerprints").toStringList(),
             classifiedFailures = json.optJSONArray("classified_failures").toStringList(),
             leaseGeneration = json.optInt("lease_generation", 0),
+            executionGeneration = json.optInt("execution_generation", 0),
             lastResumeReason = json.optNullableString("last_resume_reason")?.let { runCatching { ResumeReason.valueOf(it) }.getOrNull() },
             recoveryPlans = json.optJSONArray("recovery_plans").decodeList(::decodeRecoveryPlan),
             activeRecoveryPlanId = json.optNullableString("active_recovery_plan_id"),
@@ -2536,6 +2541,9 @@ open class AgentStore private constructor(
         .put("goal_id", plan.goalId)
         .put("task_id", plan.taskId)
         .put("input_execution_fingerprint", plan.inputExecutionFingerprint)
+        .put("input_objective_fingerprint", plan.inputObjectiveFingerprint)
+        .put("trigger_execution_fingerprint", plan.triggerExecutionFingerprint)
+        .put("version", plan.version)
         .put("diagnosis", plan.diagnosis.name)
         .put("selected_tactic", plan.selectedTactic.name)
         .put("status", plan.status.name)
@@ -2556,6 +2564,9 @@ open class AgentStore private constructor(
         goalId = json.getString("goal_id"),
         taskId = json.getString("task_id"),
         inputExecutionFingerprint = json.getString("input_execution_fingerprint"),
+        inputObjectiveFingerprint = json.optString("input_objective_fingerprint", ""),
+        triggerExecutionFingerprint = json.optString("trigger_execution_fingerprint", ""),
+        version = json.optInt("version", 1),
         diagnosis = json.optEnum("diagnosis", ExecutionStallDiagnosis.NONE),
         selectedTactic = json.optEnum("selected_tactic", EscalationTactic.NONE),
         status = json.optEnum("status", RecoveryPlanStatus.PREPARED),
@@ -2692,11 +2703,15 @@ open class AgentStore private constructor(
         .put("generation", rec.generation)
         .put("delivery_kind", rec.deliveryKind)
         .put("delivered_at", rec.deliveredAt)
+        .put("execution_generation", rec.executionGeneration ?: JSONObject.NULL)
+        .put("is_legacy", rec.isLegacy)
 
     private fun decodeDeliveryRecord(json: JSONObject): DeliveryRecord = DeliveryRecord(
         generation = json.optInt("generation", 0),
         deliveryKind = json.optString("delivery_kind", "TERMINAL_RESULT"),
-        deliveredAt = json.optLong("delivered_at", System.currentTimeMillis())
+        deliveredAt = json.optLong("delivered_at", System.currentTimeMillis()),
+        executionGeneration = json.optIntOrNull("execution_generation"),
+        isLegacy = json.optBoolean("is_legacy", false)
     )
 
     private fun encodeTask(task: AgentTask): JSONObject = JSONObject()

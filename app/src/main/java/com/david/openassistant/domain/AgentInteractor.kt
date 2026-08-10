@@ -198,7 +198,7 @@ class AgentInteractor internal constructor(
         try {
             var generation = 0
             agentStore!!.updateGoal(goalId) { current ->
-                generation = current.executionLease?.generation ?: 0
+                generation = current.leaseGeneration
                 AgentLifecycleReducer.finalize(current)
             }
             // Signal cancellation to active calls immediately
@@ -303,7 +303,7 @@ class AgentInteractor internal constructor(
                     AgentGoalStatus.VERIFYING,
                 )
             ) {
-                val generation = existingGoal.executionLease?.generation ?: 0
+                val generation = existingGoal.leaseGeneration
                 when (val schedResult = agentScheduler!!.enqueueAndWait(existingGoal.id, replace = false, generation = generation, activeLease = existingGoal.executionLease)) {
                     is SchedulingResult.NewlyEnqueued -> {
                         ResearchMissionStartTelemetry.workerEnqueued(
@@ -538,7 +538,7 @@ class AgentInteractor internal constructor(
         }
 
         // 8. Enqueue WorkManager job and handle explicit SchedulingResult branching
-        when (val schedResult = agentScheduler!!.enqueueAndWait(createdGoal.id, replace = false, generation = 0)) {
+        when (val schedResult = agentScheduler!!.enqueueAndWait(createdGoal.id, replace = false, generation = createdGoal.leaseGeneration)) {
             is SchedulingResult.NewlyEnqueued -> {
                 ResearchMissionStartTelemetry.workerEnqueued(
                     monitor = monitor,

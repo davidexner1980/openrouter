@@ -159,6 +159,9 @@ data class ResearchRecoveryPlan(
     val goalId: String,
     val taskId: String,
     val inputExecutionFingerprint: String,
+    val inputObjectiveFingerprint: String = "", // V43
+    val triggerExecutionFingerprint: String = "", // V43
+    val version: Int = 1, // V43
     val diagnosis: ExecutionStallDiagnosis,
     val selectedTactic: EscalationTactic,
     val status: RecoveryPlanStatus,

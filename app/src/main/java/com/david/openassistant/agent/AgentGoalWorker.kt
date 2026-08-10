@@ -864,7 +864,7 @@ class AgentGoalWorker(
     private fun enqueueContinuationIfActive(goalId: String, fingerprint: String? = null) {
         val latest = findGoal(goalId) ?: return
         if (latest.status.isActivePhase()) {
-            val generation = latest.executionLease?.generation ?: 0
+            val generation = latest.leaseGeneration
             diagnostics.info(
                 event = "continuation_enqueue_started",
                 component = "scheduler",
@@ -938,15 +938,61 @@ class AgentGoalWorker(
     ): WorkerOutcome {
         val activePlanId = goal.activeRecoveryPlanId ?: return repairBlockedWorkflow(goal, ticket)
         val plan = goal.recoveryPlans.firstOrNull { it.id == activePlanId } ?: return repairBlockedWorkflow(goal, ticket)
-        
-        // V43: Clear stale recovery plan if goal state has diverged from the plan's baseline
-        val currentFingerprint = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
-        if (plan.inputExecutionFingerprint != currentFingerprint) {
-            diagnostics.warning("clearing_stale_recovery_plan", mapOf("goal_id" to goal.id, "plan_id" to plan.id, "reason" to "fingerprint_mismatch"))
-            store.updateGoalAtomic(goal.id, ticket) { it.copy(activeRecoveryPlanId = null) }
+
+        // V43: Durable recovery budget enforcement
+        if (goal.recoveryNoProgressCount >= 3) {
+            diagnostics.error(
+                "recovery_starvation_budget_exceeded",
+                IllegalStateException("Recovery budget exceeded: ${goal.recoveryNoProgressCount}"),
+                mapOf("goal_id" to goal.id, "plan_id" to plan.id, "count" to goal.recoveryNoProgressCount)
+            )
+            store.updateGoalAtomic(goal.id, ticket) { current ->
+                current.copy(
+                    status = AgentGoalStatus.BLOCKED_NEEDS_ACTION,
+                    error = "Recovery hot loop detected: No progress after ${goal.recoveryNoProgressCount} attempts. Autonomous recovery stopped to preserve resources.",
+                    failureClassification = MissionFailureClassification.RECOVERY_STARVATION
+                )
+            }
+            return WorkerOutcome.DONE
+        }
+
+        // V43: Correct fingerprint domain check & Legacy migration
+        val currentObjectiveFingerprint = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
+
+        if (plan.version < 2 || plan.inputObjectiveFingerprint.isEmpty()) {
+            val migrationKey = "recovery_plan_migration_v43:${plan.id}"
+            if (!goal.idempotencyRecords.any { it.key == migrationKey }) {
+                diagnostics.info("migrating_legacy_recovery_plan", mapOf("goal_id" to goal.id, "plan_id" to plan.id))
+                store.updateGoalAtomic(goal.id, ticket) { current ->
+                    val migratedPlan = plan.copy(
+                        version = 2,
+                        inputObjectiveFingerprint = currentObjectiveFingerprint,
+                        triggerExecutionFingerprint = plan.inputExecutionFingerprint
+                    )
+                    current.copy(
+                        recoveryPlans = current.recoveryPlans.map { if (it.id == plan.id) migratedPlan else it },
+                        idempotencyRecords = current.idempotencyRecords + IdempotencyRecord(
+                            key = migrationKey,
+                            effectType = IdempotencyEffectType.SYSTEM_REPAIR,
+                            state = IdempotencyState.COMMITTED,
+                            claimOwner = ticket.workerId,
+                            committedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+                return WorkerOutcome.CONTINUE
+            }
+        }
+
+        if (plan.inputObjectiveFingerprint != currentObjectiveFingerprint) {
+            diagnostics.warning("clearing_stale_recovery_plan", mapOf("goal_id" to goal.id, "plan_id" to plan.id, "reason" to "objective_drift"))
+            store.updateGoalAtomic(goal.id, ticket) { it.copy(activeRecoveryPlanId = null, recoveryNoProgressCount = 0) }
             return WorkerOutcome.CONTINUE
         }
-        
+
+        // Increment budget for this activation
+        store.updateGoalAtomic(goal.id, ticket) { it.copy(recoveryNoProgressCount = it.recoveryNoProgressCount + 1) }
+
         return when (plan.status) {
             RecoveryPlanStatus.PREPARED,
             RecoveryPlanStatus.GENERATING -> {
@@ -976,7 +1022,7 @@ class AgentGoalWorker(
             RecoveryPlanStatus.COMMITTED -> {
                 diagnostics.info("committed_recovery_status_repaired", mapOf("goal_id" to goal.id, "plan_id" to plan.id))
                 store.updateGoalAtomic(goal.id, ticket) { current ->
-                    current.copy(status = AgentGoalStatus.QUEUED, activeRecoveryPlanId = null)
+                    current.copy(status = AgentGoalStatus.QUEUED, activeRecoveryPlanId = null, recoveryNoProgressCount = 0)
                 }
                 WorkerOutcome.CONTINUE
             }

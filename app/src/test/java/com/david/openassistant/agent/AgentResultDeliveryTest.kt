@@ -57,7 +57,8 @@ class AgentResultDeliveryTest {
             tasks = emptyList(),
             result = "The final findings are here.",
             terminalResultDelivered = false,
-            leaseGeneration = 1
+            leaseGeneration = 1,
+            executionGeneration = 1
         )
         store.saveSnapshot(AgentSnapshot(goals = listOf(goal)))
         

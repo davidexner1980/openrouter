@@ -1311,6 +1311,7 @@ class AgentTaskExecutor internal constructor(
             attemptedStrategies = if (decision != null) (routedCurrent.attemptedStrategies + decision.action.name).takeLast(50) else routedCurrent.attemptedStrategies,
             lastMeaningfulProgressAt = if (madeMeaningfulProgress) finishedAt else routedCurrent.lastMeaningfulProgressAt,
             noProgressCount = if (madeMeaningfulProgress) 0 else routedCurrent.noProgressCount + 1,
+            recoveryNoProgressCount = if (madeMeaningfulProgress) 0 else routedCurrent.recoveryNoProgressCount,
             finalValidationResult = if (finalStatus == AgentGoalStatus.COMPLETED) "Acceptance criteria passed." else routedCurrent.finalValidationResult,
             tasks = updatedTasks,
             attempts = retainAttempts(

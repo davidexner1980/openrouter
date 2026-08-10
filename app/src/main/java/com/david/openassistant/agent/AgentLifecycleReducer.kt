@@ -161,6 +161,7 @@ object AgentLifecycleReducer {
         return goal.copy(
             status = if (goal.tasks.isEmpty()) AgentGoalStatus.PLANNING else AgentGoalStatus.QUEUED,
             leaseGeneration = goal.leaseGeneration + 1,
+            executionGeneration = goal.executionGeneration + 1,
             executionLease = null,
             activeContinuationSchedulingClaim = null,
             tasks = goal.tasks.map { task ->
