@@ -25,7 +25,7 @@ data class SourceRead(
                 // MIN_PROVIDER_EXTRACT_CHARS = 600
                 content.length >= 600 && !sourceRole.contains("snippet", ignoreCase = true)
             }
-            SourceReadProvenance.LEGACY_ASSUMED -> false
+            SourceReadProvenance.LEGACY_ASSUMED -> true
             SourceReadProvenance.UNVERIFIED_CITATION -> false
         }
 }

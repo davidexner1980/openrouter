@@ -54,7 +54,7 @@ class AgentHeartbeatTest {
                 goalId = goalId,
                 workerId = workerId,
                 attemptId = attemptId,
-                generation = generation,
+                leaseGeneration = generation,
                 taskId = taskId
             )
             
@@ -111,7 +111,7 @@ class AgentHeartbeatTest {
                 goalId = goalId,
                 workerId = worker1Id,
                 attemptId = "attempt-1",
-                generation = 1,
+                leaseGeneration = 1,
                 taskId = taskId
             )
             

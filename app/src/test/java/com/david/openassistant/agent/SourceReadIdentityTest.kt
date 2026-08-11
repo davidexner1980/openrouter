@@ -64,7 +64,8 @@ class SourceReadIdentityTest {
         taskIdentity = taskId,
         workerId = "worker-1",
         ownerProcessSessionId = "session-1",
-        generation = 1,
+        leaseGeneration = 1,
+        executionGeneration = 1,
         attemptId = "attempt-1",
         acquiredAt = System.currentTimeMillis()
     )

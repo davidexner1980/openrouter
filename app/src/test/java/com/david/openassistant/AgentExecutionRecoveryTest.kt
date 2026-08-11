@@ -307,6 +307,7 @@ class AgentExecutionRecoveryTest {
             "w1",
             "test-session",
             1,
+            activeGoal.executionGeneration,
             "lease-attempt-1",
             1L
         )

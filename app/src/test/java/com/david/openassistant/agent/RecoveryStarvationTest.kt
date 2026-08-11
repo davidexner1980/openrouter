@@ -39,7 +39,7 @@ class RecoveryStarvationTest {
         val operation = MissionOperation.RECOVERY_PROPOSAL
         val fingerprint = "fp-1"
         
-        val ticketGen1 = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticketGen1 = PlanningTicket(goalId, "worker-1", "session-1", 1, 1, "attempt-1", System.currentTimeMillis())
         val planId = "plan-1"
         
         val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
@@ -59,7 +59,7 @@ class RecoveryStarvationTest {
         val exchangeId = (res1 as ReconciliationResult.NewDispatchClaimed).attempt.exchangeId
         
         // Simulate process death and new generation
-        val ticketGen2 = PlanningTicket(goalId, "worker-2", "session-2", 2, "attempt-2", System.currentTimeMillis())
+        val ticketGen2 = PlanningTicket(goalId, "worker-2", "session-2", 2, 1, "attempt-2", System.currentTimeMillis())
         store.updateGoalAtomic(goalId, null) { it.copy(
             leaseGeneration = 2,
             executionLease = AgentExecutionLease("worker-2", "session-2", "none", "attempt-2", 2, System.currentTimeMillis(), System.currentTimeMillis())
@@ -84,7 +84,7 @@ class RecoveryStarvationTest {
     fun testLogicalIdentityConflict() = runBlocking {
         val logicalId = "logical-1"
         val operation = MissionOperation.RECOVERY_PROPOSAL
-        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, 1, "attempt-1", System.currentTimeMillis())
         val planId = "plan-1"
         
         val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
@@ -115,7 +115,7 @@ class RecoveryStarvationTest {
     fun testOwnershipMismatch() = runBlocking {
         val logicalId = "logical-1"
         val operation = MissionOperation.RECOVERY_PROPOSAL
-        val ticket2 = PlanningTicket(goalId, "worker-2", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticket2 = PlanningTicket(goalId, "worker-2", "session-1", 1, 1, "attempt-1", System.currentTimeMillis())
         val planId = "plan-1"
         
         val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
@@ -138,7 +138,7 @@ class RecoveryStarvationTest {
         val planId = "plan-1"
         val logicalId = "recovery-plan-1"
         val operation = MissionOperation.RECOVERY_PROPOSAL
-        val ticket = PlanningTicket(goalId, "worker-1", DiagnosticEvent.PROCESS_SESSION_ID, 1, "attempt-1", System.currentTimeMillis())
+        val ticket = PlanningTicket(goalId, "worker-1", DiagnosticEvent.PROCESS_SESSION_ID, 1, 1, "attempt-1", System.currentTimeMillis())
         
         val goal = createTestGoal(status = AgentGoalStatus.RECOVERING, activeRecoveryPlanId = planId, recoveryPlans = listOf(createPreparedPlan(planId)))
         store.upsertGoal(goal, true)
@@ -170,11 +170,11 @@ class RecoveryStarvationTest {
             })
         }
         
-        val context = ProviderRequestContext.Mission(goalId, "worker-1", null, "attempt-1", 1, ticket.acquiredAt, operation = operation, parentOperationId = logicalId, recoveryPlanId = planId)
+        val context = ProviderRequestContext.Mission(goalId, "worker-1", null, "attempt-1", 1, ticket.leaseGeneration, ticket.acquiredAt, operation = operation, parentOperationId = logicalId, recoveryPlanId = planId)
         store.transitionExchangeOutcomeWithResultAtomic(goalId, exchangeId, ExchangeOutcome.RESPONSE_SUCCESS, context)
         
         // Simulate restart
-        val ticket2 = PlanningTicket(goalId, "worker-2", DiagnosticEvent.PROCESS_SESSION_ID, 2, "attempt-2", System.currentTimeMillis())
+        val ticket2 = PlanningTicket(goalId, "worker-2", DiagnosticEvent.PROCESS_SESSION_ID, 2, 1, "attempt-2", System.currentTimeMillis())
         store.updateGoalAtomic(goalId, null) { it.copy(
             leaseGeneration = 2,
             executionLease = AgentExecutionLease("worker-2", DiagnosticEvent.PROCESS_SESSION_ID, "none", "attempt-2", 2, System.currentTimeMillis(), System.currentTimeMillis())
@@ -224,14 +224,15 @@ class RecoveryStarvationTest {
     @Test
     fun testGoalBoundRecoveryContext() = runBlocking {
         val planId = "plan-1"
-        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticket = PlanningTicket(goalId, "worker-1", "session-1", 1, 1, "attempt-1", System.currentTimeMillis())
         
         val context = ProviderRequestContext.Mission(
             goalId = goalId,
             workerId = ticket.workerId,
             taskId = null, // Mandatory for goal-bound
             attemptId = ticket.attemptId,
-            executionGeneration = ticket.generation,
+            executionGeneration = ticket.executionGeneration,
+            leaseGeneration = ticket.leaseGeneration,
             acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.RECOVERY_PROPOSAL,

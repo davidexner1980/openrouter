@@ -46,7 +46,7 @@ class RecoveryContinuationTest {
         try {
             val sessionId = DiagnosticEvent.PROCESS_SESSION_ID
             val planId = "plan-" + UUID.randomUUID()
-            val ticket = PlanningTicket(goalId, workerId, sessionId, 1, "attempt-1", System.currentTimeMillis())
+            val ticket = PlanningTicket(goalId, workerId, sessionId, 1, 1, "attempt-1", System.currentTimeMillis())
             
             val task = AgentTask(id = taskId, order = 0, title = "Task", instructions = "Inst", capability = AgentCapability.WEB_RESEARCH)
             val initialGoal = AgentGoal(
@@ -133,7 +133,7 @@ class RecoveryContinuationTest {
     fun testReadyToCommitToCommittedChangesFingerprint() = runBlocking {
         val sessionId = DiagnosticEvent.PROCESS_SESSION_ID
         val planId = "plan-1"
-        val ticket = PlanningTicket(goalId, workerId, sessionId, 1, "attempt-1", System.currentTimeMillis())
+        val ticket = PlanningTicket(goalId, workerId, sessionId, 1, 1, "attempt-1", System.currentTimeMillis())
         
         val task = AgentTask(id = taskId, order = 0, title = "Task", instructions = "Inst", capability = AgentCapability.WEB_RESEARCH)
         val initialGoal = AgentGoal(

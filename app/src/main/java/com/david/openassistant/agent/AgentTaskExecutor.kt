@@ -1202,7 +1202,7 @@ class AgentTaskExecutor internal constructor(
         }
         val resolvedCriterion = currentTask.acceptanceChecks.any { it.status == AgentAcceptanceCheckStatus.PASS } && !task.acceptanceChecks.any { it.status == AgentAcceptanceCheckStatus.PASS }
 
-        val madeMeaningfulProgress = effectiveQualityAccepted || synthesisRecoveryQueued ||
+        val madeMeaningfulProgress = synthesisRecoveryQueued ||
             addedSubstantiveSources || addedFactualClaims || resolvedCriterion
 
         val correctionAttemptWindowExhausted = hasExhaustedCorrectionAttemptWindow(currentTask, effectiveQualityAccepted)

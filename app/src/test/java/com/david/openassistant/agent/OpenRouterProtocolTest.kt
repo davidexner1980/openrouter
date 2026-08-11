@@ -114,7 +114,8 @@ class OpenRouterProtocolTest {
                 goalId = goal.id,
                 workerId = "w1",
                 attemptId = "a1",
-                executionGeneration = 0,
+                executionGeneration = 1,
+                leaseGeneration = 0,
                 acquiredAt = System.currentTimeMillis(),
                 operation = MissionOperation.CREATE_PLAN,
                 parentOperationId = "op-test-1",
@@ -254,7 +255,8 @@ class OpenRouterProtocolTest {
                 goalId = goal.id,
                 workerId = "w1",
                 attemptId = "a1",
-                executionGeneration = 0,
+                executionGeneration = 1,
+                leaseGeneration = 0,
                 acquiredAt = System.currentTimeMillis(),
                 operation = MissionOperation.CREATE_PLAN,
                 parentOperationId = "op-test-2",
@@ -299,7 +301,8 @@ class OpenRouterProtocolTest {
             workerId = "w1",
             taskId = taskId,
             attemptId = ticket.attemptId,
-            executionGeneration = ticket.generation,
+            executionGeneration = ticket.executionGeneration,
+            leaseGeneration = ticket.leaseGeneration,
             acquiredAt = ticket.acquiredAt,
             operation = MissionOperation.EXECUTE_TASK,
             parentOperationId = "parent-1"
@@ -350,7 +353,8 @@ class OpenRouterProtocolTest {
             workerId = "w1",
             taskId = "task-1",
             attemptId = ticket.attemptId,
-            executionGeneration = ticket.generation,
+            executionGeneration = ticket.executionGeneration,
+            leaseGeneration = ticket.leaseGeneration,
             acquiredAt = now,
             operation = MissionOperation.EXECUTE_TASK,
             parentOperationId = logicalId,
@@ -364,18 +368,18 @@ class OpenRouterProtocolTest {
             .put("model", "openrouter/auto-beta")
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "hello")))
             
-        client.executeJsonRequest("key", payload, attribution, ticket.generation, context, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA)
+        client.executeJsonRequest("key", payload, attribution, ticket.leaseGeneration, context, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA)
         
         assertEquals(1, server.requestCount)
         
         // 2. Dispatch JSON_OBJECT - should NOT conflict with STRICT_SCHEMA
         server.enqueue(MockResponse(body = "{\"id\":\"res-2\", \"choices\":[{\"message\":{\"content\":\"OK\"}}], \"usage\":{}}"))
-        client.executeJsonRequest("key", payload, attribution, ticket.generation, context, wireVariantKind = ProviderWireVariantKind.JSON_OBJECT)
+        client.executeJsonRequest("key", payload, attribution, ticket.leaseGeneration, context, wireVariantKind = ProviderWireVariantKind.JSON_OBJECT)
         
         assertEquals(2, server.requestCount)
         
         // 3. Dispatch STRICT_SCHEMA again - should RECONCILE
-        val res3 = client.executeJsonRequest("key", payload, attribution, ticket.generation, context, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA)
+        val res3 = client.executeJsonRequest("key", payload, attribution, ticket.leaseGeneration, context, wireVariantKind = ProviderWireVariantKind.STRICT_SCHEMA)
         assertNotNull(res3)
         assertEquals(2, server.requestCount) // Still 2
     }
@@ -392,6 +396,7 @@ class OpenRouterProtocolTest {
             taskId = taskId,
             attemptId = "a1",
             executionGeneration = 1,
+            leaseGeneration = 1,
             acquiredAt = System.currentTimeMillis(),
             operation = MissionOperation.EXECUTE_TASK,
             parentOperationId = "parent-1"

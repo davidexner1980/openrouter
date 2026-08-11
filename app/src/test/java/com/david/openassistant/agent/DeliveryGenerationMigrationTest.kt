@@ -158,7 +158,7 @@ class DeliveryGenerationMigrationTest {
         
         val restarted = agentStore.loadSnapshot().goals.first { it.id == goalId }
         assertEquals(2, restarted.executionGeneration)
-        assertEquals(AgentGoalStatus.QUEUED, restarted.status)
+        assertEquals(AgentGoalStatus.PLANNING, restarted.status)
 
         // Complete the restarted mission
         agentStore.updateGoal(goalId) { it.copy(status = AgentGoalStatus.COMPLETED) }

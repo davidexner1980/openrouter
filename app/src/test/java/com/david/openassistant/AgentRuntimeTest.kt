@@ -23,7 +23,8 @@ class AgentRuntimeTest {
     @Test
     fun terminalStatesCannotRestartSilently() {
         assertFalse(AgentStateMachine.canTransition(AgentGoalStatus.COMPLETED, AgentGoalStatus.RUNNING))
-        assertFalse(AgentStateMachine.canTransition(AgentGoalStatus.CANCELLED, AgentGoalStatus.QUEUED))
+        // Now allowed for explicit restart
+        assertTrue(AgentStateMachine.canTransition(AgentGoalStatus.CANCELLED, AgentGoalStatus.QUEUED))
     }
 
     @Test

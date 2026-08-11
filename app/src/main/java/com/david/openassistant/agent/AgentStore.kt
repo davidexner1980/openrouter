@@ -876,6 +876,7 @@ open class AgentStore private constructor(
     }
 
     open fun validateTicket(ticket: AgentOwnershipTicket): TicketValidationResult = synchronized(STORE_LOCK) {
+        println("DEBUG: AgentStore validateTicket for goal ${ticket.goalId}")
         validateTicketInternalLocked(ticket)
     }
 
@@ -1087,19 +1088,19 @@ open class AgentStore private constructor(
             return when (latestAttempt.exchangeOutcome) {
                 ExchangeOutcome.ACTIVE -> {
                     if (latestAttempt.reconciliationClaimOwner == ticket.workerId && 
-                        latestAttempt.executionGeneration == ticket.leaseGeneration) {
+                        latestAttempt.executionGeneration == ticket.executionGeneration) {
                         // Resume locally owned
                         when {
                             latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED -> ReconciliationResult.NewDispatchClaimed(latestAttempt) // Treat as new dispatch if not sent
                             else -> ReconciliationResult.ExistingInFlight(latestAttempt)
                         }
-                    } else if (latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED && ticket.leaseGeneration > latestAttempt.executionGeneration) {
+                    } else if (latestAttempt.transportStage == ProviderTransportStage.NOT_DISPATCHED && ticket.executionGeneration >= latestAttempt.executionGeneration) {
                         val exchangeId = "openrouter-${UUID.randomUUID()}"
                         val newAttempt = latestAttempt.copy(
                             exchangeId = exchangeId,
                             wireAttemptOrdinal = latestAttempt.wireAttemptOrdinal + 1,
                             previousExchangeId = latestAttempt.exchangeId,
-                            executionGeneration = ticket.leaseGeneration,
+                            executionGeneration = ticket.executionGeneration,
                             payloadFingerprint = payloadFingerprint,
                             wirePayloadFingerprint = wirePayloadFingerprint,
                             fingerprintSchemaVersion = fingerprintSchemaVersion,
@@ -1144,7 +1145,7 @@ open class AgentStore private constructor(
                     val auth = goal.retryAuthorizations.firstOrNull { 
                         it.logicalRequestId == logicalRequestId && 
                         it.attemptOrdinal == latestAttempt.wireAttemptOrdinal + 1 &&
-                        it.executionGeneration == ticket.leaseGeneration &&
+                        it.executionGeneration == ticket.executionGeneration &&
                         (it.fingerprintSchemaVersion == 1 || (
                             it.wirePayloadFingerprint == wirePayloadFingerprint &&
                             it.wireVariantKind == wireVariantKind &&
@@ -1160,7 +1161,7 @@ open class AgentStore private constructor(
                             previousExchangeId = latestAttempt.exchangeId,
                             transportStage = ProviderTransportStage.NOT_DISPATCHED,
                             deliveryCertainty = ProviderDeliveryCertainty.NOT_SENT,
-                            executionGeneration = ticket.leaseGeneration,
+                            executionGeneration = ticket.executionGeneration,
                             payloadFingerprint = payloadFingerprint,
                             wirePayloadFingerprint = wirePayloadFingerprint,
                             fingerprintSchemaVersion = fingerprintSchemaVersion,
@@ -1207,7 +1208,7 @@ open class AgentStore private constructor(
             parentOperationId = parentOperationId ?: logicalRequestId,
             goalId = goalId,
             taskId = if (operation.taskBound) ticket.taskId else null,
-            executionGeneration = ticket.leaseGeneration,
+            executionGeneration = ticket.executionGeneration,
             requestedModel = "unknown", // To be filled by client
             role = role,
             payloadFingerprint = payloadFingerprint,
@@ -1420,6 +1421,16 @@ open class AgentStore private constructor(
         val currentSnapshot = loadSnapshotFromFilesLocked()
         val goal = currentSnapshot.goals.firstOrNull { it.id == goalId } ?: return@synchronized null
         
+        // Fencing: Only the current lease holder (or a newer one) can claim continuations
+        if (claimantLeaseGeneration < goal.leaseGeneration) {
+            diagnostics?.warning(
+                event = "stale_continuation_claim_rejected",
+                component = "storage",
+                fields = mapOf("goal_id" to goalId, "current_gen" to goal.leaseGeneration, "claimant_gen" to claimantLeaseGeneration)
+            )
+            return@synchronized null
+        }
+
         val existing = goal.activeContinuationSchedulingClaim
         if (existing != null) {
             if (existing.continuationFingerprint == fingerprint && existing.state == ContinuationSchedulingState.CONFIRMED_ACTIVE) {
@@ -1806,40 +1817,48 @@ open class AgentStore private constructor(
         writeCount.incrementAndGet()
         testWriterInjection?.write(goal)
         validateGoalIdentityForWrite(goal)
-        goalsDirectory.mkdirs()
-        val target = goalFileLocked(goal.id)
-        val atomicFile = AtomicFile(target)
-        val encoded = encodeGoal(goal)
-        val text = encoded.toString(2)
         
-        var stream: FileOutputStream? = null
+        // Ensure invariants are satisfied before writing to disk
+        val repairedGoal = validateAndRepairInvariants(goal)
+        
+        goalsDirectory.mkdirs()
+        val target = goalFileLocked(repairedGoal.id)
+        
+        val encoded = encodeGoal(repairedGoal)
+        val text = encoded.toString(2)
+        val bytes = text.toByteArray(StandardCharsets.UTF_8)
+        
+        // Robust write for Windows Unit Tests & Android
+        val tmp = File(target.path + ".new")
         try {
-            stream = atomicFile.startWrite()
-            stream.write(text.toByteArray(StandardCharsets.UTF_8))
-            stream.flush()
-            try { stream.fd.sync() } catch (_: Exception) {}
-            atomicFile.finishWrite(stream)
+            tmp.outputStream().use { it.write(bytes) }
+            
+            if (target.exists()) {
+                target.delete()
+            }
+            
+            if (!tmp.renameTo(target)) {
+                Thread.sleep(20)
+                if (!tmp.renameTo(target)) {
+                    throw IllegalStateException("Failed to commit goal file for ${repairedGoal.id} after write. target=${target.absolutePath}")
+                }
+            }
         } catch (e: Exception) {
-            stream?.let { atomicFile.failWrite(it) }
+            tmp.delete()
             diagnostics?.error(
                 event = "goal_write_failed",
                 component = "storage",
                 throwable = e,
-                fields = mapOf("goal_id" to goal.id)
+                fields = mapOf("goal_id" to repairedGoal.id)
             )
             throw e
         }
 
-        // Authoritative read-back for cache update
-        val finalRaw = atomicFile.openRead().use { it.bufferedReader(StandardCharsets.UTF_8).readText() }
-        val readBack = decodeGoal(requireOpenRouterObject(finalRaw, "Written autonomous goal"))
-        
-        // Re-stat the file to get authoritative on-disk metadata for the cache.
         val finalTimestamp = target.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
-        goalCache[target.name] = CachedGoal(readBack, finalTimestamp, target.length())
+        goalCache[target.name] = CachedGoal(repairedGoal, finalTimestamp, target.length())
         
         if (signal) signalMutationLocked()
-        return readBack
+        return repairedGoal
     }
 
     private fun validateGoalIdentityForWrite(goal: AgentGoal) {
@@ -1940,9 +1959,14 @@ open class AgentStore private constructor(
 
     private fun encodeGoal(goal: AgentGoal): JSONObject {
         val json = JSONObject()
+        println("DEBUG: AgentStore encodeGoal ${goal.id} lease=${goal.executionLease != null}")
         json.put("storage_version", STORAGE_VERSION)
         json.put("id", goal.id)
-        json.put("execution_lease", goal.executionLease?.let(::encodeLease) ?: JSONObject.NULL)
+        val leaseJson = goal.executionLease?.let { encodeLease(it) }
+        if (goal.executionLease != null && leaseJson == null) {
+            println("DEBUG: AgentStore encodeGoal ${goal.id} CRITICAL ERROR: encodeLease returned null!")
+        }
+        json.put("execution_lease", leaseJson ?: JSONObject.NULL)
         json.put("conversation_id", goal.conversationId)
         json.put("submission_id", goal.submissionId ?: JSONObject.NULL)
         json.put("user_request", goal.userRequest)
@@ -2160,7 +2184,17 @@ open class AgentStore private constructor(
             modelCooldowns = json.optJSONObject("model_cooldowns")?.let { cooldownsJson ->
                 buildMap { cooldownsJson.keys().forEach { key -> put(key, cooldownsJson.getLong(key)) } }
             } ?: emptyMap(),
-            executionLease = json.optJSONObject("execution_lease")?.let(::decodeLease),
+            executionLease = json.optJSONObject("execution_lease")?.let { leaseJson ->
+                println("DEBUG: AgentStore decodeGoal ${json.optString("id")} found execution_lease JSON")
+                decodeLease(leaseJson)
+            }.also {
+                if (it == null && json.has("execution_lease")) {
+                    val value = json.get("execution_lease")
+                    println("DEBUG: AgentStore decodeGoal ${json.optString("id")} execution_lease key exists but is NOT a JSONObject. Value: $value Class: ${value?.javaClass?.name}")
+                    // Thread.dumpStack() // Too noisy
+                }
+                println("DEBUG: AgentStore decodeGoal ${json.optString("id")} lease=${it != null}")
+            },
             createdAt = json.optLong("created_at", System.currentTimeMillis()),
             updatedAt = json.optLong("updated_at", System.currentTimeMillis()),
             totalTokens = json.optInt("total_tokens", 0),
@@ -2331,7 +2365,10 @@ open class AgentStore private constructor(
 
         // REQUIRED CHANGE 3: EXACT REPAIR FOR THE REPRODUCED STATE
         // Implement a deterministic, idempotent migration for missions created by the defective build.
-        val hasNullCycleTasks = goal.tasks.any { it.cycleId == null }
+        val allCycleIds = goal.researchCycles.map { it.id }.toSet()
+        val hasInvalidCycleTasks = goal.tasks.any { 
+            it.cycleId == null || !allCycleIds.contains(it.cycleId) || (it.status.isExecutable() && it.cycleId != activeCycleId)
+        }
         val hasLegacyRecoveryPlans = goal.recoveryPlans.any { it.version < 2 || it.inputObjectiveFingerprint.isEmpty() }
         
         val repairKey = "v42-plan-cycle-binding:${goal.id}"
@@ -2340,10 +2377,14 @@ open class AgentStore private constructor(
         val alreadyRepaired = goal.idempotencyRecords.any { it.key == repairKey || it.key == broadRepairKey }
         val alreadyMigratedRecovery = goal.idempotencyRecords.any { it.key == recoveryMigrationKey }
 
-        if ((hasNullCycleTasks && !alreadyRepaired) || (hasLegacyRecoveryPlans && !alreadyMigratedRecovery)) {
+        if ((hasInvalidCycleTasks && !alreadyRepaired) || (hasLegacyRecoveryPlans && !alreadyMigratedRecovery)) {
             val rootFp = FingerprintUtils.calculateRootObjectiveFingerprint(goal)
-            val repairedTasks = goal.tasks.map { it.copy(cycleId = it.cycleId ?: activeCycleId) }
-            val repairedEvidence = goal.evidence.map { if (it.cycleId == null) it.copy(cycleId = activeCycleId) else it }
+            val repairedTasks = goal.tasks.map { 
+                if (it.cycleId == null || !allCycleIds.contains(it.cycleId) || (it.status.isExecutable() && it.cycleId != activeCycleId)) {
+                    it.copy(cycleId = activeCycleId)
+                } else it
+            }
+            val repairedEvidence = goal.evidence.map { if (it.cycleId == null || !allCycleIds.contains(it.cycleId)) it.copy(cycleId = activeCycleId) else it }
             
             val migratedPlans = goal.recoveryPlans.map { plan ->
                 if (plan.version < 2 || plan.inputObjectiveFingerprint.isEmpty()) {
@@ -2356,7 +2397,7 @@ open class AgentStore private constructor(
             }
 
             val recordsToAdd = mutableListOf<IdempotencyRecord>()
-            if (hasNullCycleTasks && !alreadyRepaired) {
+            if (hasInvalidCycleTasks && !alreadyRepaired) {
                 recordsToAdd += IdempotencyRecord(
                     key = broadRepairKey,
                     effectType = IdempotencyEffectType.SYSTEM_REPAIR,
@@ -2400,7 +2441,6 @@ open class AgentStore private constructor(
         // 4. Every executable task has a non-null cycle ID.
         // 5. Every current executable task belongs to the active cycle.
         // 6. Every task’s cycle ID references an existing cycle.
-        val allCycleIds = goal.researchCycles.map { it.id }.toSet()
         goal.tasks.forEach { task ->
             if (task.status.isExecutable()) {
                 if (task.cycleId == null) {
@@ -3698,7 +3738,7 @@ open class AgentStore private constructor(
         createdAt = json.optLong("created_at"),
     )
 
-        private fun encodeLease(lease: AgentExecutionLease): JSONObject = JSONObject()
+    private fun encodeLease(lease: AgentExecutionLease): JSONObject = JSONObject()
         .put("worker_id", lease.workerId)
         .put("owner_process_session_id", lease.ownerProcessSessionId)
         .put("task_id", lease.taskId)
@@ -3707,15 +3747,7 @@ open class AgentStore private constructor(
         .put("acquired_at", lease.acquiredAt)
         .put("heartbeat_at", lease.heartbeatAt)
 
-        .put("worker_id", lease.workerId)
-        .put("owner_process_session_id", lease.ownerProcessSessionId)
-        .put("task_id", lease.taskId)
-        .put("attempt_id", lease.attemptId)
-        .put("generation", lease.generation)
-        .put("acquired_at", lease.acquiredAt)
-        .put("heartbeat_at", lease.heartbeatAt)
-
-        private fun encodeBlockedSource(rec: BlockedSourceRecord): JSONObject = JSONObject()
+    private fun encodeBlockedSource(rec: BlockedSourceRecord): JSONObject = JSONObject()
         .put("canonical_document_id", rec.canonicalDocumentId ?: JSONObject.NULL)
         .put("canonical_url", rec.canonicalUrl)
         .put("route_kind", rec.routeKind)
@@ -3728,23 +3760,7 @@ open class AgentStore private constructor(
         .put("terminal_state", rec.terminalState)
         .put("source_task_id", rec.sourceTaskId ?: JSONObject.NULL)
 
-        .put("canonical_document_id", rec.canonicalDocumentId ?: JSONObject.NULL)
-        .put("canonical_url", rec.canonicalUrl)
-        .put("route_kind", rec.routeKind)
-        .put("failure_class", rec.failureClass)
-        .put("first_failed_at", rec.firstFailedAt)
-        .put("last_failed_at", rec.lastFailedAt)
-        .put("last_failure_detail_code", rec.lastFailureDetailCode ?: JSONObject.NULL)
-        .put("attempt_count", rec.attemptCount)
-        .put("alternate_routes_attempted", JSONArray(rec.alternateRoutesAttempted))
-        .put("terminal_state", rec.terminalState)
-        .put("source_task_id", rec.sourceTaskId ?: JSONObject.NULL)
-
-        private fun encodeEvent(event: AgentEvent): JSONObject = JSONObject()
-        .put("id", event.id)
-        .put("created_at", event.createdAt)
-        .put("message", event.message)
-
+    private fun encodeEvent(event: AgentEvent): JSONObject = JSONObject()
         .put("id", event.id)
         .put("created_at", event.createdAt)
         .put("message", event.message)

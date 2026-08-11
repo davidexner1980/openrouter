@@ -93,7 +93,7 @@ class AgentLivelockReproductionTest {
         // Assert repair effect
         assertEquals(6, repairedGoal.tasks.count { it.cycleId == cycleId })
         assertTrue(repairedGoal.idempotencyRecords.any { it.key == "v43-null-cycle-task-repair:$goalId" })
-        assertTrue(repairedGoal.events.any { it.message.contains("System automatically bound orphaned tasks") })
+        assertTrue(repairedGoal.events.any { it.message.contains("System automatically updated tasks and recovery plans to latest schema") })
         
         // 4. Verify that chooseNextTask now works
         val repairedSelection = AgentResearchAllocator.chooseNextTask(repairedGoal, profile)

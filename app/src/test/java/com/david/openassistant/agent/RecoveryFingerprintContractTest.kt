@@ -23,6 +23,16 @@ class RecoveryFingerprintContractTest {
 
     @Test
     fun testRecoveryPlanCreationWithFingerprints() = runBlocking {
+        val now = System.currentTimeMillis()
+        val lease = AgentExecutionLease(
+            workerId = "worker-1",
+            ownerProcessSessionId = "sid-1",
+            taskId = "none",
+            attemptId = "att-1",
+            generation = 1,
+            acquiredAt = now,
+            heartbeatAt = now,
+        )
         val goal = AgentGoal(
             id = goalId,
             conversationId = "conv-1",
@@ -34,7 +44,9 @@ class RecoveryFingerprintContractTest {
             plannerModelId = "m",
             executionModelId = "m",
             tasks = listOf(AgentTask(id = taskId, order = 0, title = "T", instructions = "I", capability = AgentCapability.WEB_RESEARCH)),
-            executionGeneration = 1
+            executionGeneration = 1,
+            leaseGeneration = 1,
+            executionLease = lease
         )
         store.upsertGoal(goal, true)
 

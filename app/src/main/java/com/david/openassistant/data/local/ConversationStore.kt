@@ -12,7 +12,6 @@ import com.david.openassistant.domain.model.ModelProfile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -29,12 +28,14 @@ class ConversationStore(
     prefs: SharedPreferences? = null
 ) {
     private val appContext = context?.applicationContext
-    private val preferences = prefs ?: appContext!!.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-    private val conversationsDirectory = baseDir ?: File(appContext!!.filesDir, CONVERSATIONS_DIRECTORY_NAME)
+    private val preferences: SharedPreferences? = prefs ?: appContext?.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val conversationsDirectory = baseDir ?: appContext?.let { File(it.filesDir, CONVERSATIONS_DIRECTORY_NAME) } ?: throw IllegalArgumentException("ConversationStore requires baseDir or Context")
 
     fun loadSnapshot(): ConversationSnapshot = synchronized(STORE_LOCK) {
         migrateLegacyIfNeededLocked()
-        return loadSnapshotFromFilesLocked()
+        val snapshot = loadSnapshotFromFilesLocked()
+        val activeId = preferences?.getString(KEY_ACTIVE_CONVERSATION_ID, null)
+        return snapshot.copy(activeConversationId = activeId ?: snapshot.activeConversationId)
     }
 
     fun saveSnapshot(snapshot: ConversationSnapshot) = synchronized(STORE_LOCK) {
@@ -74,7 +75,7 @@ class ConversationStore(
             return ConversationSnapshot(listOf(empty), empty.id)
         }
 
-        val activeId = preferences.getString(KEY_ACTIVE_CONVERSATION_ID, null)
+        val activeId = preferences?.getString(KEY_ACTIVE_CONVERSATION_ID, null)
             ?.takeIf { id -> conversations.any { it.id == id } }
             ?: conversations.first().id
 
@@ -93,24 +94,29 @@ class ConversationStore(
     private fun writeConversationLocked(conversation: StoredConversation, signal: Boolean = true) {
         conversationsDirectory.mkdirs()
         val target = conversationFileLocked(conversation.id)
-        val atomicFile = AtomicFile(target)
         val text = encodeConversation(conversation).toString()
+        val tmp = File(target.path + ".new")
         
-        var stream: FileOutputStream? = null
         try {
-            stream = atomicFile.startWrite()
-            stream.write(text.toByteArray(StandardCharsets.UTF_8))
-            stream.flush()
-            atomicFile.finishWrite(stream)
+            tmp.outputStream().use { it.write(text.toByteArray(StandardCharsets.UTF_8)) }
+            if (target.exists()) {
+                target.delete()
+            }
+            if (!tmp.renameTo(target)) {
+                Thread.sleep(20)
+                if (!tmp.renameTo(target)) {
+                    throw IllegalStateException("Failed to commit conversation file for ${conversation.id}")
+                }
+            }
         } catch (e: Exception) {
-            atomicFile.failWrite(stream)
+            tmp.delete()
             android.util.Log.e("ConversationStore", "Failed to write conversation ${conversation.id}", e)
             throw e
         }
         
         if (signal) {
             // Re-write signal to notify UI
-            writeSelectionAndSignalLocked(preferences.getString(KEY_ACTIVE_CONVERSATION_ID, null))
+            writeSelectionAndSignalLocked(preferences?.getString(KEY_ACTIVE_CONVERSATION_ID, null))
         }
     }
 
@@ -145,9 +151,10 @@ class ConversationStore(
     }
 
     private fun writeSelectionAndSignalLocked(activeConversationId: String?) {
+        val prefs = preferences ?: return
         check(
             runCatching {
-                preferences.edit(commit = true) {
+                prefs.edit(commit = true) {
                     putString(KEY_ACTIVE_CONVERSATION_ID, activeConversationId)
                     putString(KEY_CONVERSATIONS_V4, newRevisionSignal())
                 }
@@ -159,11 +166,12 @@ class ConversationStore(
     private fun newRevisionSignal(): String = "v5:${System.currentTimeMillis()}:${UUID.randomUUID()}"
 
     private fun migrateLegacyIfNeededLocked() {
-        if (preferences.getBoolean(KEY_MIGRATED_V5, false)) return
+        val prefs = preferences ?: return
+        if (prefs.getBoolean(KEY_MIGRATED_V5, false)) return
         conversationsDirectory.mkdirs()
 
         // Try to load from V4 SharedPreferences first
-        val legacyRaw = preferences.getString(KEY_CONVERSATIONS_V4, null)
+        val legacyRaw = prefs.getString(KEY_CONVERSATIONS_V4, null)
         if (legacyRaw?.startsWith("[") == true) {
             runCatching {
                 val array = JSONArray(legacyRaw)
@@ -178,13 +186,13 @@ class ConversationStore(
             val legacySnapshot = loadLegacySnapshotLocked()
             legacySnapshot.conversations.forEach(::writeConversationLocked)
             if (legacySnapshot.conversations.isNotEmpty()) {
-                preferences.edit { putString(KEY_ACTIVE_CONVERSATION_ID, legacySnapshot.activeConversationId) }
+                prefs.edit { putString(KEY_ACTIVE_CONVERSATION_ID, legacySnapshot.activeConversationId) }
             }
         }
 
         check(
             runCatching {
-                preferences.edit(commit = true) {
+                prefs.edit(commit = true) {
                     putBoolean(KEY_MIGRATED_V5, true)
                     putString(KEY_CONVERSATIONS_V4, newRevisionSignal())
                 }
@@ -207,7 +215,7 @@ class ConversationStore(
             id = UUID.randomUUID().toString(),
             title = createConversationTitle(legacyMessages.firstUserMessageText().orEmpty()),
             updatedAt = now,
-            selectedModelId = preferences.getString("selected_model_id", null),
+            selectedModelId = preferences?.getString("selected_model_id", null),
             modelProfile = ModelProfile.MANUAL,
             messages = legacyMessages,
         )
@@ -215,7 +223,7 @@ class ConversationStore(
     }
 
     private fun loadSnapshotFromLegacyKey(key: String): ConversationSnapshot? {
-        val raw = preferences.getString(key, null) ?: return null
+        val raw = preferences?.getString(key, null) ?: return null
         return runCatching {
             val array = JSONArray(raw)
             val conversations = buildList {
@@ -227,14 +235,14 @@ class ConversationStore(
             if (conversations.isEmpty()) return null
             ConversationSnapshot(
                 conversations = conversations.sortedByDescending { it.updatedAt },
-                activeConversationId = preferences.getString(KEY_ACTIVE_CONVERSATION_ID, null)
+                activeConversationId = preferences?.getString(KEY_ACTIVE_CONVERSATION_ID, null)
                     ?: conversations.first().id,
             )
         }.getOrNull()
     }
 
     private fun loadLegacyMessages(): List<ChatMessage> {
-        val raw = preferences.getString("current_conversation", null) ?: return emptyList()
+        val raw = preferences?.getString("current_conversation", null) ?: return emptyList()
         return runCatching { parseMessages(JSONArray(raw)) }.getOrDefault(emptyList())
     }
 

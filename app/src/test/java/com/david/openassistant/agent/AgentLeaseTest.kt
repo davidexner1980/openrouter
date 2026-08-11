@@ -168,6 +168,7 @@ class AgentLeaseTest {
             worker1Id,
             "session-1",
             1,
+            goal.executionGeneration,
             "attempt-1",
             0L
         )

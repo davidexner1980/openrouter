@@ -91,6 +91,7 @@ class ProviderAccountingDurabilityTest {
             taskId = taskId,
             attemptId = attemptId,
             executionGeneration = 1,
+            leaseGeneration = 1,
             acquiredAt = now,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.EXECUTE_TASK,

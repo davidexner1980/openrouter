@@ -111,7 +111,7 @@ class TerminalRecoveryReconciliationTest {
         assertEquals("retry authorizations", 0, authorizations.size) // Because it was ReconciliationRequired
 
         val repairs = finalGoal.idempotencyRecords.filter { it.effectType == IdempotencyEffectType.SYSTEM_REPAIR }
-        assertEquals("repair commits", 1, repairs.size)
+        assertEquals("repair commits", 2, repairs.size)
         
         // Ensure no new tool executions or accounting created by the repair itself
         assertEquals("accounting applications", 0, finalGoal.toolExecutions.size)

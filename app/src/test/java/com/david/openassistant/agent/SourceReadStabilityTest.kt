@@ -66,7 +66,7 @@ class SourceReadStabilityTest {
         )
         
         store.upsertGoal(goal)
-        val ticket = TaskExecutionTicket(goalId, taskId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticket = TaskExecutionTicket(goalId, taskId, "worker-1", "session-1", 1, 1, "attempt-1", System.currentTimeMillis())
 
         // 1. Attempt 1 claims and commits
         val claim1 = store.claimSourceFetchAtomic(ticket, taskId, canonicalUrl, "fp-1")

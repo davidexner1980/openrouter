@@ -12,6 +12,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.util.*
+import java.util.concurrent.TimeUnit
 
 class ProgressPrecisionIntegrationTest {
 
@@ -21,6 +22,8 @@ class ProgressPrecisionIntegrationTest {
     private lateinit var server: MockWebServer
     private lateinit var store: AgentStore
     private lateinit var executor: AgentTaskExecutor
+    private lateinit var toolRuntime: com.david.openassistant.domain.tools.AutonomousToolRuntime
+    private lateinit var client: AgentOpenRouterClient
 
     @Before
     fun setUp() {
@@ -29,8 +32,13 @@ class ProgressPrecisionIntegrationTest {
 
         val baseDir = tempFolder.newFolder("agent_store_test")
         store = AgentStore(baseDir = baseDir)
+        toolRuntime = io.mockk.mockk(relaxed = true)
+        io.mockk.every { toolRuntime.isNetworkAvailable() } returns true
+        io.mockk.every { toolRuntime.isPublicWebConfigured() } returns true
 
         val okHttpClient = OkHttpClient.Builder()
+            .connectTimeout(500, TimeUnit.MILLISECONDS)
+            .readTimeout(500, TimeUnit.MILLISECONDS)
             .addInterceptor { chain ->
                 val request = chain.request()
                 val newUrl = request.url.newBuilder()
@@ -43,8 +51,8 @@ class ProgressPrecisionIntegrationTest {
             .build()
 
         val diagnostics = RuntimeDiagnostics(null, tempFolder.newFolder("diag"), null)
-        val client = AgentOpenRouterClient(
-            toolRuntime = null,
+        client = io.mockk.spyk(AgentOpenRouterClient(
+            toolRuntime = toolRuntime,
             autonomyPolicy = AutonomyPolicy.DEFAULT,
             client = okHttpClient,
             researchMonitor = null,
@@ -52,7 +60,7 @@ class ProgressPrecisionIntegrationTest {
             store = store,
             terminalHook = null,
             postActiveHook = null
-        )
+        ))
         
         executor = AgentTaskExecutor(
             client = client,
@@ -69,10 +77,26 @@ class ProgressPrecisionIntegrationTest {
         val taskId2 = "task-2"
         val rawUrl = "https://example.com/"
         val alternateUrl = "https://example.com" // Different raw, same canonical
+        val cycleId = "cycle-1"
         
-        val task1 = AgentTask(id = taskId1, order = 0, title = "T1", instructions = "I", capability = AgentCapability.WEB_RESEARCH)
-        val task2 = AgentTask(id = taskId2, order = 1, title = "T2", instructions = "I", capability = AgentCapability.WEB_RESEARCH)
+        val task1 = AgentTask(id = taskId1, cycleId = cycleId, order = 0, title = "T1", instructions = "I", capability = AgentCapability.WEB_RESEARCH)
+        val task2 = AgentTask(id = taskId2, cycleId = cycleId, order = 1, title = "T2", instructions = "I", capability = AgentCapability.WEB_RESEARCH)
         
+        val cycle = ResearchCycle(
+            id = cycleId,
+            ordinal = 1,
+            parentCycleId = null,
+            status = ResearchCycleStatus.ACTIVE,
+            objectiveRevisionId = "rev-1",
+            triggerDiagnosis = ExecutionStallDiagnosis.NONE,
+            selectedAdvancementTactic = EscalationTactic.NONE,
+            strategyFingerprint = "fp",
+            queryPortfolioFingerprint = "fp",
+            acceptedEvidenceFingerprint = "fp",
+            unresolvedGapFingerprint = "fp",
+            learningSummary = null
+        )
+
         val goal = AgentGoal(
             id = goalId,
             conversationId = "c1",
@@ -80,10 +104,12 @@ class ProgressPrecisionIntegrationTest {
             title = "T",
             objective = "O",
             finalOutputDescription = "D",
-            status = AgentGoalStatus.RUNNING,
+            status = AgentGoalStatus.QUEUED,
             plannerModelId = "m",
             executionModelId = "m",
             tasks = listOf(task1, task2),
+            researchCycles = listOf(cycle),
+            activeResearchCycleId = cycleId,
             sourceReads = listOf(
                 SourceRead(
                     id = "read-1",
@@ -95,12 +121,23 @@ class ProgressPrecisionIntegrationTest {
                     contentType = "text/html",
                     content = "Content",
                     sourceRole = "discovery",
-                    authorityScore = 10
+                    authorityScore = 10,
+                    provenance = SourceReadProvenance.VERIFIED_FETCH
                 )
             )
         )
         
         store.upsertGoal(goal)
+
+        io.mockk.coEvery { client.executeTask(any(), any(), any(), any(), any(), any(), any(), any()) } returns AgentStepResult(
+            content = "Result",
+            summary = AgentApiSummary(responseId = "r1", httpStatusCode = 200),
+            sources = listOf(AgentSourceCitation("Example", alternateUrl)),
+            toolExecutions = listOf(
+                AgentToolExecution("public_web_fetch", "Fetched $alternateUrl", true)
+            ),
+            completionScore = 0.5
+        )
 
         val acquisition = store.acquireTaskLeaseAtomic(goalId, "w1", taskId2)
         val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
@@ -128,11 +165,27 @@ class ProgressPrecisionIntegrationTest {
             }
         """.trimIndent()
         server.enqueue(MockResponse.Builder().code(200).body(successJson).build())
+        
+        // Second response for the completion after tool results
+        val completionJson = """
+            {
+              "id": "gen-124",
+              "choices": [
+                {
+                  "message": {
+                    "role": "assistant",
+                    "content": "{\"work_product\": \"Final Result\", \"completion_score\": 1.0, \"claims\": [], \"acceptance_checks\": [], \"unresolved_questions\": []}"
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        server.enqueue(MockResponse.Builder().code(200).body(completionJson).build())
 
         val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
         val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId2 }
 
-        executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
+        executor.executeOneTask("sk-or-test", freshGoalSnapshot, freshTaskSnapshot, ticket)
         
         val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
         
@@ -177,7 +230,7 @@ class ProgressPrecisionIntegrationTest {
         val freshGoalSnapshot = store.loadSnapshot().goals.first { it.id == goalId }
         val freshTaskSnapshot = freshGoalSnapshot.tasks.first { it.id == taskId }
 
-        executor.executeOneTask("api-key", freshGoalSnapshot, freshTaskSnapshot, ticket)
+        executor.executeOneTask("sk-or-test", freshGoalSnapshot, freshTaskSnapshot, ticket)
         
         val finalGoal = store.loadSnapshot().goals.first { it.id == goalId }
         assertEquals("Goal should transition to RESEARCH_CYCLES_EXHAUSTED", AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED, finalGoal.status)

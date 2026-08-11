@@ -4926,7 +4926,7 @@ open class AgentOpenRouterClient internal constructor(
         val rawBody: String? = null,
     )
 
-    private fun handleTerminalTransition(
+    internal fun handleTerminalTransition(
         requestContext: ProviderRequestContext.Mission,
         exchangeId: String,
         resolution: ExchangeResolution,

@@ -1,6 +1,7 @@
 package com.david.openassistant.agent
 
 import com.david.openassistant.data.diagnostics.RuntimeDiagnostics
+import com.david.openassistant.data.openrouter.OpenRouterModel
 import com.david.openassistant.domain.tools.AutonomousToolRuntime
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
@@ -15,7 +16,8 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.util.UUID
+import java.io.File
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class V42A_StabilizationTest {
@@ -30,6 +32,7 @@ class V42A_StabilizationTest {
     private lateinit var toolRuntime: AutonomousToolRuntime
     private lateinit var executor: AgentTaskExecutor
     private lateinit var okHttpClient: OkHttpClient
+    private lateinit var baseDir: File
 
     private val goalId = "test-goal"
     private val workerId = "test-worker"
@@ -41,7 +44,7 @@ class V42A_StabilizationTest {
         server = MockWebServer()
         server.start()
 
-        val baseDir = tempFolder.newFolder("agent_store")
+        baseDir = tempFolder.newFolder("agent_store")
         store = AgentStore(baseDir = baseDir)
         diagnostics = mockk(relaxed = true)
         toolRuntime = mockk(relaxed = true)
@@ -75,18 +78,19 @@ class V42A_StabilizationTest {
         )
     }
 
+    private fun freshStore() = AgentStore(baseDir = baseDir)
+
     @After
     fun tearDown() {
         try { server.close() } catch (e: Exception) {}
     }
 
     @Test
-    fun `ResearchEvidenceCapabilityGateTest - blocks when web unavailable and gap exists`() = runBlocking {
+    fun `ResearchEvidenceCapabilityGateTest - Case A - blocks when web unavailable and gap exists`() = runBlocking {
         val goal = createTestGoal(complexity = ResearchComplexity.HIGH) 
-        val task = createTestTask(AgentCapability.CORRECT)
+        val task = createTestTask(AgentCapability.DEEP_RESEARCH) 
         store.upsertGoal(goal.copy(tasks = listOf(task)))
 
-        // Protocol V4.2-A.1: Acquire valid production lease
         val acquisition = store.acquireTaskLeaseAtomic(goal.id, workerId, task.id)
         val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
 
@@ -96,7 +100,7 @@ class V42A_StabilizationTest {
         val outcome = executor.executeOneTask(apiKey, goal, task, ticket)
 
         assertEquals(WorkerOutcome.DONE, outcome)
-        val updatedGoal = store.loadSnapshot().goals.first()
+        val updatedGoal = freshStore().loadSnapshot().goals.first()
         assertEquals(AgentGoalStatus.BLOCKED_NEEDS_ACTION, updatedGoal.status)
         assertTrue(updatedGoal.error!!.contains("Web Search required but unavailable"))
         
@@ -106,33 +110,50 @@ class V42A_StabilizationTest {
     }
 
     @Test
-    fun `ResearchEvidenceCapabilityGateTest - allows synthesis when enough evidence exists`() = runBlocking {
-        val sources = (1..10).map { i ->
-            createSourceRead("https://example.com/$i", "Substantial content $i", SourceReadProvenance.VERIFIED_FETCH)
-        }
+    fun `ResearchEvidenceCapabilityGateTest - Case B - allows synthesis when enough evidence exists`() = runBlocking {
+        val sources = listOf(
+            createSourceRead("https://a.com/1", "Substantial content A", SourceReadProvenance.VERIFIED_FETCH),
+            createSourceRead("https://b.com/1", "Substantial content B", SourceReadProvenance.VERIFIED_FETCH)
+        )
         
-        val goal = createTestGoal(complexity = ResearchComplexity.HIGH).copy(
-            sourceReads = sources
+        val stepResult = AgentStepResult(
+            content = "Research findings",
+            summary = AgentApiSummary(responseId = "test", httpStatusCode = 200),
+            sources = sources.map { AgentSourceCitation(it.url, it.url) },
+            toolExecutions = listOf(
+                AgentToolExecution(LOCAL_WEB_FETCH_TOOL, "Fetched A", true),
+                AgentToolExecution(LOCAL_WEB_FETCH_TOOL, "Fetched B", true)
+            )
         )
         
         val evidence = AgentEvidence(
             id = "evidence-1",
             kind = AgentEvidenceKind.DEEP_RESEARCH,
+            cycleId = "cycle-1",
             title = "Research",
             summary = "Summary",
-            content = "Content",
-            sources = sources.map { AgentSourceCitation(it.url, it.url) }
+            content = durableEvidenceContent(stepResult, 1000),
+            sources = stepResult.sources
         )
         
+        val goal = createTestGoal(complexity = ResearchComplexity.LOW).copy(
+            sourceReads = sources,
+            evidence = listOf(evidence)
+        )
+        
+        val profile = AgentResearchAllocator.profileForGoal(goal)
+        val gaps = AgentResearchAllocator.evaluateGaps(goal, profile)
+        assertEquals(0, gaps.remainingSourceGap)
+        assertEquals(0, gaps.remainingReadGap)
+
         val task = createTestTask(AgentCapability.SYNTHESIZE)
-        store.upsertGoal(goal.copy(tasks = listOf(task), evidence = listOf(evidence)))
+        store.upsertGoal(goal.copy(tasks = listOf(task)))
 
         val acquisition = store.acquireTaskLeaseAtomic(goal.id, workerId, task.id)
         val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
 
         every { toolRuntime.isNetworkAvailable() } returns false
         
-        // Mock success response
         val mockResponse = JSONObject().put("work_product", "result").put("completion_score", 1.0)
             .put("acceptance_checks", JSONArray())
             .put("claims", JSONArray()).put("unresolved_questions", JSONArray()).toString()
@@ -143,8 +164,54 @@ class V42A_StabilizationTest {
 
         executor.executeOneTask(apiKey, goal, task, ticket)
 
-        val updatedGoal = store.loadSnapshot().goals.first()
+        val updatedGoal = freshStore().loadSnapshot().goals.first()
         assertNotEquals(AgentGoalStatus.BLOCKED_NEEDS_ACTION, updatedGoal.status)
+    }
+
+    @Test
+    fun `ResearchEvidenceCapabilityGateTest - Case C - allows local reasoning without web`() = runBlocking {
+        val goal = createTestGoal()
+        val task = createTestTask(AgentCapability.REASON)
+        store.upsertGoal(goal.copy(tasks = listOf(task)))
+
+        val acquisition = store.acquireTaskLeaseAtomic(goal.id, workerId, task.id)
+        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
+
+        every { toolRuntime.isNetworkAvailable() } returns false
+        
+        val mockResponse = JSONObject().put("work_product", "result").put("completion_score", 1.0)
+            .put("acceptance_checks", JSONArray())
+            .put("claims", JSONArray()).put("unresolved_questions", JSONArray()).toString()
+        val providerResponse = JSONObject().put("id", "gen-1").put("model", "test")
+            .put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("role", "assistant").put("content", mockResponse))))
+            .toString()
+        server.enqueue(MockResponse.Builder().code(200).body(providerResponse).build())
+
+        executor.executeOneTask(apiKey, goal, task, ticket)
+
+        val updatedGoal = freshStore().loadSnapshot().goals.first()
+        assertNotEquals(AgentGoalStatus.BLOCKED_NEEDS_ACTION, updatedGoal.status)
+        assertEquals(AgentTaskStatus.COMPLETED, updatedGoal.tasks.first().status)
+    }
+
+    @Test
+    fun `ResearchEvidenceCapabilityGateTest - Case D - sandbox capability does not satisfy web need`() = runBlocking {
+        val goal = createTestGoal(complexity = ResearchComplexity.HIGH)
+        val task = createTestTask(AgentCapability.DEEP_RESEARCH)
+        store.upsertGoal(goal.copy(tasks = listOf(task)))
+
+        val acquisition = store.acquireTaskLeaseAtomic(goal.id, workerId, task.id)
+        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
+
+        // Network is down (so public web is unavailable) but tool runtime itself exists
+        every { toolRuntime.isNetworkAvailable() } returns false
+        every { toolRuntime.isPublicWebConfigured() } returns true
+        
+        val outcome = executor.executeOneTask(apiKey, goal, task, ticket)
+
+        assertEquals(WorkerOutcome.DONE, outcome)
+        val updatedGoal = freshStore().loadSnapshot().goals.first()
+        assertEquals(AgentGoalStatus.BLOCKED_NEEDS_ACTION, updatedGoal.status)
     }
 
     @Test
@@ -163,8 +230,9 @@ class V42A_StabilizationTest {
 
         executor.executeOneTask(apiKey, goal, task, ticket)
         
-        val updatedGoal = store.loadSnapshot().goals.first()
-        val lastAttempt = updatedGoal.requestAttempts.last()
+        // Assert durable classification via fresh store
+        val reloadedGoal = freshStore().loadSnapshot().goals.first()
+        val lastAttempt = reloadedGoal.requestAttempts.last()
         assertEquals(ExchangeOutcome.PROVIDER_UNAVAILABLE, lastAttempt.exchangeOutcome)
         assertEquals(500, lastAttempt.httpStatusCode)
         assertEquals("HTTP_5XX", lastAttempt.failureClass)
@@ -183,11 +251,39 @@ class V42A_StabilizationTest {
 
         executor.executeOneTask(apiKey, goal, task, ticket)
         
-        val updatedGoal = store.loadSnapshot().goals.first()
-        val lastAttempt = updatedGoal.requestAttempts.last()
+        // Assert durable classification via fresh store
+        val reloadedGoal = freshStore().loadSnapshot().goals.first()
+        val lastAttempt = reloadedGoal.requestAttempts.last()
         assertEquals(ExchangeOutcome.RATE_LIMITED, lastAttempt.exchangeOutcome)
         assertEquals(429, lastAttempt.httpStatusCode)
         assertEquals("HTTP_429", lastAttempt.failureClass)
+    }
+
+    @Test
+    fun `ProviderTimeoutClassificationTest - post-dispatch timeout maps to CALL_TIMEOUT`() = runBlocking {
+        val goal = createTestGoal()
+        val task = createTestTask(AgentCapability.REASON)
+        store.upsertGoal(goal.copy(tasks = listOf(task)))
+        
+        val acquisition = store.acquireTaskLeaseAtomic(goal.id, workerId, task.id)
+        val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
+
+        // Deterministic timeout: server receives request but withholds response
+        server.enqueue(
+            MockResponse.Builder()
+                .bodyDelay(1, TimeUnit.SECONDS) // Delay exceeds 500ms client timeout
+                .body("{}")
+                .build()
+        )
+
+        executor.executeOneTask(apiKey, goal, task, ticket)
+        
+        // Assert durable classification via fresh store
+        val reloadedGoal = freshStore().loadSnapshot().goals.first()
+        val lastAttempt = reloadedGoal.requestAttempts.last()
+        
+        assertEquals(ExchangeOutcome.TRANSPORT_FAILURE, lastAttempt.exchangeOutcome)
+        assertEquals("CALL_TIMEOUT", lastAttempt.failureClass)
     }
 
     @Test
@@ -199,57 +295,55 @@ class V42A_StabilizationTest {
         val acquisition = store.acquireTaskLeaseAtomic(goal.id, workerId, task.id)
         val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
 
-        val exchangeId = "test-exchange"
-        ProviderRequestLedger.start(exchangeId)
+        // 1. Initial production-shaped terminalization (HTTP 429)
+        server.enqueue(MockResponse.Builder().code(429).body("Too Many Requests").build())
         
+        executor.executeOneTask(apiKey, goal, task, ticket)
+        
+        // Prove first truth durable via fresh store
+        val firstStore = freshStore()
+        val firstGoal = firstStore.loadSnapshot().goals.first()
+        val firstAttempt = firstGoal.requestAttempts.first()
+        assertEquals(ExchangeOutcome.RATE_LIMITED, firstAttempt.exchangeOutcome)
+        assertEquals(429, firstAttempt.httpStatusCode)
+        val exchangeId = firstAttempt.exchangeId
+        
+        // 2. Conflicting secondary terminalization via authoritative handleTerminalTransition
         val ctx = ProviderRequestContext.Mission(
             goalId = goal.id,
             workerId = workerId,
             taskId = task.id,
             attemptId = ticket.attemptId,
             executionGeneration = 1,
-            leaseGeneration = 1,
+            leaseGeneration = 0,
             acquiredAt = System.currentTimeMillis(),
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.EXECUTE_TASK,
             parentOperationId = "parent"
         )
         
-        // 1. Initial terminalization (HTTP 500)
-        store.transitionExchangeOutcomeWithResultAtomic(
-            goalId = goal.id,
-            exchangeId = exchangeId,
-            newOutcome = ExchangeOutcome.PROVIDER_UNAVAILABLE,
-            context = ctx,
-            statusCode = 500,
-            failureClass = "HTTP_5XX"
-        )
-        
-        // 2. Secondary terminalization (e.g. later catch block reporting transport failure)
-        // This should NOT throw TerminalPersistenceException in V4.2-A.1
-        val res = store.transitionExchangeOutcomeWithResultAtomic(
-            goalId = goal.id,
-            exchangeId = exchangeId,
-            newOutcome = ExchangeOutcome.TRANSPORT_FAILURE,
-            context = ctx,
+        val resolution = AgentOpenRouterClient.ExchangeResolution(
+            outcome = ExchangeOutcome.TRANSPORT_FAILURE,
             failureClass = "SocketTimeoutException"
         )
         
-        assertTrue(res is TransitionOutcomeResult.AlreadyTerminal)
-        assertEquals(ExchangeOutcome.PROVIDER_UNAVAILABLE, (res as TransitionOutcomeResult.AlreadyTerminal).outcome)
+        client.handleTerminalTransition(ctx, exchangeId, resolution)
         
-        val reloadedGoal = store.loadSnapshot().goals.first()
-        val attempt = reloadedGoal.requestAttempts.first { it.exchangeId == exchangeId }
-        assertEquals(ExchangeOutcome.PROVIDER_UNAVAILABLE, attempt.exchangeOutcome)
-        assertEquals(500, attempt.httpStatusCode)
+        // 3. Final reload from fresh store to assert original truth preserved
+        val finalStore = freshStore()
+        val reloadedGoal = finalStore.loadSnapshot().goals.first()
+        val finalAttempt = reloadedGoal.requestAttempts.first { it.exchangeId == exchangeId }
+        assertEquals(ExchangeOutcome.RATE_LIMITED, finalAttempt.exchangeOutcome)
+        assertEquals(429, finalAttempt.httpStatusCode)
     }
 
     @Test
-    fun `EvidenceAcquisitionProvenanceTest - model URL does not reduce gap`() = runBlocking {
+    fun `ResearchEvidenceCapabilityGateTest - Case E - model URL does not reduce gap`() = runBlocking {
         val profile = ResearchAllocationProfile(targetDistinctSources = 3)
         val evidence = AgentEvidence(
             id = "ev-unverified",
             kind = AgentEvidenceKind.DEEP_RESEARCH,
+            cycleId = "cycle-1",
             title = "Research",
             summary = "Summary",
             content = "Content",
@@ -262,13 +356,14 @@ class V42A_StabilizationTest {
     }
 
     @Test
-    fun `EvidenceAcquisitionProvenanceTest - verified fetch reduces gap`() = runBlocking {
+    fun `ResearchEvidenceCapabilityGateTest - Case F - verified fetch reduces gap`() = runBlocking {
         val profile = ResearchAllocationProfile(targetDistinctSources = 3)
         val url = "https://verified.com"
         val read = createSourceRead(url, "Substantial content", SourceReadProvenance.VERIFIED_FETCH)
         val evidence = AgentEvidence(
             id = "ev-verified",
             kind = AgentEvidenceKind.DEEP_RESEARCH,
+            cycleId = "cycle-1",
             title = "Research",
             summary = "Summary",
             content = "Content",
@@ -281,11 +376,12 @@ class V42A_StabilizationTest {
     }
 
     @Test
-    fun `SourcePublicationGateTest - rejected when source requirements unmet despite completion claim`() = runBlocking {
+    fun `ResearchEvidenceCapabilityGateTest - Case G - quality gate rejects completion with unmet source gap`() = runBlocking {
         val profile = ResearchAllocationProfile(targetDistinctSources = 3)
         val evidence = AgentEvidence(
             id = "ev-polished",
             kind = AgentEvidenceKind.MODEL_OUTPUT,
+            cycleId = "cycle-1",
             title = "Final Answer",
             summary = "Summary",
             content = "This is a very polished and professional final answer.",
@@ -293,7 +389,10 @@ class V42A_StabilizationTest {
         )
         val goal = createTestGoal().copy(
             evidence = listOf(evidence),
-            tasks = listOf(createTestTask(AgentCapability.SYNTHESIZE).copy(status = AgentTaskStatus.COMPLETED))
+            tasks = listOf(
+                createTestTask(AgentCapability.WEB_RESEARCH).copy(status = AgentTaskStatus.COMPLETED),
+                createTestTask(AgentCapability.SYNTHESIZE).copy(status = AgentTaskStatus.COMPLETED)
+            )
         )
         
         val decision = ResearchQualityGate.evaluateGoal(goal, allocation = profile)
@@ -301,22 +400,43 @@ class V42A_StabilizationTest {
         assertTrue(decision.reasons.any { it.contains("distinct research source(s) were preserved") })
     }
 
-    private fun createTestGoal(complexity: ResearchComplexity = ResearchComplexity.LOW) = AgentGoal(
-        id = goalId,
-        conversationId = "conv",
-        userRequest = if (complexity == ResearchComplexity.HIGH) "Deep research about everything" else "test",
-        title = "Test",
-        objective = "Test",
-        finalOutputDescription = "Test",
-        status = AgentGoalStatus.QUEUED,
-        plannerModelId = "model",
-        executionModelId = "model",
-        tasks = emptyList()
-    )
+    private fun createTestGoal(complexity: ResearchComplexity = ResearchComplexity.LOW): AgentGoal {
+        val goal = AgentGoal(
+            id = goalId,
+            conversationId = "conv",
+            userRequest = if (complexity == ResearchComplexity.HIGH) "Deep research about everything" else "test",
+            title = "Test",
+            objective = "Test",
+            finalOutputDescription = "Test",
+            status = AgentGoalStatus.QUEUED,
+            plannerModelId = "model",
+            executionModelId = "model",
+            tasks = emptyList()
+        )
+        // Add a cycle so it passes invariants
+        val cycle = ResearchCycle(
+            id = "cycle-1",
+            ordinal = 1,
+            parentCycleId = null,
+            status = ResearchCycleStatus.ACTIVE,
+            objectiveRevisionId = "rev-1",
+            triggerDiagnosis = ExecutionStallDiagnosis.NONE,
+            selectedAdvancementTactic = EscalationTactic.NONE,
+            strategyFingerprint = "fp",
+            queryPortfolioFingerprint = "fp",
+            acceptedEvidenceFingerprint = "fp",
+            unresolvedGapFingerprint = "fp",
+            learningSummary = null
+        )
+        return goal.copy(
+            researchCycles = listOf(cycle),
+            activeResearchCycleId = cycle.id
+        )
+    }
 
     private fun createTestTask(capability: AgentCapability) = AgentTask(
         id = "test-task",
-        cycleId = "cycle",
+        cycleId = "cycle-1",
         order = 0,
         title = "Test Task",
         instructions = "Do it",

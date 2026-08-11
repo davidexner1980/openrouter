@@ -153,7 +153,7 @@ class RegressionMatrixPhase11Test {
         assertTrue("Worker 2 should reclaim orphan lease", acq3 is LeaseAcquisitionResult.OrphanReclaimed)
         val ticket2 = (acq3 as LeaseAcquisitionResult.OrphanReclaimed).ticket
         
-        assertEquals(ticket1.generation + 1, ticket2.generation)
+        assertEquals(ticket1.leaseGeneration + 1, ticket2.leaseGeneration)
         assertEquals("worker-2", ticket2.workerId)
     }
 

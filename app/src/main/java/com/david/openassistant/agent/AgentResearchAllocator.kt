@@ -156,8 +156,12 @@ object AgentResearchAllocator {
         val carryForwardIds = activeCycle?.learningSummary?.carryForwardEvidenceIds?.toSet() ?: emptySet()
 
         val researchEvidence = goal.evidence.filter {
-            (activeCycleId == null || it.cycleId == activeCycleId || it.id in carryForwardIds) &&
+            val match = (activeCycleId == null || it.cycleId == activeCycleId || it.id in carryForwardIds) &&
             it.kind in setOf(AgentEvidenceKind.WEB_RESEARCH, AgentEvidenceKind.DEEP_RESEARCH)
+            if (!match) {
+                println("DEBUG: AgentResearchAllocator filter out evidence ${it.id}. activeCycleId=$activeCycleId, it.cycleId=${it.cycleId}, it.kind=${it.kind}")
+            }
+            match
         }
         
         val publicationGradeUrls = goal.sourceReads

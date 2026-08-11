@@ -127,12 +127,12 @@ class AgentStoreLeaseTest {
         }
 
         // Create a ticket that looks like it's from the other session but we don't have it
-        val fakeTicket = TaskExecutionTicket(goalId, "task-1", workerId, "other-session", 1, "attempt-1", System.currentTimeMillis())
+        val fakeTicket = TaskExecutionTicket(goalId, "task-1", workerId, "other-session", 1, 1, "attempt-1", System.currentTimeMillis())
         // Wait, if session is 'other-session' and it matches, it *would* release if we could construct it.
         // But releaseLeaseAtomic uses validateTicket which checks session.
         
         // If we use a ticket with OUR session, it should fail.
-        val myTicket = TaskExecutionTicket(goalId, "task-1", workerId, com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID, 1, "attempt-1", System.currentTimeMillis())
+        val myTicket = TaskExecutionTicket(goalId, "task-1", workerId, com.david.openassistant.data.diagnostics.DiagnosticEvent.PROCESS_SESSION_ID, 1, 1, "attempt-1", System.currentTimeMillis())
         val released = store.releaseLeaseAtomic(myTicket)
         assertFalse(released)
         

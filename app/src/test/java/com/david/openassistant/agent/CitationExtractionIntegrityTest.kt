@@ -74,6 +74,7 @@ class CitationExtractionIntegrityTest {
             taskId = "task-1",
             attemptId = "attempt-1",
             executionGeneration = 1,
+            leaseGeneration = 1,
             acquiredAt = System.currentTimeMillis(),
             operation = MissionOperation.EXECUTE_TASK,
             parentOperationId = "parent-1"

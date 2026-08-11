@@ -126,6 +126,7 @@ class ParallelToolDeduplicationTest {
             taskId = taskId,
             attemptId = "attempt-1",
             executionGeneration = 1,
+            leaseGeneration = 1,
             acquiredAt = System.currentTimeMillis(),
             operation = MissionOperation.EXECUTE_TASK,
             parentOperationId = "op-1"

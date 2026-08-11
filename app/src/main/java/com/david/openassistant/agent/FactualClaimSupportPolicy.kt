@@ -144,7 +144,8 @@ object FactualClaimSupportPolicy {
         val isValid = reasons.isEmpty()
 
         // Admissibility: Search snippets are candidates only; they do NOT support publication-grade claims.
-        val isPublicationGrade = isValid && read.isPublicationGrade
+        // V43: Legacy evidence must be revalidated before it can provide FULL support.
+        val isPublicationGrade = isValid && read.isPublicationGrade && read.provenance != SourceReadProvenance.LEGACY_ASSUMED
 
         if (isValid && read.provenance == SourceReadProvenance.LEGACY_ASSUMED) {
             reasons.add("legacy_evidence_requires_revalidation")

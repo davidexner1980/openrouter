@@ -112,7 +112,8 @@ class DurableContentReconciliationTest {
             workerId = workerId,
             taskId = taskId,
             attemptId = ticket.attemptId,
-            executionGeneration = ticket.generation,
+            executionGeneration = ticket.executionGeneration,
+            leaseGeneration = ticket.leaseGeneration,
             acquiredAt = ticket.acquiredAt,
             role = AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.EXECUTE_TASK,
@@ -138,7 +139,7 @@ class DurableContentReconciliationTest {
             .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", "Hello")))
 
         val attribution = ProviderResponseAttribution(AgentTaskRole.PRIMARY_REASONING, "test")
-        val response1 = client.executeRawJsonRequest("key", requestPayload, attribution, ticket.generation, context)
+        val response1 = client.executeRawJsonRequest("key", requestPayload, attribution, ticket.leaseGeneration, context)
         assertNotNull(response1)
 
         // Verify it was persisted
@@ -150,7 +151,7 @@ class DurableContentReconciliationTest {
 
         // 2. Simulate restart: call again with same logical ID
         // The server SHOULD NOT be called again
-        val response2 = client.executeRawJsonRequest("key", requestPayload, attribution, ticket.generation, context)
+        val response2 = client.executeRawJsonRequest("key", requestPayload, attribution, ticket.leaseGeneration, context)
 
         // It should have returned the same body from the store
         assertEquals(providerResponseBody, response2.toString())

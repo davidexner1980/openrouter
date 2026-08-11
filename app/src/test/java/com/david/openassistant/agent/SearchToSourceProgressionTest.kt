@@ -53,7 +53,7 @@ class SearchToSourceProgressionTest {
         )
         
         store.upsertGoal(goal)
-        val ticket = TaskExecutionTicket(goalId, taskId, "worker-1", "session-1", 1, "attempt-1", System.currentTimeMillis())
+        val ticket = TaskExecutionTicket(goalId, taskId, "worker-1", "session-1", 1, 1, "attempt-1", System.currentTimeMillis())
 
         // 1. Claim Fetch
         val claimResult = store.claimSourceFetchAtomic(ticket, taskId, canonicalUrl, fetchFingerprint)

@@ -189,6 +189,7 @@ class Slice1LifecycleTest {
                 )
             ),
             executionLease = lease,
+            executionGeneration = generation
         )
     }
 
@@ -204,7 +205,8 @@ class Slice1LifecycleTest {
             workerId = lease?.workerId ?: "default-worker",
             taskId = if (operation.taskBound) (lease?.taskId ?: "t1") else null,
             attemptId = lease?.attemptId ?: "default-attempt",
-            executionGeneration = lease?.generation ?: 1,
+            executionGeneration = goal.executionGeneration,
+            leaseGeneration = lease?.generation ?: 1,
             acquiredAt = lease?.acquiredAt ?: System.currentTimeMillis(),
             role = role,
             operation = operation,
@@ -664,7 +666,7 @@ class Slice1LifecycleTest {
         assertTrue(thrown.isFailure)
         val reloadedGoal = store.loadSnapshot().goals.first { it.id == goal.id }
         val lastAttempt = reloadedGoal.requestAttempts.last()
-        assertEquals(ExchangeOutcome.RESPONSE_ERROR, lastAttempt.exchangeOutcome)
+        assertEquals(ExchangeOutcome.PROVIDER_UNAVAILABLE, lastAttempt.exchangeOutcome)
         assertEquals(500, lastAttempt.httpStatusCode)
     }
 
@@ -1010,7 +1012,8 @@ class Slice1LifecycleTest {
         val ownership = ExecutionOwnership(
             workerId = workerId,
             leaseAttemptId = leaseAttemptId,
-            executionGeneration = 1,
+            leaseGeneration = 1,
+            missionExecutionGeneration = 1,
             taskId = task.id,
         )
 
@@ -1020,7 +1023,8 @@ class Slice1LifecycleTest {
             task.id,
             ownership.workerId,
             "session-1",
-            ownership.executionGeneration,
+            ownership.leaseGeneration,
+            ownership.missionExecutionGeneration,
             ownership.leaseAttemptId,
             System.currentTimeMillis()
         )
@@ -1055,7 +1059,8 @@ class Slice1LifecycleTest {
         val staleOwnership = ExecutionOwnership(
             workerId = originalWorker,
             leaseAttemptId = "lease-attempt-1",
-            executionGeneration = 1,
+            leaseGeneration = 1,
+            missionExecutionGeneration = 1,
             taskId = task.id,
         )
 
@@ -1065,7 +1070,8 @@ class Slice1LifecycleTest {
             task.id,
             staleOwnership.workerId,
             "session-1",
-            staleOwnership.executionGeneration,
+            staleOwnership.leaseGeneration,
+            staleOwnership.missionExecutionGeneration,
             staleOwnership.leaseAttemptId,
             System.currentTimeMillis()
         )
@@ -1127,7 +1133,7 @@ class Slice1LifecycleTest {
         val reloaded = store.loadSnapshot().goals.first { it.id == goal.id }
         val attempt = reloaded.requestAttempts.last()
         assertEquals(ExchangeOutcome.TRANSPORT_FAILURE, attempt.exchangeOutcome)
-        assertEquals("SocketTimeoutException", attempt.failureClass)
+        assertEquals("CALL_TIMEOUT", attempt.failureClass)
     }
 
     @Test

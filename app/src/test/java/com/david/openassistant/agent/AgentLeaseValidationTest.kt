@@ -92,7 +92,7 @@ class AgentLeaseValidationTest {
         
         val validation = store.validateTicket(ticket)
         assertTrue(validation is TicketValidationResult.Mismatch)
-        assertEquals("GENERATION_MISMATCH", (validation as TicketValidationResult.Mismatch).reason)
+        assertEquals("LEASE_GENERATION_MISMATCH", (validation as TicketValidationResult.Mismatch).reason)
     }
 
     @Test

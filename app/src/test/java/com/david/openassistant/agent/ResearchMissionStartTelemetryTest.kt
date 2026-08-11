@@ -196,8 +196,8 @@ class ResearchMissionStartTelemetryTest {
     @Test
     fun networkRetryDoesNotCancelMainWorkChain() {
         val goalId = "network-goal-1"
-        val uniqueName = AgentScheduler.uniqueWorkName(goalId)
-        assertEquals("openassistant_agent_goal_network-goal-1", uniqueName)
+        val uniqueName = AgentScheduler.uniqueWorkName(goalId, 1)
+        assertEquals("openassistant_agent_goal_network-goal-1_exgen_1", uniqueName)
     }
 
     private fun createFakePrefs(initial: Map<String, Any?> = emptyMap()): SharedPreferences {
