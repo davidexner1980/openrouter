@@ -176,37 +176,6 @@ class AgentInteractor internal constructor(
         agentScheduler!!.cancelAndWait(goalId, executionGeneration)
     }
 
-    suspend fun restartAgentGoal(goalId: String): SchedulingResult = withContext(Dispatchers.IO) {
-        val initialGoal = agentStore!!.loadSnapshot().goals.firstOrNull { it.id == goalId }
-            ?: return@withContext SchedulingResult.EnqueueFailed(IllegalStateException("Goal $goalId not found"))
-            
-        if (initialGoal.status != AgentGoalStatus.CANCELLED) {
-            return@withContext SchedulingResult.EnqueueFailed(IllegalStateException("Only CANCELLED missions can be restarted. Current status: ${initialGoal.status}"))
-        }
-
-        agentStore.updateGoal(goalId) { current ->
-            AgentLifecycleReducer.restart(current)
-        }
-        
-        val restartedGoal = agentStore.loadSnapshot().goals.firstOrNull { it.id == goalId }
-            ?: return@withContext SchedulingResult.EnqueueFailed(IllegalStateException("Goal $goalId lost after restart update"))
-
-        val schedResult = agentScheduler!!.enqueueAndWait(goalId, replace = true, executionGeneration = restartedGoal.executionGeneration)
-        
-        // V43: Truthful Restart - treat all non-success outcomes as durable failures
-        if (schedResult !is SchedulingResult.NewlyEnqueued && schedResult !is SchedulingResult.ReusedActive) {
-            agentStore.updateGoal(goalId) { current ->
-                if (current.executionGeneration == restartedGoal.executionGeneration) {
-                    current.copy(
-                        status = AgentGoalStatus.BLOCKED_NEEDS_ACTION,
-                        error = "Restart scheduling failed: ${schedResult.javaClass.simpleName}. Check system health or WorkManager logs."
-                    )
-                } else current
-            }
-        }
-        
-        schedResult
-    }
 
     suspend fun finalize(goalId: String) = withContext(Dispatchers.IO) {
         try {

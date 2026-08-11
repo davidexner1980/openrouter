@@ -145,6 +145,7 @@ class V42A_StabilizationTest {
         val gaps = AgentResearchAllocator.evaluateGaps(goal, profile)
         assertEquals(0, gaps.remainingSourceGap)
         assertEquals(0, gaps.remainingReadGap)
+        assertEquals(0, gaps.remainingDomainGap)
 
         val task = createTestTask(AgentCapability.SYNTHESIZE)
         store.upsertGoal(goal.copy(tasks = listOf(task)))
@@ -196,22 +197,49 @@ class V42A_StabilizationTest {
 
     @Test
     fun `ResearchEvidenceCapabilityGateTest - Case D - sandbox capability does not satisfy web need`() = runBlocking {
-        val goal = createTestGoal(complexity = ResearchComplexity.HIGH)
+        // Use a free model where web tools are blocked by route policy, but sandbox remains allowed.
+        val modelId = "google/gemma-2-9b-it:free"
+        val goal = createTestGoal(complexity = ResearchComplexity.HIGH).copy(executionModelId = modelId)
         val task = createTestTask(AgentCapability.DEEP_RESEARCH)
         store.upsertGoal(goal.copy(tasks = listOf(task)))
 
         val acquisition = store.acquireTaskLeaseAtomic(goal.id, workerId, task.id)
         val ticket = (acquisition as LeaseAcquisitionResult.Acquired).ticket as TaskExecutionTicket
 
-        // Network is down (so public web is unavailable) but tool runtime itself exists
-        every { toolRuntime.isNetworkAvailable() } returns false
+        // 1. Network and Credentials are UP, so tools are generally operational.
+        every { toolRuntime.isNetworkAvailable() } returns true
         every { toolRuntime.isPublicWebConfigured() } returns true
         
+        // Define sandbox tool in runtime so it's audited as operational
+        val sandboxTool = mockk<com.david.openassistant.domain.tools.SafeToolDefinition>()
+        every { sandboxTool.name } returns "sandbox_workbench"
+        every { toolRuntime.definitions() } returns listOf(sandboxTool)
+        
+        // 2. Authoritative Audit: Prove sandbox is OK while web search is BLOCKED by model route
+        val audit = AgentToolRegistry.availableToolsForUserWork(
+            runtime = toolRuntime,
+            networkAvailable = true,
+            credentialsAvailable = true,
+            isFreeOnly = true
+        )
+        
+        assertTrue("Sandbox tool must remain operational on free route", 
+            audit.requirements.any { it.toolName == "sandbox_workbench" && it.operational })
+        
+        val webSearchReq = audit.requirements.find { it.toolName == "openrouter:web_search" }
+        assertNotNull("Web search requirement must be present in audit", webSearchReq)
+        assertFalse("Web search must be blocked on free route", webSearchReq!!.operational)
+        assertEquals("Web search block reason must be ROUTE_UNSUPPORTED", 
+            ToolUnavailabilityReason.ROUTE_UNSUPPORTED, webSearchReq.unavailabilityReason)
+
+        // 3. Dispatch: Verify gate blocks the task
         val outcome = executor.executeOneTask(apiKey, goal, task, ticket)
 
         assertEquals(WorkerOutcome.DONE, outcome)
         val updatedGoal = freshStore().loadSnapshot().goals.first()
         assertEquals(AgentGoalStatus.BLOCKED_NEEDS_ACTION, updatedGoal.status)
+        // Should be blocked specifically by ROUTE_UNSUPPORTED for web tools
+        assertTrue(updatedGoal.error!!.contains("Web Search required but unavailable (ROUTE_UNSUPPORTED)"))
     }
 
     @Test
@@ -284,6 +312,15 @@ class V42A_StabilizationTest {
         
         assertEquals(ExchangeOutcome.TRANSPORT_FAILURE, lastAttempt.exchangeOutcome)
         assertEquals("CALL_TIMEOUT", lastAttempt.failureClass)
+        
+        // Prove terminal attempt is non-ACTIVE and logical identity is set
+        assertTrue("Logical request ID should be captured", lastAttempt.logicalRequestId.isNotEmpty())
+        assertNotEquals("Terminal outcome should not be ACTIVE", ExchangeOutcome.ACTIVE, lastAttempt.exchangeOutcome)
+        // No unexpected duplicates (only one attempt should exist if we didn't retry)
+        assertEquals("Should have exactly one attempt record", 1, reloadedGoal.requestAttempts.size)
+        
+        // V42 Regression Fix: Prove logical identity captured from parent operation
+        assertTrue("Logical ID should be derived from op-task prefix", lastAttempt.logicalRequestId.startsWith("op-task-"))
     }
 
     @Test
@@ -301,25 +338,27 @@ class V42A_StabilizationTest {
         executor.executeOneTask(apiKey, goal, task, ticket)
         
         // Prove first truth durable via fresh store
-        val firstStore = freshStore()
-        val firstGoal = firstStore.loadSnapshot().goals.first()
+        val firstGoal = freshStore().loadSnapshot().goals.first()
         val firstAttempt = firstGoal.requestAttempts.first()
         assertEquals(ExchangeOutcome.RATE_LIMITED, firstAttempt.exchangeOutcome)
         assertEquals(429, firstAttempt.httpStatusCode)
+        assertEquals("HTTP_429", firstAttempt.failureClass)
         val exchangeId = firstAttempt.exchangeId
+        val logicalRequestId = firstAttempt.logicalRequestId
         
         // 2. Conflicting secondary terminalization via authoritative handleTerminalTransition
+        // Derive context from real production ownership persisted in the first request
         val ctx = ProviderRequestContext.Mission(
-            goalId = goal.id,
-            workerId = workerId,
-            taskId = task.id,
+            goalId = firstGoal.id,
+            workerId = firstAttempt.reconciliationClaimOwner ?: ticket.workerId,
+            taskId = firstAttempt.taskId,
             attemptId = ticket.attemptId,
-            executionGeneration = 1,
-            leaseGeneration = 0,
-            acquiredAt = System.currentTimeMillis(),
-            role = AgentTaskRole.PRIMARY_REASONING,
+            executionGeneration = firstAttempt.executionGeneration,
+            leaseGeneration = firstGoal.leaseGeneration,
+            acquiredAt = firstAttempt.startedAt,
+            role = firstAttempt.role ?: AgentTaskRole.PRIMARY_REASONING,
             operation = MissionOperation.EXECUTE_TASK,
-            parentOperationId = "parent"
+            parentOperationId = firstAttempt.parentOperationId
         )
         
         val resolution = AgentOpenRouterClient.ExchangeResolution(
@@ -333,8 +372,14 @@ class V42A_StabilizationTest {
         val finalStore = freshStore()
         val reloadedGoal = finalStore.loadSnapshot().goals.first()
         val finalAttempt = reloadedGoal.requestAttempts.first { it.exchangeId == exchangeId }
-        assertEquals(ExchangeOutcome.RATE_LIMITED, finalAttempt.exchangeOutcome)
-        assertEquals(429, finalAttempt.httpStatusCode)
+        
+        assertEquals("Outcome must be preserved from first terminalization", ExchangeOutcome.RATE_LIMITED, finalAttempt.exchangeOutcome)
+        assertEquals("HTTP status must be preserved", 429, finalAttempt.httpStatusCode)
+        assertEquals("Logical identity must be preserved", logicalRequestId, finalAttempt.logicalRequestId)
+        assertEquals("Wire ordinal must be preserved", firstAttempt.wireAttemptOrdinal, finalAttempt.wireAttemptOrdinal)
+        assertEquals("Exchange ID must be preserved", exchangeId, finalAttempt.exchangeId)
+        assertEquals("Failure class must be preserved", "HTTP_429", finalAttempt.failureClass)
+        assertEquals("Should have exactly one attempt record (no duplicates)", 1, reloadedGoal.requestAttempts.size)
     }
 
     @Test

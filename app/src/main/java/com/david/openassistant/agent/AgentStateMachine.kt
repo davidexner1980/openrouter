@@ -2,10 +2,6 @@ package com.david.openassistant.agent
 
 /**
  * Centralized transition policy for durable agent goals.
- *
- * Models may propose work, but only application code is allowed to move a goal
- * through this state machine. Same-state writes are allowed so task/evidence
- * updates can be persisted without inventing a new lifecycle transition.
  */
 object AgentStateMachine {
     private val activeStateTransitions: Set<AgentGoalStatus> = setOf(
@@ -19,8 +15,6 @@ object AgentStateMachine {
         AgentGoalStatus.FINALIZING,
         AgentGoalStatus.CANCELLING,
         AgentGoalStatus.BLOCKED,
-        AgentGoalStatus.BLOCKED_NEEDS_ACTION,
-        AgentGoalStatus.WAITING_FOR_USER,
         AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
         AgentGoalStatus.RECOVERING,
     )
@@ -37,13 +31,9 @@ object AgentStateMachine {
             AgentGoalStatus.FAILED,
             AgentGoalStatus.REJECTED,
             AgentGoalStatus.BLOCKED,
-            AgentGoalStatus.BLOCKED_NEEDS_ACTION,
-            AgentGoalStatus.WAITING_FOR_USER,
             AgentGoalStatus.INSUFFICIENT_CURRENT_DATA,
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
             AgentGoalStatus.RECOVERING,
-            AgentGoalStatus.COMPLETED,
-            AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE,
         ),
         AgentGoalStatus.QUEUED to setOf(
             AgentGoalStatus.RUNNING,
@@ -56,8 +46,6 @@ object AgentStateMachine {
             AgentGoalStatus.FINALIZING,
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
-            AgentGoalStatus.BLOCKED_NEEDS_ACTION,
-            AgentGoalStatus.WAITING_FOR_USER,
             AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED,
             AgentGoalStatus.RECOVERING,
         ),
@@ -155,34 +143,13 @@ object AgentStateMachine {
             AgentGoalStatus.CANCELLED,
             AgentGoalStatus.FAILED,
         ),
-        AgentGoalStatus.COMPLETED to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
-        AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
-        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
-        AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
-        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
-        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
-        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
+        AgentGoalStatus.COMPLETED to emptySet(),
+        AgentGoalStatus.COMPLETED_WITH_STRONG_EVIDENCE to emptySet(),
+        AgentGoalStatus.COMPLETED_WITH_QUALIFICATIONS to emptySet(),
+        AgentGoalStatus.BLOCKED_WITH_PARTIAL_EVIDENCE to emptySet(),
+        AgentGoalStatus.INSUFFICIENT_CURRENT_DATA to emptySet(),
+        AgentGoalStatus.CONFLICTING_PRIMARY_SOURCES to emptySet(),
+        AgentGoalStatus.RESEARCH_CYCLES_EXHAUSTED to emptySet(),
         AgentGoalStatus.REQUIRES_USER_CLARIFICATION to setOf(
             AgentGoalStatus.PLANNING,
             AgentGoalStatus.QUEUED,
@@ -192,15 +159,9 @@ object AgentStateMachine {
             AgentGoalStatus.CANCELLING,
             AgentGoalStatus.BLOCKED,
         ),
-        AgentGoalStatus.CANCELLED to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
-        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION to activeStateTransitions,
-        AgentGoalStatus.REJECTED to setOf(
-            AgentGoalStatus.PLANNING,
-            AgentGoalStatus.QUEUED,
-        ),
+        AgentGoalStatus.CANCELLED to emptySet(),
+        AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION to emptySet(),
+        AgentGoalStatus.REJECTED to emptySet(),
         AgentGoalStatus.BLOCKED_NEEDS_ACTION to setOf(
             AgentGoalStatus.QUEUED,
             AgentGoalStatus.CANCELLED,
@@ -215,19 +176,16 @@ object AgentStateMachine {
         ),
     )
 
-
     fun canTransition(from: AgentGoalStatus, to: AgentGoalStatus): Boolean {
         if (from == to) return true
+        if (from.isFinalTerminalStatus()) return false
         val allowed = allowedTransitions[from] ?: return false
         val ok = (to in allowed) || allowed.any { it.name == to.name }
-        if (!ok) {
-            println("DEBUG: AgentStateMachine reject $from -> $to. Allowed: ${allowed.map { it.name }}")
-        }
-        // Allow finalizing or cancelling any non-terminal mission
-        if ((to == AgentGoalStatus.FINALIZING || to == AgentGoalStatus.CANCELLING) && !from.isFinalTerminalStatus()) {
+        
+        if (to == AgentGoalStatus.FINALIZING || to == AgentGoalStatus.CANCELLING) {
             return true
         }
-        if (to == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION && !from.isFinalTerminalStatus()) {
+        if (to == AgentGoalStatus.CORRUPT_OR_INCOMPLETE_MISSION) {
             return true
         }
         return ok

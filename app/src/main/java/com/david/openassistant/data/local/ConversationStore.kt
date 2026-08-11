@@ -12,6 +12,7 @@ import com.david.openassistant.domain.model.ModelProfile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -94,23 +95,18 @@ class ConversationStore(
     private fun writeConversationLocked(conversation: StoredConversation, signal: Boolean = true) {
         conversationsDirectory.mkdirs()
         val target = conversationFileLocked(conversation.id)
+        val atomicFile = AtomicFile(target)
         val text = encodeConversation(conversation).toString()
-        val tmp = File(target.path + ".new")
         
+        var stream: FileOutputStream? = null
         try {
-            tmp.outputStream().use { it.write(text.toByteArray(StandardCharsets.UTF_8)) }
-            if (target.exists()) {
-                target.delete()
-            }
-            if (!tmp.renameTo(target)) {
-                Thread.sleep(20)
-                if (!tmp.renameTo(target)) {
-                    throw IllegalStateException("Failed to commit conversation file for ${conversation.id}")
-                }
-            }
+            stream = atomicFile.startWrite()
+            stream.write(text.toByteArray(StandardCharsets.UTF_8))
+            stream.flush()
+            try { stream.fd.sync() } catch (_: Exception) {}
+            atomicFile.finishWrite(stream)
         } catch (e: Exception) {
-            tmp.delete()
-            android.util.Log.e("ConversationStore", "Failed to write conversation ${conversation.id}", e)
+            stream?.let { atomicFile.failWrite(it) }
             throw e
         }
         

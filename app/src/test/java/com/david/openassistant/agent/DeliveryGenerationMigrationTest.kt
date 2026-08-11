@@ -152,9 +152,7 @@ class DeliveryGenerationMigrationTest {
         assertEquals(1, conversationStore.loadSnapshot().activeConversation.messages.size)
 
         // Restart
-        agentStore.updateGoal(goalId) { current ->
-            AgentLifecycleReducer.restart(current)
-        }
+        agentStore.restartGoalAtomic(goalId)
         
         val restarted = agentStore.loadSnapshot().goals.first { it.id == goalId }
         assertEquals(2, restarted.executionGeneration)
